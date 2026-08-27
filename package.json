@@ -37,6 +37,9 @@
       "dist/**/*",
       "electron/**/*"
     ],
+    "asarUnpack": [
+      "electron/fsevents-watcher"
+    ],
     "mac": {
       "target": [
         "dir"

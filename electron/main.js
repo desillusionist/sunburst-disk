@@ -167,8 +167,14 @@ function startFolderWatcher(rootPath) {
     });
     return { ok: true, active: false, disabled: true, rootPath: displayRoot };
   }
-  const helperPath = path.join(__dirname, 'fsevents-watcher');
-  if (!fs.existsSync(helperPath)) {
+  const helperCandidates = app.isPackaged
+    ? [
+      path.join(process.resourcesPath, 'app.asar.unpacked', 'electron', 'fsevents-watcher'),
+      path.join(__dirname, 'fsevents-watcher')
+    ]
+    : [path.join(__dirname, 'fsevents-watcher')];
+  const helperPath = helperCandidates.find(candidate => fs.existsSync(candidate));
+  if (!helperPath) {
     return { ok: false, error: 'FSEvents helper is not built. Run npm run build:fsevents on macOS.' };
   }
 
@@ -223,7 +229,8 @@ function startFolderWatcher(rootPath) {
   sendFolderWatchEvent('folder-watch-status', {
     active: true,
     rootPath: displayRoot,
-    debounceMs: FOLDER_WATCH_DEBOUNCE_MS
+    debounceMs: FOLDER_WATCH_DEBOUNCE_MS,
+    helperPath: app.isPackaged ? 'app.asar.unpacked' : 'project-electron'
   });
   return { ok: true, active: true, rootPath: displayRoot };
 }
@@ -888,23 +895,41 @@ async function runAskSiriShortcut(prompt) {
       child.stdin.on('error', () => {});
       child.stdin.end(String(prompt || ''), 'utf8');
     });
+    const exitCode = processResult.error ? (Number.isInteger(processResult.error.code) ? processResult.error.code : null) : 0;
+    const stdoutBytes = Buffer.byteLength(processResult.stdout, 'utf8');
+    const stderrText = processResult.stderr.trim();
+    const stderrExcerpt = stderrText.slice(-600);
+    const outputStat = await fs.promises.stat(outputPath).catch(() => null);
+    const outputFileBytes = outputStat?.isFile() ? outputStat.size : 0;
+    const diagnostics = {
+      exitCode,
+      signal: processResult.error?.signal || null,
+      stdoutBytes,
+      stderrBytes: Buffer.byteLength(processResult.stderr, 'utf8'),
+      outputFileBytes
+    };
     if (processResult.error) {
-      const detail = processResult.stderr.trim() || processResult.error.message || 'Shortcut failed';
+      const detail = stderrText || processResult.error.message || 'Shortcut failed';
       return {
         ok: false,
-        error: `${detail}\n\nCheck that the shortcut accepts piped Text input and ends with Stop and Output. Do not use Show Result or Ask for Input in the background path.`
+        diagnostics,
+        error: `${detail}\n\nDiagnostic: exit=${exitCode ?? 'unknown'}, output-file=${outputFileBytes} bytes, stdout=${stdoutBytes} bytes. Check that the shortcut accepts piped Text input and ends with Stop and Output. Do not use Show Result or Ask for Input in the background path.`
       };
     }
 
     const fileOutput = await fs.promises.readFile(outputPath, 'utf8').catch(() => '');
     const output = String(fileOutput || processResult.stdout || '').trim();
     if (!output) {
+      const stderrNote = stderrExcerpt && !/^attributedStringScaled /m.test(stderrExcerpt)
+        ? `\nCLI stderr (last 600 chars): ${stderrExcerpt}`
+        : '';
       return {
         ok: false,
-        error: 'The Shortcut completed without writing text to its output file. Set Stop and Output to the direct text result of the model, remove Show Response/Show Result, and test the pipe-to-output-file command from the project guide.'
+        diagnostics,
+        error: `The Shortcut exited successfully but returned no text. Diagnostic: exit=0, output-file=${outputFileBytes} bytes, stdout=${stdoutBytes} bytes.${stderrNote}\n\nIn Shortcuts, replace the final Stop and Output value with a plain Text action containing a visible test marker. If that marker returns, reconnect the model result through Get Text from Input and Stop and Output. Remove Show Response/Show Result from the input-present path.`
       };
     }
-    return { ok: true, output };
+    return { ok: true, output, diagnostics };
   } catch (error) {
     return { ok: false, error: error.message || 'Shortcut could not be executed' };
   } finally {
@@ -1365,10 +1390,8 @@ ipcMain.handle('scan-directory', async (event, { targetPath, detailDepth = 10 } 
       }
 
       tree = buildTreeFromDu('/System/Volumes/Data', dataLines, detailDepth);
-      const dataSystemNode = tree.children.find(child => child.path === '/System/Volumes/Data/System');
-      if (dataSystemNode) dataSystemNode.name = 'System (Data volume)';
       const sysTree = buildTreeFromDu('/System', restLines, detailDepth);
-      tree.children.push({ ...sysTree, name: 'System (OS volume)', path: '/System' });
+      tree.children.push({ ...sysTree, name: 'System', path: '/System' });
       tree.size += sysTree.size;
       tree.itemCount = (tree.itemCount || 0) + (sysTree.itemCount || 0);
       tree.children.sort((a, b) => (b.size || 0) - (a.size || 0));

@@ -1557,6 +1557,26 @@ body {
   font-size: 10px;
   line-height: 1.45;
 }
+.assistant-diagnostics {
+  margin-top: 4px;
+  color: #9aa5b5;
+  font-size: 10px;
+}
+.assistant-diagnostics summary {
+  cursor: pointer;
+  color: #aeb7c4;
+}
+.assistant-diagnostics code {
+  display: block;
+  margin-top: 6px;
+  padding: 7px;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 4px;
+  background: #15191f;
+  color: #b8c2cf;
+  white-space: pre-wrap;
+}
 .assistant-result-meta { padding: 12px 0 8px; }
 .assistant-output {
   min-height: 120px;

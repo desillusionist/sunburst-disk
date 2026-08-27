@@ -86,7 +86,45 @@ rm -f "$output"
 
 The answer should be printed in Terminal after `cat "$output"`. The command should not require a click in Shortcuts or display a result window for this command-line run. If the output file is empty, inspect the final Stop and Output variable. If the command reports that the file is missing, verify that Stop and Output is the final action and that its value is the model's text. If it opens a result window, remove Show Response/Show Result and ensure that Stop and Output receives the model's text directly.
 
-## 7. Use it from Sunburst Disk
+## 7. Debug the output variable step by step
+
+Use a temporary duplicate of the shortcut if possible, so the working shortcut is not lost. First isolate Shortcuts from the AI action:
+
+1. Keep the shortcut configured to receive **Text** from Shortcut Input.
+2. Temporarily bypass **Use Cloud Model** and add a **Text** action containing exactly `SUNBURST_DEBUG_OUTPUT_OK`.
+3. Set the final **Stop and Output** action to the result of that Text action. Do not use Show Response or Show Result.
+4. Run the Terminal test above. If `SUNBURST_DEBUG_OUTPUT_OK` appears in `cat "$output"`, the command-line input/output bridge is working and the problem is in the model result connection. If the file remains empty, the problem is still in the Shortcut's completion/output configuration.
+
+Then restore the model path and make the conversion explicit:
+
+```text
+Receive Text → Use Cloud Model → Get Text from Input → Stop and Output
+```
+
+In **Stop and Output**, click the blue content variable and verify that it is the output of **Get Text from Input**, not a variable belonging to Show Response. To make an empty model result visible during debugging, temporarily use an If action: if the model result has any value, output `MODEL_OUTPUT_PRESENT`; otherwise output `MODEL_OUTPUT_EMPTY`. Once the branch is understood, remove the marker and reconnect the real text result.
+
+Use this diagnostic Terminal command when reporting the result. It records only process metadata and output byte counts, not the filesystem object prompt:
+
+```sh
+tmp=$(mktemp -d)
+printf '%s\n' 'Reply with exactly OK. Do not use web search.' \\
+  | shortcuts run "Sunburst Disk — Ask Siri" \\
+      --output-path "$tmp/result.txt" \\
+      --output-type public.utf8-plain-text \\
+      >"$tmp/stdout.txt" 2>"$tmp/stderr.txt"
+status=$?
+printf 'exit=%s\\n' "$status"
+printf 'result-bytes='; wc -c < "$tmp/result.txt"
+printf 'stdout-bytes='; wc -c < "$tmp/stdout.txt"
+printf 'stderr-bytes='; wc -c < "$tmp/stderr.txt"
+printf '%s\\n' '--- result ---'; cat "$tmp/result.txt"
+printf '%s\\n' '--- stderr (last 20 lines) ---'; tail -n 20 "$tmp/stderr.txt"
+rm -rf "$tmp"
+```
+
+Interpret the result as follows: `exit=0` with `result-bytes=0` means the Shortcut completed but Stop and Output produced no text; a non-zero exit means the CLI invocation or Shortcut failed; a positive `result-bytes` value means the Shortcut returned text and any remaining error is inside the app integration. The Sunburst Disk error drawer also exposes the same safe metadata under **Technical diagnostics**.
+
+## 8. Use it from Sunburst Disk
 
 In Sunburst Disk, right-click a real file or folder in the content tree or Sunburst and choose **Ask Siri…**. The app opens an in-app **Object Information** panel, starts the named Shortcut through `/usr/bin/shortcuts`, pipes the object description as text, asks Shortcuts to write a plain-text temporary `output.txt` with `--output-path`, reads the result, and deletes the temporary directory.
 

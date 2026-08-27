@@ -117,6 +117,8 @@ function getCategoryDescription(node) {
   const pathDescriptions = [
     [/\/Applications\/Dia\.app$/, 'Dia is an AI-powered web browser made by The Browser Company of New York, the same team behind Arc. This app bundle contains the browser executable, resources and its local support files.'],
     [/\/Applications\/[^/]+\.app$/, 'An installed macOS application bundle. The visible .app item contains the application executable and bundled resources; inspect Package Contents only when you need to understand its internal files.'],
+    [/\/System\/Volumes\/Data\/System$/, 'System (Data volume) — the writable APFS Data-volume System directory exposed alongside the sealed operating-system volume. It is macOS-managed and protected; do not delete or modify its contents.'],
+    [/\/System$/, 'System (OS volume) — the sealed APFS operating-system volume containing macOS components. It is protected and should be treated as read-only.'],
     [/\/Library\/Preferences$/, 'Preferences — small .plist settings files used by macOS and applications. They are usually lightweight configuration data; review the owning app before deleting anything.'],
     [/\/Library\/Caches$/, 'Caches — temporary, reproducible data used to speed up applications and macOS services. They are generally safe to recreate, but active applications should be closed before cleanup.'],
     [/\/Library\/Application Support$/, 'Application Support — substantial working data, indexes, models and supporting files used by applications. It can be important to the app and is not equivalent to a disposable cache.'],
@@ -133,15 +135,15 @@ function getCategoryDescription(node) {
     [/\/System\/Volumes\/Data\/usr$/, 'Unix userland — command-line tools, libraries and executables used by macOS and installed software. It is system-managed and protected.'],
     [/\/System\/Volumes\/Data\/Users\/[^/]+\/Library$/, 'The user Library — per-user preferences, application support, caches, mail, cloud data and service state. Different subfolders have very different deletion risks.'],
     [/\/System\/Volumes\/Data\/Library$/, 'The system-wide Library — shared application support, preferences, services, frameworks, logs and caches used by macOS and installed software.'],
-    [/\/System$/, 'macOS system components, sealed system content and operating-system resources. These items are protected from deletion.'],
     [/\/Users$/, 'Home directories and personal data belonging to local users. The largest subfolders commonly include Documents, Downloads, Movies, Pictures and the per-user Library.'],
-    [/\/Applications$/, 'Installed applications. Each .app is a bundle containing an executable and resources; application support data may live separately under a user or system Library.']
+    [/\/System\/Volumes\/Data\/Users\/[^/]+\/Applications$/, 'Per-user Applications — apps installed only for this macOS user. Finder’s global /Applications folder is separate; a small list here can be correct.'],
+    [/\/Applications$/, 'Global Applications — apps installed for all users. Each .app is a bundle containing an executable and resources; application support data may live separately under a user or system Library.']
   ];
   const matched = pathDescriptions.find(([pattern]) => pattern.test(nodePath));
   if (matched) return matched[1];
 
   const descriptions = {
-    System: 'macOS system components, sealed system content and operating-system resources. These items are protected from deletion.',
+    System: 'macOS system components, sealed system content and operating-system resources. These items are protected from deletion. The two visible System rows represent the sealed OS volume and the writable Data volume; their exact distinction is described when each row is selected.',
     private: 'Private operating-system data, services, caches and runtime state. It is protected because changes can affect macOS stability.',
     usr: 'Unix userland tools, libraries and executables used by macOS and installed software.',
     Users: 'Home directories and personal data belonging to local users.',
@@ -756,6 +758,14 @@ export default function App() {
     if (!targetPaths.length) return;
 
     folderWatchBusyRef.current = true;
+    recordPerfInstant('folder-watch.reconcile-start', {
+      rootPath,
+      targetCount: targetPaths.length,
+      fullScan: Boolean(payload.fullScan),
+      changedCount: Array.isArray(payload.changedPaths) ? payload.changedPaths.length : 0,
+      truncated: Boolean(payload.truncated),
+      rootMissing: Boolean(payload.rootMissing)
+    });
     setFolderWatchState(previous => ({ ...previous, updating: true, lastChangedAt: payload.observedAt || Date.now() }));
     try {
       let nextTree = folderWatchTreeRef.current;
@@ -775,8 +785,10 @@ export default function App() {
         return updated || node;
       }));
       setFocusedNode(previous => previous?.path ? resolveByPath(nextTree, previous.path) || previous : previous);
+      recordPerfInstant('folder-watch.reconcile-complete', { rootPath, targetCount: targetPaths.length });
       setFolderWatchState(previous => ({ ...previous, updating: false, error: null }));
     } catch (error) {
+      recordPerfInstant('folder-watch.reconcile-error', { rootPath, message: error.message || 'Folder update failed' });
       if (folderWatchTargetRef.current?.path === rootPath && folderWatchTreeRef.current === tree) {
         setFolderWatchState(previous => ({ ...previous, updating: false, error: error.message || 'Folder update failed' }));
       }
@@ -814,6 +826,12 @@ export default function App() {
     const isCurrentGeneration = () => folderWatchGenerationRef.current === generation;
     const removeStatus = api.onFolderWatchStatus?.(status => {
       if (!isCurrentGeneration()) return;
+      recordPerfInstant('folder-watch.status', {
+        active: Boolean(status?.active),
+        rootPath: status?.rootPath || watchPath,
+        reason: status?.reason || null,
+        error: status?.error || null
+      });
       setFolderWatchState(previous => ({
         ...previous,
         active: Boolean(status?.active),
@@ -823,6 +841,14 @@ export default function App() {
     });
     const removeChange = api.onFolderWatchChange(payload => {
       if (!isCurrentGeneration()) return;
+      recordPerfInstant('folder-watch.event', {
+        rootPath: payload?.rootPath || watchPath,
+        changedCount: Array.isArray(payload?.changedPaths) ? payload.changedPaths.length : 0,
+        fullScan: Boolean(payload?.fullScan),
+        truncated: Boolean(payload?.truncated),
+        rootMissing: Boolean(payload?.rootMissing),
+        rootChanged: Boolean(payload?.rootChanged)
+      });
       void reconcileFolderWatchChange(payload);
     });
     setFolderWatchState(previous => ({ ...previous, rootPath: watchPath, error: null }));
@@ -1601,6 +1627,12 @@ export default function App() {
                 <strong>Ask Siri could not return a result.</strong>
                 <span>{assistantResult?.error || 'The Shortcut returned no usable output.'}</span>
                 {assistantResult?.setupRequired && <span>Create or enable the named Shortcut, then try again.</span>}
+                {assistantResult?.diagnostics && (
+                  <details className="assistant-diagnostics">
+                    <summary>Technical diagnostics</summary>
+                    <code>{JSON.stringify(assistantResult.diagnostics, null, 2)}</code>
+                  </details>
+                )}
               </div>
             )}
           </section>
