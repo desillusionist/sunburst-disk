@@ -979,8 +979,46 @@ body {
   border-color: var(--matrix-line-bright);
   background: rgba(57,255,102,.12);
 }
-.theme-matrix .scan-progress-bar-bg { background: #06150a; border-color: var(--matrix-line); }
-.theme-matrix .scan-progress-bar-fill { background: linear-gradient(90deg, #1d9e3c, #7dff91); box-shadow: 0 0 8px rgba(57,255,102,.5); }
+.theme-matrix .scan-loading-status {
+  width: min(640px, calc(100vw - 64px));
+  padding: 0;
+  gap: 7px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.theme-matrix .scan-loading-text {
+  align-self: center;
+  font-family: SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.theme-matrix .scan-progress-bar-bg {
+  height: 12px;
+  padding: 2px;
+  background: #020703;
+  border: 1px solid var(--matrix-line);
+  border-radius: 0;
+  box-shadow: inset 0 0 5px rgba(57,255,102,.16);
+}
+.theme-matrix .scan-progress-bar-fill {
+  border-radius: 0;
+  background: repeating-linear-gradient(
+    90deg,
+    #39ff66 0,
+    #39ff66 5px,
+    #0d5420 5px,
+    #0d5420 7px
+  );
+  box-shadow: none;
+}
+.theme-matrix .scan-progress-status {
+  font-family: SFMono-Regular, Menlo, monospace;
+  letter-spacing: .2px;
+}
+.theme-matrix .scan-percent-text { text-shadow: none; }
 .theme-matrix .sunburst-stage::after {
   content: '';
   position: absolute;

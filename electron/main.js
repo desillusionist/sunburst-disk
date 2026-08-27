@@ -1020,11 +1020,16 @@ function notifyScanComplete(tree, scanPath) {
   } catch (error) {
     console.warn('Completion sound unavailable:', error.message);
   }
-  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('scan-complete', { title, body });
   }
 }
-
+ipcMain.handle('notify-scan-complete', async (_event, { scanPath, itemCount = 0 } = {}) => {
+  if (!isFilesystemPath(scanPath)) return { ok: false, error: 'Invalid scan path' };
+  const count = Number.isFinite(Number(itemCount)) ? Math.max(0, Number(itemCount)) : 0;
+  notifyScanComplete({ itemCount: count }, scanPath);
+  return { ok: true };
+});
 function runDu(targetPath) {
   return new Promise((resolve, reject) => {
     // -a all entries, -k kilobyte blocks, -x one filesystem
@@ -1167,9 +1172,15 @@ ipcMain.handle('scan-directory', async (event, { targetPath, detailDepth = 10 } 
     }
     if (isStartup) tree.name = 'iDāsOS';
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('scan-progress', { currentDir: 'Complete', itemsScanned: tree.itemCount || 0, percent: 100 });
+      // 100% is reserved for the renderer commit below. At this point the
+      // filesystem walk is complete, but the IPC result and UI tree still
+      // need to cross the renderer boundary.
+      mainWindow.webContents.send('scan-progress', {
+        currentDir: 'Finalizing index…',
+        itemsScanned: tree.itemCount || 0,
+        percent: 99
+      });
     }
-    notifyScanComplete(tree, realPath);
     return { tree };
   } catch (error) {
     return { error: error.message };

@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   chooseFolder:          ()                     => ipcRenderer.invoke('choose-folder'),
   smartCleanPreview:     (scope, paths = {})    => ipcRenderer.invoke('smart-clean-preview', { scope, ...paths }),
   scanDirectory:         (targetPath, detailDepth) => ipcRenderer.invoke('scan-directory', { targetPath, detailDepth }),
+  notifyScanComplete:     (scanPath, itemCount = 0) => ipcRenderer.invoke('notify-scan-complete', { scanPath, itemCount }),
   scanSubdir:            (targetPath, includePackageContents = false) => ipcRenderer.invoke('scan-subdir', { targetPath, includePackageContents }),
   deleteItems:           (items)                => ipcRenderer.invoke('delete-items', items),
   revealInFinder:        (itemPath)             => ipcRenderer.invoke('reveal-in-finder', itemPath),

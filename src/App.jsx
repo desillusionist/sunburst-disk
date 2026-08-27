@@ -387,6 +387,7 @@ export default function App() {
   const [scanNotice, setScanNotice]     = useState(null);
 
   const [scanProgress, setScanProgress]     = useState({ percent: 0, currentDir: '', itemsScanned: 0 });
+  const pendingScanCompletionRef = useRef(null);
   const [collector, setCollector]           = useState([]);
   const [isDragOver, setIsDragOver]         = useState(false);
   const [collectorExpanded, setCollectorExpanded] = useState(false);
@@ -733,6 +734,18 @@ export default function App() {
       } catch {}
     });
   }, [collectItem]);
+  // The main process reports filesystem-walk completion before the renderer has
+  // committed the returned tree. Defer the native notification until the final
+  // tree is visible, so its sound cannot precede the actual 100% UI state.
+  useEffect(() => {
+    if (loading || !scannedTree || !pendingScanCompletionRef.current || !window.electronAPI?.notifyScanComplete) return undefined;
+    const payload = pendingScanCompletionRef.current;
+    pendingScanCompletionRef.current = null;
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.notifyScanComplete(payload.scanPath, payload.itemCount).catch(() => {});
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loading, scannedTree]);
 
   const fetchDrives = async () => {
     try {
@@ -747,6 +760,7 @@ export default function App() {
     setDriveMenuKey(null);
     setScanError(null);
     setScanNotice(null);
+    pendingScanCompletionRef.current = null;
     setHistoryBack([]);
     setHistoryForward([]);
     setCurrentDrive(drive);
@@ -779,6 +793,15 @@ export default function App() {
           setNavStack([data.tree]);
           setFocusedNode(data.tree);
           setItemDetails(null);
+          setScanProgress({
+            percent: 100,
+            currentDir: 'Complete',
+            itemsScanned: data.tree.itemCount || 0
+          });
+          pendingScanCompletionRef.current = {
+            scanPath,
+            itemCount: data.tree.itemCount || 0
+          };
           setLoading(false);
           return;
         }
