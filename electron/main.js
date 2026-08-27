@@ -693,6 +693,28 @@ function listMacShortcuts() {
     });
   });
 }
+function runAskSiriShortcut(prompt) {
+  return new Promise(resolve => {
+    const child = execFile(
+      '/usr/bin/shortcuts',
+      ['run', ASK_SIRI_SHORTCUT_NAME, '--input-path', '-'],
+      { timeout: 120000, maxBuffer: 8 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          resolve({ ok: false, error: String(stderr || error.message || 'Shortcut failed').trim() });
+          return;
+        }
+        const output = String(stdout || '').trim();
+        resolve({
+          ok: true,
+          output: output || 'The Shortcut completed but returned no text output.'
+        });
+      }
+    );
+    child.stdin.on('error', () => {});
+    child.stdin.end(prompt, 'utf8');
+  });
+}
 function buildAskSiriPrompt(itemPath, itemName, item = {}) {
   const type = item.type === 'directory' ? 'folder' : 'file';
   const parent = path.basename(path.dirname(itemPath)) || 'unknown parent';
@@ -729,25 +751,34 @@ async function askSiriForItem({ itemPath, itemName, item } = {}) {
     };
   }
   const prompt = buildAskSiriPrompt(itemPath, itemName, item);
-  const shortcutUrl = `shortcuts://run-shortcut?name=${encodeURIComponent(ASK_SIRI_SHORTCUT_NAME)}&input=text&text=${encodeURIComponent(prompt)}`;
-  try {
-    await shell.openExternal(shortcutUrl);
-    return { ok: true, shortcutName: ASK_SIRI_SHORTCUT_NAME };
-  } catch (error) {
-    return { ok: false, error: error.message };
-  }
+  const result = await runAskSiriShortcut(prompt);
+  return {
+    ...result,
+    shortcutName: ASK_SIRI_SHORTCUT_NAME,
+    item: {
+      ...(item || {}),
+      path: itemPath,
+      name: itemName || item?.name || path.basename(itemPath)
+    }
+  };
 }
 async function handleAskSiriFromMenu(payload) {
-  const result = await askSiriForItem(payload);
-  if (!result.ok && mainWindow && !mainWindow.isDestroyed()) {
-    await dialog.showMessageBox(mainWindow, {
-      type: result.setupRequired ? 'info' : 'error',
-      title: result.setupRequired ? 'Set up Ask Siri' : 'Ask Siri unavailable',
-      message: result.setupRequired ? 'Sunburst Disk opened Shortcuts for setup.' : 'Ask Siri could not be started.',
-      detail: result.error,
-      buttons: ['OK']
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('ask-siri-start', {
+      item: {
+        ...(payload?.item || {}),
+        path: payload?.itemPath,
+        name: payload?.itemName || payload?.item?.name || path.basename(payload?.itemPath || '')
+      }
     });
   }
+  const result = await askSiriForItem(payload);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('ask-siri-result', result);
+  }
+  // Setup is the only case that may open the external Shortcuts app. Runtime
+  // failures are delivered to the in-app assistant panel through the result
+  // event above; no secondary native dialog is shown.
   return result;
 }
 ipcMain.handle('ask-siri', async (event, payload = {}) => handleAskSiriFromMenu(payload));

@@ -23,6 +23,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   scanHiddenSpace:        (knownSize = 0)        => ipcRenderer.invoke('scan-hidden-space', { knownSize }),
   onScanProgress:        (cb)                   => ipcRenderer.on('scan-progress', (_, data) => cb(data)),
   onScanComplete:        (cb)                   => ipcRenderer.on('scan-complete', (_, data) => cb(data)),
+  onAskSiriStart:         (cb)                   => {
+    const listener = (_e, data) => cb(data);
+    ipcRenderer.on('ask-siri-start', listener);
+    return () => ipcRenderer.removeListener('ask-siri-start', listener);
+  },
+  onAskSiriResult:        (cb)                   => {
+    const listener = (_e, data) => cb(data);
+    ipcRenderer.on('ask-siri-result', listener);
+    return () => ipcRenderer.removeListener('ask-siri-result', listener);
+  },
   onAddToCollectorRequest: (callback)            => ipcRenderer.on('add-to-collector-request', (_e, item) => callback(item)),
   onTogglePackageContentsRequest: (callback)    => {
     const listener = (_e, item) => callback(item);

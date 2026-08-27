@@ -412,6 +412,10 @@ export default function App() {
   const [smartCleanMenuOpen, setSmartCleanMenuOpen] = useState(false);
   const [smartCleanScope, setSmartCleanScope] = useState('storage');
   const [smartCleanRiskFilter, setSmartCleanRiskFilter] = useState('all');
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantLoading, setAssistantLoading] = useState(false);
+  const [assistantItem, setAssistantItem] = useState(null);
+  const [assistantResult, setAssistantResult] = useState(null);
 
   const terminalDragRef = useRef(null);
   const breadcrumbRef = useRef(null);
@@ -712,6 +716,17 @@ export default function App() {
     window.electronAPI.onScanProgress?.(prog => {
       setScanProgress(prev => ({ ...prev, ...prog }));
     });
+    const removeAskSiriStart = window.electronAPI.onAskSiriStart?.(({ item } = {}) => {
+      setAssistantItem(item || null);
+      setAssistantResult(null);
+      setAssistantLoading(true);
+      setAssistantOpen(true);
+    });
+    const removeAskSiriResult = window.electronAPI.onAskSiriResult?.(payload => {
+      setAssistantLoading(false);
+      setAssistantResult(payload || { ok: false, error: 'No result returned.' });
+      setAssistantOpen(true);
+    });
     window.electronAPI.onScanComplete?.(payload => {
       setScanNotice(payload);
       window.setTimeout(() => setScanNotice(null), 5200);
@@ -733,6 +748,10 @@ export default function App() {
         }
       } catch {}
     });
+    return () => {
+      removeAskSiriStart?.();
+      removeAskSiriResult?.();
+    };
   }, [collectItem]);
   // The main process reports filesystem-walk completion before the renderer has
   // committed the returned tree. Defer the native notification until the final
@@ -1354,6 +1373,46 @@ export default function App() {
 
   return (
     <div className={`mac-window ${matrixTheme ? 'theme-matrix' : ''}`} onClick={() => { setContextMenu(null); }}>
+      {assistantOpen && (
+        <div className="assistant-backdrop" onClick={() => setAssistantOpen(false)}>
+          <section
+            className="assistant-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="assistant-title"
+            onClick={event => event.stopPropagation()}
+          >
+            <div className="assistant-header">
+              <div>
+                <div className="assistant-kicker">ASK SIRI / SHORTCUT</div>
+                <h2 id="assistant-title">Object information</h2>
+                {assistantItem?.name && <div className="assistant-subject" title={assistantItem.path}>{assistantItem.name}</div>}
+              </div>
+              <button className="assistant-close" aria-label="Close Ask Siri result" title="Close" onClick={() => setAssistantOpen(false)}>
+                <X size={15} />
+              </button>
+            </div>
+            {assistantLoading ? (
+              <div className="assistant-loading" role="status" aria-live="polite">
+                <span>Researching with Shortcuts…</span>
+                <span className="assistant-loading-subtitle">The result will return here when the background shortcut finishes.</span>
+              </div>
+            ) : assistantResult?.ok ? (
+              <>
+                <div className="assistant-result-meta">Returned by {assistantResult.shortcutName || 'Sunburst Disk — Ask Siri'}</div>
+                <div className="assistant-output">{assistantResult.output}</div>
+                <div className="assistant-note">Informational result only. Sunburst Disk does not delete, move or modify anything from this panel.</div>
+              </>
+            ) : (
+              <div className="assistant-error" role="alert">
+                <strong>Ask Siri could not return a result.</strong>
+                <span>{assistantResult?.error || 'The Shortcut returned no usable output.'}</span>
+                {assistantResult?.setupRequired && <span>Create or enable the named Shortcut, then try again.</span>}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
 
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <header className="mac-header">

@@ -979,22 +979,6 @@ body {
   border-color: var(--matrix-line-bright);
   background: rgba(57,255,102,.12);
 }
-.theme-matrix .scan-loading-status {
-  width: min(640px, calc(100vw - 64px));
-  padding: 0;
-  gap: 7px;
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-}
-.theme-matrix .scan-loading-text {
-  align-self: center;
-  font-family: SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-}
 .theme-matrix .scan-progress-bar-bg {
   height: 12px;
   padding: 2px;
@@ -1014,11 +998,6 @@ body {
   );
   box-shadow: none;
 }
-.theme-matrix .scan-progress-status {
-  font-family: SFMono-Regular, Menlo, monospace;
-  letter-spacing: .2px;
-}
-.theme-matrix .scan-percent-text { text-shadow: none; }
 .theme-matrix .sunburst-stage::after {
   content: '';
   position: absolute;
@@ -1496,3 +1475,131 @@ body {
 .theme-matrix .smart-clean-summary-actions button,
 .theme-matrix .smart-clean-export { border-color: var(--matrix-line); background: var(--matrix-panel-soft); color: var(--matrix-text); }
 .theme-matrix .smart-clean-export { background: rgba(57,255,102,.12); }
+
+/* ── In-app Ask Siri result drawer ───────────────────────────────────────── */
+.assistant-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 220;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 58px 16px 16px;
+  background: rgba(0, 0, 0, .22);
+}
+.assistant-drawer {
+  display: flex;
+  flex-direction: column;
+  width: min(620px, calc(100% - 18px));
+  max-height: min(680px, calc(100% - 70px));
+  padding: 16px;
+  overflow: hidden;
+  border: 1px solid #526071;
+  border-radius: 9px;
+  background: rgba(28, 33, 41, .98);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, .42);
+  color: #d1d5db;
+}
+.assistant-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid rgba(255, 255, 255, .09);
+}
+.assistant-kicker,
+.assistant-result-meta {
+  color: #8d98a8;
+  font-family: SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  letter-spacing: .7px;
+  text-transform: uppercase;
+}
+.assistant-header h2 {
+  margin: 4px 0 3px;
+  color: #f3f4f6;
+  font-size: 15px;
+  font-weight: 600;
+}
+.assistant-subject {
+  max-width: 510px;
+  overflow: hidden;
+  color: #aeb7c4;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.assistant-close {
+  display: grid;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid #4c5665;
+  border-radius: 5px;
+  background: transparent;
+  color: #aeb7c4;
+  cursor: pointer;
+}
+.assistant-close:hover { border-color: #93c5fd; color: #fff; }
+.assistant-loading,
+.assistant-error {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 22px 4px 8px;
+  font-size: 12px;
+}
+.assistant-loading-subtitle,
+.assistant-error span {
+  color: #8d98a8;
+  font-size: 10px;
+  line-height: 1.45;
+}
+.assistant-result-meta { padding: 12px 0 8px; }
+.assistant-output {
+  min-height: 120px;
+  max-height: 470px;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 5px;
+  background: #171b21;
+  color: #e5e7eb;
+  font-size: 12px;
+  line-height: 1.52;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.assistant-note {
+  padding-top: 9px;
+  color: #7f8998;
+  font-size: 10px;
+  line-height: 1.4;
+}
+.assistant-error strong { color: #fca5a5; font-size: 12px; }
+.theme-matrix .assistant-backdrop { background: rgba(0, 8, 2, .42); }
+.theme-matrix .assistant-drawer {
+  border-color: var(--matrix-line-bright);
+  background: #020703;
+  box-shadow: 0 0 24px rgba(57, 255, 102, .16), inset 0 0 18px rgba(57, 255, 102, .035);
+  color: var(--matrix-text);
+}
+.theme-matrix .assistant-header { border-bottom-color: rgba(57, 255, 102, .28); }
+.theme-matrix .assistant-kicker,
+.theme-matrix .assistant-result-meta,
+.theme-matrix .assistant-loading-subtitle,
+.theme-matrix .assistant-error span,
+.theme-matrix .assistant-note { color: var(--matrix-text-dim); }
+.theme-matrix .assistant-header h2,
+.theme-matrix .assistant-loading { color: var(--matrix-text); }
+.theme-matrix .assistant-subject { color: #8ee99d; }
+.theme-matrix .assistant-close { border-color: var(--matrix-line); color: var(--matrix-text-dim); }
+.theme-matrix .assistant-close:hover { border-color: var(--matrix-line-bright); color: var(--matrix-text); }
+.theme-matrix .assistant-output {
+  border-color: rgba(57, 255, 102, .35);
+  background: #010501;
+  color: #baffc3;
+}
+.theme-matrix .assistant-error strong { color: #ff9f9f; }
