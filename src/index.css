@@ -1675,6 +1675,10 @@ body {
   border-color: rgba(218, 170, 83, .55);
   color: #dcae55;
 }
+.folder-watch-badge.error {
+  border-color: rgba(248, 113, 113, .5);
+  color: #fca5a5;
+}
 .theme-matrix .folder-watch-badge {
   border-color: var(--matrix-line);
   color: var(--matrix-text-dim);

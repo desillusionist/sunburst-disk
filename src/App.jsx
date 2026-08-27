@@ -2215,7 +2215,10 @@ export default function App() {
                 {folderWatchState.updating && (
                   <span className="folder-watch-badge updating" title="The open folder is being reconciled with the filesystem"> Updating…</span>
                 )}
-                {!folderWatchState.updating && folderWatchState.active && (
+                {!folderWatchState.updating && folderWatchState.error && (
+                  <span className="folder-watch-badge error" title={folderWatchState.error}> Watch error</span>
+                )}
+                {!folderWatchState.updating && !folderWatchState.error && folderWatchState.active && (
                   <span className="folder-watch-badge" title="Changes in this open folder are monitored and reconciled"> Live</span>
                 )}
               </div>
