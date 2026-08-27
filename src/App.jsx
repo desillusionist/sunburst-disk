@@ -182,7 +182,30 @@ function getNodeChain(tree, targetPath) {
   }
   return visit(tree) ? chain : [];
 }
-
+function isWithinPath(candidatePath, rootPath) {
+  if (typeof candidatePath !== 'string' || typeof rootPath !== 'string') return false;
+  const candidate = candidatePath.replace(/\/+$/, '') || '/';
+  const root = rootPath.replace(/\/+$/, '') || '/';
+  return candidate === root || candidate.startsWith(`${root === '/' ? '' : root}/`);
+}
+function pathDirname(value) {
+  if (typeof value !== 'string' || value === '/') return '/';
+  const trimmed = value.replace(/\/+$/, '');
+  const index = trimmed.lastIndexOf('/');
+  return index <= 0 ? '/' : trimmed.slice(0, index);
+}
+function replaceNodeWithDelta(tree, targetPath, updatedNode) {
+  if (!tree) return tree;
+  if (tree.path === targetPath) return { ...updatedNode, path: targetPath };
+  if (!tree.children?.length) return tree;
+  let changed = false;
+  const children = tree.children.map(child => {
+    const next = replaceNodeWithDelta(child, targetPath, updatedNode);
+    if (next !== child) changed = true;
+    return next;
+  });
+  return changed ? { ...tree, children } : tree;
+}
 const TYPE_ORDER = { directory: 0, file: 1, special: 2 };
 const DEFAULT_VIEW_OPTIONS = {
   sortBy: 'size',
@@ -418,8 +441,14 @@ export default function App() {
   const [assistantItem, setAssistantItem] = useState(null);
   const [assistantResult, setAssistantResult] = useState(null);
   const [assistantCopied, setAssistantCopied] = useState(false);
+  const [folderWatchState, setFolderWatchState] = useState({ active: false, rootPath: null, updating: false, error: null, lastChangedAt: null });
 
   const terminalDragRef = useRef(null);
+  const folderWatchTreeRef = useRef(null);
+  const folderWatchTargetRef = useRef(null);
+  const folderWatchBusyRef = useRef(false);
+  const folderWatchQueuedRef = useRef(null);
+  const folderWatchGenerationRef = useRef(0);
   const breadcrumbRef = useRef(null);
   const breadcrumbMeasureRef = useRef(null);
   const countdownTimerRef = useRef(null);
@@ -684,6 +713,129 @@ export default function App() {
       window.removeEventListener('pointerup', stop);
     };
   }, []);
+
+  useEffect(() => {
+    folderWatchTreeRef.current = scannedTree;
+    folderWatchTargetRef.current = currentViewNode;
+  }, [currentViewNode, scannedTree]);
+
+  const reconcileFolderWatchChange = useCallback(async payload => {
+    const targetNode = folderWatchTargetRef.current;
+    const tree = folderWatchTreeRef.current;
+    if (!payload || !targetNode?.path || targetNode.type !== 'directory' || !tree) return;
+    if (payload.rootPath !== targetNode.path || folderWatchGenerationRef.current === 0) return;
+    if (folderWatchBusyRef.current) {
+      folderWatchQueuedRef.current = payload;
+      return;
+    }
+
+    const rootPath = targetNode.path;
+    const knownDirectoryForPath = changedPath => {
+      let candidatePath = changedPath;
+      while (candidatePath && isWithinPath(candidatePath, rootPath)) {
+        const knownNode = resolveByPath(tree, candidatePath);
+        if (knownNode?.type === 'directory') return candidatePath;
+        if (candidatePath === rootPath) break;
+        const parentPath = pathDirname(candidatePath);
+        if (parentPath === candidatePath) break;
+        candidatePath = parentPath;
+      }
+      return rootPath;
+    };
+    const targetPaths = payload.fullScan
+      ? [rootPath]
+      : [...new Set((payload.changedPaths || [])
+        .filter(changedPath => typeof changedPath === 'string' && isWithinPath(changedPath, rootPath))
+        .map(knownDirectoryForPath))].slice(0, 4);
+    if (!targetPaths.length) return;
+
+    folderWatchBusyRef.current = true;
+    setFolderWatchState(previous => ({ ...previous, updating: true, lastChangedAt: payload.observedAt || Date.now() }));
+    try {
+      let nextTree = folderWatchTreeRef.current;
+      for (const targetPath of targetPaths) {
+        const result = await window.electronAPI.scanSubdir(targetPath);
+        if (!result?.tree) throw new Error(result?.error || 'Folder reconciliation returned no tree');
+        const updated = replaceNodeWithDelta(nextTree, targetPath, result.tree);
+        if (updated) nextTree = updated;
+      }
+      if (folderWatchGenerationRef.current === 0) return;
+      folderWatchTreeRef.current = nextTree;
+      setScannedTree(nextTree);
+      setNavStack(previous => previous.map(node => {
+        const updated = resolveByPath(nextTree, node.path);
+        return updated || node;
+      }));
+      setFocusedNode(previous => previous?.path ? resolveByPath(nextTree, previous.path) || previous : previous);
+      setFolderWatchState(previous => ({ ...previous, updating: false, error: null }));
+    } catch (error) {
+      setFolderWatchState(previous => ({ ...previous, updating: false, error: error.message || 'Folder update failed' }));
+    } finally {
+      folderWatchBusyRef.current = false;
+      const queued = folderWatchQueuedRef.current;
+      folderWatchQueuedRef.current = null;
+      if (queued && folderWatchGenerationRef.current !== 0) {
+        window.setTimeout(() => { void reconcileFolderWatchChange(queued); }, 0);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const api = window.electronAPI;
+    const watchPath = viewState === 'scan'
+      && !loading
+      && currentViewNode?.type === 'directory'
+      && currentViewNode.path
+      && !currentViewNode.path.startsWith('__')
+      ? currentViewNode.path
+      : null;
+    const generation = folderWatchGenerationRef.current + 1;
+    folderWatchGenerationRef.current = generation;
+    folderWatchQueuedRef.current = null;
+    folderWatchBusyRef.current = false;
+
+    if (!api?.watchCurrentFolder || !api?.onFolderWatchChange || !watchPath) {
+      setFolderWatchState(previous => ({ ...previous, active: false, updating: false, rootPath: null, error: null }));
+      if (api?.stopCurrentFolderWatcher) void api.stopCurrentFolderWatcher();
+      return undefined;
+    }
+
+    const isCurrentGeneration = () => folderWatchGenerationRef.current === generation;
+    const removeStatus = api.onFolderWatchStatus?.(status => {
+      if (!isCurrentGeneration()) return;
+      setFolderWatchState(previous => ({
+        ...previous,
+        active: Boolean(status?.active),
+        rootPath: status?.rootPath || watchPath,
+        error: status?.error || (status?.disabled ? 'Watcher disabled for protected or storage root' : null)
+      }));
+    });
+    const removeChange = api.onFolderWatchChange(payload => {
+      if (!isCurrentGeneration()) return;
+      void reconcileFolderWatchChange(payload);
+    });
+    setFolderWatchState(previous => ({ ...previous, rootPath: watchPath, error: null }));
+    void api.watchCurrentFolder(watchPath).then(result => {
+      if (!isCurrentGeneration()) return;
+      setFolderWatchState(previous => ({
+        ...previous,
+        active: Boolean(result?.active),
+        rootPath: result?.rootPath || watchPath,
+        error: result?.error || null
+      }));
+    }).catch(error => {
+      if (isCurrentGeneration()) setFolderWatchState(previous => ({ ...previous, active: false, error: error.message || 'Watcher could not start' }));
+    });
+
+    return () => {
+      folderWatchGenerationRef.current += 1;
+      folderWatchQueuedRef.current = null;
+      folderWatchBusyRef.current = false;
+      removeStatus?.();
+      removeChange?.();
+      if (api.stopCurrentFolderWatcher) void api.stopCurrentFolderWatcher();
+    };
+  }, [currentViewNode?.path, currentViewNode?.type, loading, reconcileFolderWatchChange, viewState]);
 
   // Close context menu on outside click
   useEffect(() => {
@@ -2016,6 +2168,12 @@ export default function App() {
                 )}
                 {previewNode?.previewLimited && !isFileHover && (
                   <span className="legend-preview-badge"> top 100</span>
+                )}
+                {folderWatchState.updating && (
+                  <span className="folder-watch-badge updating" title="The open folder is being reconciled with the filesystem"> Updating…</span>
+                )}
+                {!folderWatchState.updating && folderWatchState.active && (
+                  <span className="folder-watch-badge" title="Changes in this open folder are monitored and reconciled"> Live</span>
                 )}
               </div>
               <div className="legend-header-actions">

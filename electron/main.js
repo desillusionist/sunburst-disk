@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, shell, Menu, dialog, Notification } from '
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
-import { exec, execFile } from 'child_process';
+import { exec, execFile, spawn } from 'child_process';
 import os from 'os';
 import { createHash } from 'crypto';
 
@@ -62,6 +62,181 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+const FSEVENT_FLAGS = Object.freeze({
+  mustScanSubDirs: 0x00000001,
+  userDropped: 0x00000002,
+  kernelDropped: 0x00000004,
+  eventIdsWrapped: 0x00000008,
+  rootChanged: 0x00000020,
+  itemCreated: 0x00000100,
+  itemRemoved: 0x00000200,
+  itemRenamed: 0x00000800,
+  itemModified: 0x00001000,
+  itemMetaChanged: 0x0000fc00
+});
+const FOLDER_WATCH_DEBOUNCE_MS = 450;
+const FOLDER_WATCH_MAX_PATHS = 256;
+let folderWatcher = null;
+
+function sendFolderWatchEvent(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+}
+
+function stopFolderWatcher() {
+  const state = folderWatcher;
+  folderWatcher = null;
+  if (!state) return;
+  if (state.timer) clearTimeout(state.timer);
+  state.timer = null;
+  if (state.child && !state.child.killed) state.child.kill('SIGTERM');
+  sendFolderWatchEvent('folder-watch-status', {
+    active: false,
+    rootPath: state.rootPath,
+    reason: 'stopped'
+  });
+}
+
+function flushFolderWatcher(state) {
+  if (folderWatcher !== state) return;
+  const changedPaths = [...state.pendingPaths].slice(0, FOLDER_WATCH_MAX_PATHS).map(eventPath => {
+    if (eventPath === state.canonicalRoot) return state.rootPath;
+    if (isWithinRoot(eventPath, state.canonicalRoot)) {
+      return path.join(state.rootPath, eventPath.slice(state.canonicalRoot.length + 1));
+    }
+    return state.rootPath;
+  });
+  const rootMissing = !fs.existsSync(state.canonicalRoot);
+  const payload = {
+    rootPath: state.rootPath,
+    changedPaths,
+    fullScan: state.needsFullScan || rootMissing,
+    rootChanged: state.rootChanged,
+    rootMissing,
+    truncated: state.pendingPaths.size > FOLDER_WATCH_MAX_PATHS,
+    observedAt: Date.now()
+  };
+  state.pendingPaths.clear();
+  state.needsFullScan = false;
+  state.rootChanged = false;
+  state.timer = null;
+  sendFolderWatchEvent('folder-watch-change', payload);
+}
+
+function queueFolderWatcherEvent(state, event) {
+  const eventPath = typeof event?.path === 'string' ? path.resolve(event.path) : state.canonicalRoot;
+  const flags = Number(event?.flags) || 0;
+  const itemEvent = Boolean(flags & (FSEVENT_FLAGS.itemCreated
+    | FSEVENT_FLAGS.itemRemoved
+    | FSEVENT_FLAGS.itemRenamed
+    | FSEVENT_FLAGS.itemModified
+    | FSEVENT_FLAGS.itemMetaChanged));
+  const dropped = Boolean(flags & (FSEVENT_FLAGS.userDropped
+    | FSEVENT_FLAGS.kernelDropped
+    | FSEVENT_FLAGS.eventIdsWrapped));
+  const rootChanged = Boolean(flags & FSEVENT_FLAGS.rootChanged);
+  if (isWithinRoot(eventPath, state.canonicalRoot)) state.pendingPaths.add(eventPath);
+  if (dropped || rootChanged || ((flags & FSEVENT_FLAGS.mustScanSubDirs) && !itemEvent)) {
+    state.needsFullScan = true;
+  }
+  if (rootChanged) state.rootChanged = true;
+  if (state.timer) clearTimeout(state.timer);
+  state.timer = setTimeout(() => flushFolderWatcher(state), FOLDER_WATCH_DEBOUNCE_MS);
+}
+
+function startFolderWatcher(rootPath) {
+  if (process.platform !== 'darwin') return { ok: false, error: 'FSEvents watcher is available on macOS only' };
+  if (!isFilesystemPath(rootPath)) return { ok: false, error: 'Invalid folder watcher path' };
+  const displayRoot = path.resolve(rootPath);
+  let canonicalRoot;
+  try {
+    canonicalRoot = fs.realpathSync(displayRoot);
+    const stat = fs.statSync(canonicalRoot);
+    if (!stat.isDirectory()) return { ok: false, error: 'Watcher target is not a directory' };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+  if (isProtectedSystemPath(canonicalRoot) || canonicalRoot === '/System/Volumes/Data' || canonicalRoot === '/') {
+    stopFolderWatcher();
+    sendFolderWatchEvent('folder-watch-status', {
+      active: false,
+      rootPath: displayRoot,
+      disabled: true,
+      reason: 'protected-or-storage-root'
+    });
+    return { ok: true, active: false, disabled: true, rootPath: displayRoot };
+  }
+  const helperPath = path.join(__dirname, 'fsevents-watcher');
+  if (!fs.existsSync(helperPath)) {
+    return { ok: false, error: 'FSEvents helper is not built. Run npm run build:fsevents on macOS.' };
+  }
+
+  stopFolderWatcher();
+  const child = spawn(helperPath, [canonicalRoot], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const state = {
+    child,
+    rootPath: displayRoot,
+    canonicalRoot,
+    pendingPaths: new Set(),
+    needsFullScan: false,
+    rootChanged: false,
+    timer: null
+  };
+  folderWatcher = state;
+  let buffer = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', chunk => {
+    buffer += chunk;
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try { queueFolderWatcherEvent(state, JSON.parse(line)); } catch {}
+    }
+  });
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', () => {});
+  child.on('error', error => {
+    if (folderWatcher !== state) return;
+    folderWatcher = null;
+    if (state.timer) clearTimeout(state.timer);
+    sendFolderWatchEvent('folder-watch-status', {
+      active: false,
+      rootPath: displayRoot,
+      error: error.message,
+      reason: 'helper-error'
+    });
+  });
+  child.on('close', (code, signal) => {
+    if (folderWatcher !== state) return;
+    folderWatcher = null;
+    if (state.timer) clearTimeout(state.timer);
+    sendFolderWatchEvent('folder-watch-status', {
+      active: false,
+      rootPath: displayRoot,
+      reason: 'helper-closed',
+      code,
+      signal
+    });
+  });
+  sendFolderWatchEvent('folder-watch-status', {
+    active: true,
+    rootPath: displayRoot,
+    debounceMs: FOLDER_WATCH_DEBOUNCE_MS
+  });
+  return { ok: true, active: true, rootPath: displayRoot };
+}
+
+app.on('before-quit', () => stopFolderWatcher());
+
+// ─── Folder watcher ──────────────────────────────────────────────────────────
+ipcMain.handle('watch-current-folder', async (_event, { folderPath = null, enabled = true } = {}) => {
+  if (!enabled || !folderPath) {
+    stopFolderWatcher();
+    return { ok: true, active: false };
+  }
+  return startFolderWatcher(folderPath);
 });
 
 // ─── Folder scan picker ─────────────────────────────────────────────────────────
@@ -1177,8 +1352,10 @@ ipcMain.handle('scan-directory', async (event, { targetPath, detailDepth = 10 } 
       }
 
       tree = buildTreeFromDu('/System/Volumes/Data', dataLines, detailDepth);
+      const dataSystemNode = tree.children.find(child => child.path === '/System/Volumes/Data/System');
+      if (dataSystemNode) dataSystemNode.name = 'System (Data volume)';
       const sysTree = buildTreeFromDu('/System', restLines, detailDepth);
-      tree.children.push({ ...sysTree, name: 'System', path: '/System' });
+      tree.children.push({ ...sysTree, name: 'System (OS volume)', path: '/System' });
       tree.size += sysTree.size;
       tree.itemCount = (tree.itemCount || 0) + (sysTree.itemCount || 0);
       tree.children.sort((a, b) => (b.size || 0) - (a.size || 0));

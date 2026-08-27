@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   scanDirectory:         (targetPath, detailDepth) => ipcRenderer.invoke('scan-directory', { targetPath, detailDepth }),
   notifyScanComplete:     (scanPath, itemCount = 0) => ipcRenderer.invoke('notify-scan-complete', { scanPath, itemCount }),
   scanSubdir:            (targetPath, includePackageContents = false) => ipcRenderer.invoke('scan-subdir', { targetPath, includePackageContents }),
+  watchCurrentFolder:    (folderPath)            => ipcRenderer.invoke('watch-current-folder', { folderPath, enabled: true }),
+  stopCurrentFolderWatcher: ()                     => ipcRenderer.invoke('watch-current-folder', { enabled: false }),
   deleteItems:           (items)                => ipcRenderer.invoke('delete-items', items),
   revealInFinder:        (itemPath)             => ipcRenderer.invoke('reveal-in-finder', itemPath),
   showContextMenu:       (item)                 => ipcRenderer.invoke('show-context-menu', item),
@@ -22,6 +24,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   quickLook:              (itemPath)             => ipcRenderer.invoke('quick-look', itemPath),
   scanHiddenSpace:        (knownSize = 0)        => ipcRenderer.invoke('scan-hidden-space', { knownSize }),
   onScanProgress:        (cb)                   => ipcRenderer.on('scan-progress', (_, data) => cb(data)),
+  onFolderWatchChange:   (cb)                   => {
+    const listener = (_e, data) => cb(data);
+    ipcRenderer.on('folder-watch-change', listener);
+    return () => ipcRenderer.removeListener('folder-watch-change', listener);
+  },
+  onFolderWatchStatus:   (cb)                   => {
+    const listener = (_e, data) => cb(data);
+    ipcRenderer.on('folder-watch-status', listener);
+    return () => ipcRenderer.removeListener('folder-watch-status', listener);
+  },
   onScanComplete:        (cb)                   => ipcRenderer.on('scan-complete', (_, data) => cb(data)),
   onAskSiriStart:         (cb)                   => {
     const listener = (_e, data) => cb(data);

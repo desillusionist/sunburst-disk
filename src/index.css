@@ -1637,3 +1637,30 @@ body {
   background: rgba(57,255,102,.12);
   color: var(--matrix-text);
 }
+
+.folder-watch-badge {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 2px 5px;
+  border: 1px solid rgba(92, 173, 119, .45);
+  border-radius: 3px;
+  color: #72c98a;
+  font-family: SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  letter-spacing: .35px;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+.folder-watch-badge.updating {
+  border-color: rgba(218, 170, 83, .55);
+  color: #dcae55;
+}
+.theme-matrix .folder-watch-badge {
+  border-color: var(--matrix-line);
+  color: var(--matrix-text-dim);
+  text-shadow: 0 0 4px rgba(57,255,102,.2);
+}
+.theme-matrix .folder-watch-badge.updating {
+  border-color: rgba(188, 220, 90, .62);
+  color: #d1ee79;
+}
