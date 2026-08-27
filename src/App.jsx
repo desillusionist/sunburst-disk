@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ChevronDown, PanelRight, PanelRightClose, RefreshCw, ShieldCheck, ShieldAlert, LockKeyhole, AlertTriangle, Folder, FileText, Trash2, X, RotateCcw } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ChevronDown, PanelRight, PanelRightClose, RefreshCw, ShieldCheck, ShieldAlert, LockKeyhole, AlertTriangle, Folder, FileText, Trash2, X, RotateCcw, Copy } from 'lucide-react';
 import SunburstChart from './components/SunburstChart';
 import DetailsSidebar from './components/DetailsSidebar';
 import DebugDownbar from './components/DebugDownbar';
@@ -402,6 +402,7 @@ export default function App() {
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalCommand, setTerminalCommand] = useState('df -h');
   const [terminalHelpKey, setTerminalHelpKey] = useState('df -h');
+  const [terminalHelperHoverKey, setTerminalHelperHoverKey] = useState(null);
   const [terminalOutput, setTerminalOutput] = useState('');
   const [terminalBusy, setTerminalBusy] = useState(false);
   const [terminalFrame, setTerminalFrame] = useState({ left: 20, top: 20 });
@@ -416,6 +417,7 @@ export default function App() {
   const [assistantLoading, setAssistantLoading] = useState(false);
   const [assistantItem, setAssistantItem] = useState(null);
   const [assistantResult, setAssistantResult] = useState(null);
+  const [assistantCopied, setAssistantCopied] = useState(false);
 
   const terminalDragRef = useRef(null);
   const breadcrumbRef = useRef(null);
@@ -1335,6 +1337,29 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleQuickLook, loading, nodeLoading, pointerNode, viewState]);
 
+  const copyAssistantResult = useCallback(async () => {
+    const text = assistantResult?.output;
+    if (!text) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
+      }
+      setAssistantCopied(true);
+      window.setTimeout(() => setAssistantCopied(false), 1800);
+    } catch {
+      setAssistantCopied(false);
+    }
+  }, [assistantResult?.output]);
+
   const handleChartNeedChildren = useCallback((node) => {
     const liveNode = resolveByPath(scannedTree, node.path) || node;
     if (liveNode.children?.length) return;
@@ -1399,7 +1424,12 @@ export default function App() {
               </div>
             ) : assistantResult?.ok ? (
               <>
-                <div className="assistant-result-meta">Returned by {assistantResult.shortcutName || 'Sunburst Disk — Ask Siri'}</div>
+                <div className="assistant-result-toolbar">
+                  <div className="assistant-result-meta">Returned by {assistantResult.shortcutName || 'Sunburst Disk — Ask Siri'}</div>
+                  <button className="assistant-copy-btn" type="button" onClick={() => void copyAssistantResult()} title="Copy result to clipboard" aria-label="Copy result to clipboard">
+                    <Copy size={12} /> {assistantCopied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
                 <div className="assistant-output">{assistantResult.output}</div>
                 <div className="assistant-note">Informational result only. Sunburst Disk does not delete, move or modify anything from this panel.</div>
               </>
@@ -1931,16 +1961,22 @@ export default function App() {
                       className="terminal-command-preset"
                       title={preset.help}
                       aria-label={preset.help}
+                      onMouseEnter={() => setTerminalHelperHoverKey(preset.command)}
+                      onMouseLeave={() => setTerminalHelperHoverKey(null)}
+                      onFocus={() => setTerminalHelperHoverKey(preset.command)}
+                      onBlur={() => setTerminalHelperHoverKey(null)}
                       onClick={() => { setTerminalCommand(preset.command); setTerminalHelpKey(preset.command); }}
                     >
                       {preset.label}
                     </button>
                   ))}
                 </div>
-                {(() => {
-                  const preset = TERMINAL_COMMAND_PRESETS.find(item => item.command === terminalHelpKey) || TERMINAL_COMMAND_PRESETS[0];
+                {terminalHelperHoverKey && (() => {
+                  const preset = TERMINAL_COMMAND_PRESETS.find(item => item.command === terminalHelperHoverKey)
+                    || TERMINAL_COMMAND_PRESETS.find(item => item.command === terminalHelpKey)
+                    || TERMINAL_COMMAND_PRESETS[0];
                   return (
-                    <div className="terminal-command-help">
+                    <div className="terminal-command-help" role="tooltip">
                       <div className="terminal-help-title"><code>{preset.syntax}</code><span>Read-only helper</span></div>
                       <div><strong>Purpose:</strong> {preset.purpose}</div>
                       <div><strong>Options:</strong> {preset.options}</div>

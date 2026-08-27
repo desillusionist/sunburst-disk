@@ -1603,3 +1603,37 @@ body {
   color: #baffc3;
 }
 .theme-matrix .assistant-error strong { color: #ff9f9f; }
+
+/* Ask Siri result toolbar and clipboard action */
+.assistant-result-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 0 8px;
+}
+.assistant-result-toolbar .assistant-result-meta { padding: 0; }
+.assistant-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: 1px solid #4c5665;
+  border-radius: 4px;
+  background: #20252d;
+  color: #bfc7d2;
+  cursor: pointer;
+  font-size: 10px;
+}
+.assistant-copy-btn:hover { border-color: #93c5fd; color: #fff; background: #2a313c; }
+.theme-matrix .assistant-copy-btn {
+  border-color: var(--matrix-line);
+  background: #06150a;
+  color: var(--matrix-text-dim);
+}
+.theme-matrix .assistant-copy-btn:hover {
+  border-color: var(--matrix-line-bright);
+  background: rgba(57,255,102,.12);
+  color: var(--matrix-text);
+}
