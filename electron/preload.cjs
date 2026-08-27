@@ -9,6 +9,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteItems:           (items)                => ipcRenderer.invoke('delete-items', items),
   revealInFinder:        (itemPath)             => ipcRenderer.invoke('reveal-in-finder', itemPath),
   showContextMenu:       (item)                 => ipcRenderer.invoke('show-context-menu', item),
+  askSiri:               (item)                 => ipcRenderer.invoke('ask-siri', {
+    itemPath: item?.path,
+    itemName: item?.name,
+    item
+  }),
   inspectItem:            (itemPath)             => ipcRenderer.invoke('inspect-item', itemPath),
   inspectItems:           (itemPaths)            => ipcRenderer.invoke('inspect-items', itemPaths),
   inspectAppRelated:      (appPath)             => ipcRenderer.invoke('inspect-app-related', appPath),

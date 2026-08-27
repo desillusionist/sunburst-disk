@@ -671,6 +671,86 @@ ipcMain.handle('terminal-run-safe', async (event, { command = '', cwd = '' } = {
 });
 
 // ─── Context Menu ──────────────────────────────────────────────────────────────
+// ─── Ask Siri / Shortcuts bridge ────────────────────────────────────────────
+const ASK_SIRI_SHORTCUT_NAME = 'Sunburst Disk — Ask Siri';
+function formatPromptBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return 'unknown size';
+  if (value < 1024) return `${Math.round(value)} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let amount = value;
+  let unitIndex = -1;
+  do {
+    amount /= 1024;
+    unitIndex += 1;
+  } while (amount >= 1024 && unitIndex < units.length - 1);
+  return `${amount.toFixed(amount >= 100 ? 0 : amount >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+}
+function listMacShortcuts() {
+  return new Promise(resolve => {
+    execFile('/usr/bin/shortcuts', ['list'], { timeout: 5000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      resolve(error ? [] : String(stdout || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean));
+    });
+  });
+}
+function buildAskSiriPrompt(itemPath, itemName, item = {}) {
+  const type = item.type === 'directory' ? 'folder' : 'file';
+  const parent = path.basename(path.dirname(itemPath)) || 'unknown parent';
+  const extension = type === 'file' ? path.extname(itemName || itemPath) : '';
+  return [
+    'I selected this object in Sunburst Disk. Explain what it is used for, whether it is normally safe to remove, and what current web information is relevant. Do not recommend deletion solely from the name; distinguish cache, personal data, application data, and system data.',
+    `Name: ${String(itemName || path.basename(itemPath)).slice(0, 240)}`,
+    `Type: ${type}${extension ? ` (${extension})` : ''}`,
+    `Size: ${formatPromptBytes(item.size)}`,
+    `Parent folder: ${parent}`,
+    `Category: ${String(item.category || item.description || 'unknown').slice(0, 240)}`,
+    'Return a concise explanation with sources or a suggested web search when facts may have changed.'
+  ].join('\n');
+}
+async function askSiriForItem({ itemPath, itemName, item } = {}) {
+  if (process.platform !== 'darwin') {
+    return { ok: false, error: 'Ask Siri integration is available on macOS only' };
+  }
+  if (!isFilesystemPath(itemPath)) {
+    return { ok: false, error: 'Invalid filesystem path' };
+  }
+  const stat = await fs.promises.lstat(itemPath).catch(() => null);
+  if (!stat || (!stat.isFile() && !stat.isDirectory() && !stat.isSymbolicLink())) {
+    return { ok: false, error: 'The selected filesystem object is no longer available' };
+  }
+  const shortcutNames = await listMacShortcuts();
+  if (!shortcutNames.includes(ASK_SIRI_SHORTCUT_NAME)) {
+    await shell.openExternal('shortcuts://create-shortcut');
+    return {
+      ok: false,
+      setupRequired: true,
+      shortcutName: ASK_SIRI_SHORTCUT_NAME,
+      error: `Create a Shortcut named “${ASK_SIRI_SHORTCUT_NAME}” that receives Text and performs the web/Siri analysis.`
+    };
+  }
+  const prompt = buildAskSiriPrompt(itemPath, itemName, item);
+  const shortcutUrl = `shortcuts://run-shortcut?name=${encodeURIComponent(ASK_SIRI_SHORTCUT_NAME)}&input=text&text=${encodeURIComponent(prompt)}`;
+  try {
+    await shell.openExternal(shortcutUrl);
+    return { ok: true, shortcutName: ASK_SIRI_SHORTCUT_NAME };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+async function handleAskSiriFromMenu(payload) {
+  const result = await askSiriForItem(payload);
+  if (!result.ok && mainWindow && !mainWindow.isDestroyed()) {
+    await dialog.showMessageBox(mainWindow, {
+      type: result.setupRequired ? 'info' : 'error',
+      title: result.setupRequired ? 'Set up Ask Siri' : 'Ask Siri unavailable',
+      message: result.setupRequired ? 'Sunburst Disk opened Shortcuts for setup.' : 'Ask Siri could not be started.',
+      detail: result.error,
+      buttons: ['OK']
+    });
+  }
+  return result;
+}
+ipcMain.handle('ask-siri', async (event, payload = {}) => handleAskSiriFromMenu(payload));
 ipcMain.handle('show-context-menu', async (event, { itemPath, itemName, item, canDelete = true, packageContentsShown = false } = {}) => {
   if (!isFilesystemPath(itemPath)) return;
   const stat = await fs.promises.lstat(itemPath).catch(() => null);
@@ -680,6 +760,7 @@ ipcMain.handle('show-context-menu', async (event, { itemPath, itemName, item, ca
     { label: `▣ ${itemName}`, enabled: false },
     { type: 'separator' },
     { label: '◉ Quick Look', enabled: isFile, click: () => { void quickLookPath(itemPath); } },
+    { label: '◌ Ask Siri…', click: () => { void handleAskSiriFromMenu({ itemPath, itemName, item }); } },
     { label: '⌕ Reveal in Finder', click: () => shell.showItemInFolder(itemPath) },
     {
       label: packageContentsShown ? '▤ Hide Package Contents' : '▤ Show Package Contents',

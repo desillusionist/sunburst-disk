@@ -2078,6 +2078,13 @@ export default function App() {
             handleQuickLook(contextMenu.item);
             setContextMenu(null);
           }}>◉ Quick Look</div>
+          <div
+            className={`ctx-item ${window.electronAPI?.askSiri ? '' : 'disabled'}`}
+            onClick={() => {
+              if (window.electronAPI?.askSiri) void window.electronAPI.askSiri(contextMenu.item);
+              setContextMenu(null);
+            }}
+          >◌ Ask Siri…</div>
           <div className="ctx-item" onClick={() => {
             window.electronAPI?.revealInFinder(contextMenu.item.path);
             setContextMenu(null);

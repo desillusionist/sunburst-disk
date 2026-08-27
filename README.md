@@ -26,6 +26,8 @@
 
 Для обычного файла Quick Look открывается нажатием пробела, когда курсор находится над слайсом или строкой файла, через пункт native context menu или через иконку глаза в Details sidebar. Пульсирующая alpha-анимация используется как единственная hover-подсветка sunburst без постоянного glow-shadow.
 
+В native context menu доступен пункт `Ask Siri…`. Он передаёт ограниченное описание выбранного объекта в заранее созданный macOS Shortcut с именем `Sunburst Disk — Ask Siri` через документированный `shortcuts://run-shortcut` URL scheme. Shortcut может использовать web search, ChatGPT или другие действия, выбранные пользователем. Произвольный текстовый prompt нельзя напрямую внедрить в live Siri UI через публичный Electron API; если Shortcut отсутствует, приложение открывает Shortcuts для настройки вместо недокументированного UI-scripting.
+
 `hidden space...` является reconciliation-записью, а не обычным файлом. При запросе просмотра приложение проверяет Full Disk Access. Если разрешение отсутствует, macOS System Settings открывается на странице Privacy & Security → Full Disk Access. После выдачи разрешения пользователь повторяет запрос, и Disk Analyzer пытается показать диагностические категории вроде virtual memory, caches и document revisions. Эти данные остаются защищёнными от удаления.
 
 ## Сортировка и фильтрация
