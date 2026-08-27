@@ -199,12 +199,18 @@ function replaceNodeWithDelta(tree, targetPath, updatedNode) {
   if (tree.path === targetPath) return { ...updatedNode, path: targetPath };
   if (!tree.children?.length) return tree;
   let changed = false;
+  let sizeDelta = 0;
   const children = tree.children.map(child => {
     const next = replaceNodeWithDelta(child, targetPath, updatedNode);
-    if (next !== child) changed = true;
+    if (next !== child) {
+      changed = true;
+      sizeDelta += Number(next?.size || 0) - Number(child?.size || 0);
+    }
     return next;
   });
-  return changed ? { ...tree, children } : tree;
+  return changed
+    ? { ...tree, size: Math.max(0, Number(tree.size || 0) + sizeDelta), children }
+    : tree;
 }
 const TYPE_ORDER = { directory: 0, file: 1, special: 2 };
 const DEFAULT_VIEW_OPTIONS = {
@@ -759,7 +765,9 @@ export default function App() {
         const updated = replaceNodeWithDelta(nextTree, targetPath, result.tree);
         if (updated) nextTree = updated;
       }
-      if (folderWatchGenerationRef.current === 0) return;
+      if (folderWatchGenerationRef.current === 0
+        || folderWatchTargetRef.current?.path !== rootPath
+        || folderWatchTreeRef.current !== tree) return;
       folderWatchTreeRef.current = nextTree;
       setScannedTree(nextTree);
       setNavStack(previous => previous.map(node => {
@@ -769,12 +777,15 @@ export default function App() {
       setFocusedNode(previous => previous?.path ? resolveByPath(nextTree, previous.path) || previous : previous);
       setFolderWatchState(previous => ({ ...previous, updating: false, error: null }));
     } catch (error) {
-      setFolderWatchState(previous => ({ ...previous, updating: false, error: error.message || 'Folder update failed' }));
+      if (folderWatchTargetRef.current?.path === rootPath && folderWatchTreeRef.current === tree) {
+        setFolderWatchState(previous => ({ ...previous, updating: false, error: error.message || 'Folder update failed' }));
+      }
     } finally {
       folderWatchBusyRef.current = false;
       const queued = folderWatchQueuedRef.current;
       folderWatchQueuedRef.current = null;
-      if (queued && folderWatchGenerationRef.current !== 0) {
+      if (queued && folderWatchGenerationRef.current !== 0
+        && folderWatchTargetRef.current?.path === rootPath) {
         window.setTimeout(() => { void reconcileFolderWatchChange(queued); }, 0);
       }
     }

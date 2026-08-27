@@ -868,35 +868,48 @@ function listMacShortcuts() {
     });
   });
 }
-function runAskSiriShortcut(prompt) {
-  return new Promise(resolve => {
-    const child = execFile(
-      '/usr/bin/shortcuts',
-      ['run', ASK_SIRI_SHORTCUT_NAME, '--input-path', '-', '--output-path', '-', '--output-type', 'public.utf8-plain-text'],
-      { timeout: 120000, maxBuffer: 8 * 1024 * 1024 },
-      (error, stdout, stderr) => {
-        if (error) {
-          const detail = String(stderr || error.message || 'Shortcut failed').trim();
-          resolve({
-            ok: false,
-            error: `${detail}\n\nCheck that the shortcut accepts Text input and ends with Stop and Output. Do not use Show Result or Ask for Input in the background path.`
-          });
-          return;
-        }
-        const output = String(stdout || '').trim();
-        if (!output) {
-          resolve({
-            ok: false,
-            error: 'The Shortcut completed without returning text on stdout. Add a final Stop and Output (or another text-producing action), and remove Show Result from the input-present path.'
-          });
-          return;
-        }
-        resolve({ ok: true, output });
-      }
-    );
-    child.stdin.on('error', () => {});
-    child.stdin.end(prompt, 'utf8');
-  });
+async function runAskSiriShortcut(prompt) {
+  let tempDir = null;
+  try {
+    tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'sunburst-ask-siri-'));
+    const outputPath = path.join(tempDir, 'output.txt');
+
+    const processResult = await new Promise(resolve => {
+      const child = execFile(
+        '/usr/bin/shortcuts',
+        ['run', ASK_SIRI_SHORTCUT_NAME, '--output-path', outputPath, '--output-type', 'public.utf8-plain-text'],
+        { timeout: 120000, maxBuffer: 8 * 1024 * 1024 },
+        (error, stdout, stderr) => resolve({
+          error,
+          stdout: String(stdout || ''),
+          stderr: String(stderr || '')
+        })
+      );
+      child.stdin.on('error', () => {});
+      child.stdin.end(String(prompt || ''), 'utf8');
+    });
+    if (processResult.error) {
+      const detail = processResult.stderr.trim() || processResult.error.message || 'Shortcut failed';
+      return {
+        ok: false,
+        error: `${detail}\n\nCheck that the shortcut accepts piped Text input and ends with Stop and Output. Do not use Show Result or Ask for Input in the background path.`
+      };
+    }
+
+    const fileOutput = await fs.promises.readFile(outputPath, 'utf8').catch(() => '');
+    const output = String(fileOutput || processResult.stdout || '').trim();
+    if (!output) {
+      return {
+        ok: false,
+        error: 'The Shortcut completed without writing text to its output file. Set Stop and Output to the direct text result of the model, remove Show Response/Show Result, and test the pipe-to-output-file command from the project guide.'
+      };
+    }
+    return { ok: true, output };
+  } catch (error) {
+    return { ok: false, error: error.message || 'Shortcut could not be executed' };
+  } finally {
+    if (tempDir) await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 function buildAskSiriPrompt(itemPath, itemName, item = {}) {
   const type = item.type === 'directory' ? 'folder' : 'file';

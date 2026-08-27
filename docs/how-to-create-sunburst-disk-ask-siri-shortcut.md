@@ -1,6 +1,6 @@
 # How to Create “Sunburst Disk — Ask Siri” Shortcut
 
-This guide configures a macOS Shortcut that accepts an object description from Sunburst Disk, performs optional web/AI research, and returns plain text to Sunburst Disk. The result should appear in the Sunburst Disk **Object Information** panel, not in a separate Shortcuts result window.
+This guide configures a macOS Shortcut that accepts an object description from Sunburst Disk, performs optional web/AI research, and returns plain text to Sunburst Disk. Sunburst Disk pipes the prompt as text and uses a temporary output file because the macOS command-line tool documents `--input-path` for file input and `--output-path` for file output; a dash is not passed as the input path. The result should appear in the Sunburst Disk **Object Information** panel, not in a separate Shortcuts result window.
 
 > **Important:** Use the exact shortcut name `Sunburst Disk — Ask Siri`. The app checks this name before launching the background command.
 
@@ -75,18 +75,20 @@ If no input is received, the shortcut may use **Stop and Output** to return a sh
 Before testing from Sunburst Disk, run this harmless test in Terminal:
 
 ```sh
+output=$(mktemp -t sunburst-ask-siri-output).txt
 printf '%s\n' 'Explain what ~/Library/Caches is used for. Return a short text answer with official sources.' \\
   | shortcuts run "Sunburst Disk — Ask Siri" \\
-      --input-path - \\
-      --output-path - \\
+      --output-path "$output" \\
       --output-type public.utf8-plain-text
+cat "$output"
+rm -f "$output"
 ```
 
-The answer should be printed in Terminal. Shortcuts should not require a click and should not display a result window for this command-line run. If the command prints nothing, inspect the final Stop and Output variable. If it opens a result window, remove Show Response/Show Result and ensure that Stop and Output receives the model's text directly.
+The answer should be printed in Terminal after `cat "$output"`. The command should not require a click in Shortcuts or display a result window for this command-line run. If the output file is empty, inspect the final Stop and Output variable. If the command reports that the file is missing, verify that Stop and Output is the final action and that its value is the model's text. If it opens a result window, remove Show Response/Show Result and ensure that Stop and Output receives the model's text directly.
 
 ## 7. Use it from Sunburst Disk
 
-In Sunburst Disk, right-click a real file or folder in the content tree or Sunburst and choose **Ask Siri…**. The app opens an in-app **Object Information** panel, starts the named Shortcut through `/usr/bin/shortcuts`, sends the object description through stdin, captures plain-text stdout, and places the answer in the panel.
+In Sunburst Disk, right-click a real file or folder in the content tree or Sunburst and choose **Ask Siri…**. The app opens an in-app **Object Information** panel, starts the named Shortcut through `/usr/bin/shortcuts`, pipes the object description as text, asks Shortcuts to write a plain-text temporary `output.txt` with `--output-path`, reads the result, and deletes the temporary directory.
 
 The result panel is informational only. Sunburst Disk does not delete, move, rename, modify, or upload objects as a consequence of Ask Siri.
 
