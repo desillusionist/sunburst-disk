@@ -697,18 +697,26 @@ function runAskSiriShortcut(prompt) {
   return new Promise(resolve => {
     const child = execFile(
       '/usr/bin/shortcuts',
-      ['run', ASK_SIRI_SHORTCUT_NAME, '--input-path', '-'],
+      ['run', ASK_SIRI_SHORTCUT_NAME, '--input-path', '-', '--output-path', '-', '--output-type', 'public.utf8-plain-text'],
       { timeout: 120000, maxBuffer: 8 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (error) {
-          resolve({ ok: false, error: String(stderr || error.message || 'Shortcut failed').trim() });
+          const detail = String(stderr || error.message || 'Shortcut failed').trim();
+          resolve({
+            ok: false,
+            error: `${detail}\n\nCheck that the shortcut accepts Text input and ends with Stop and Output. Do not use Show Result or Ask for Input in the background path.`
+          });
           return;
         }
         const output = String(stdout || '').trim();
-        resolve({
-          ok: true,
-          output: output || 'The Shortcut completed but returned no text output.'
-        });
+        if (!output) {
+          resolve({
+            ok: false,
+            error: 'The Shortcut completed without returning text on stdout. Add a final Stop and Output (or another text-producing action), and remove Show Result from the input-present path.'
+          });
+          return;
+        }
+        resolve({ ok: true, output });
       }
     );
     child.stdin.on('error', () => {});
