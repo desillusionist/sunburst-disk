@@ -78,7 +78,26 @@ const FSEVENT_FLAGS = Object.freeze({
 });
 const FOLDER_WATCH_DEBOUNCE_MS = 450;
 const FOLDER_WATCH_MAX_PATHS = 256;
+const DATA_VOLUME_PREFIX = '/System/Volumes/Data';
+const DATA_FIRMLINK_ROOTS = ['/Applications', '/Library', '/Users', '/private', '/opt', '/Volumes'];
 let folderWatcher = null;
+
+function getFSEventPathCandidates(eventPath) {
+  const resolved = path.resolve(eventPath);
+  const candidates = new Set([resolved]);
+  if (resolved === DATA_VOLUME_PREFIX || resolved.startsWith(`${DATA_VOLUME_PREFIX}/`)) {
+    candidates.add(resolved.slice(DATA_VOLUME_PREFIX.length) || '/');
+  }
+  if (DATA_FIRMLINK_ROOTS.some(root => resolved === root || resolved.startsWith(`${root}/`))) {
+    candidates.add(path.join(DATA_VOLUME_PREFIX, resolved));
+  }
+  return [...candidates];
+}
+
+function mapFSEventPathToRoot(eventPath, canonicalRoot) {
+  return getFSEventPathCandidates(eventPath)
+    .find(candidate => isWithinRoot(candidate, canonicalRoot)) || null;
+}
 
 function sendFolderWatchEvent(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
@@ -125,7 +144,8 @@ function flushFolderWatcher(state) {
 }
 
 function queueFolderWatcherEvent(state, event) {
-  const eventPath = typeof event?.path === 'string' ? path.resolve(event.path) : state.canonicalRoot;
+  const rawEventPath = typeof event?.path === 'string' ? path.resolve(event.path) : state.canonicalRoot;
+  const eventPath = mapFSEventPathToRoot(rawEventPath, state.canonicalRoot);
   const flags = Number(event?.flags) || 0;
   const itemEvent = Boolean(flags & (FSEVENT_FLAGS.itemCreated
     | FSEVENT_FLAGS.itemRemoved
@@ -136,7 +156,8 @@ function queueFolderWatcherEvent(state, event) {
     | FSEVENT_FLAGS.kernelDropped
     | FSEVENT_FLAGS.eventIdsWrapped));
   const rootChanged = Boolean(flags & FSEVENT_FLAGS.rootChanged);
-  if (isWithinRoot(eventPath, state.canonicalRoot)) state.pendingPaths.add(eventPath);
+  if (eventPath) state.pendingPaths.add(eventPath);
+  else if (rawEventPath !== state.canonicalRoot) state.needsFullScan = true;
   if (dropped || rootChanged || ((flags & FSEVENT_FLAGS.mustScanSubDirs) && !itemEvent)) {
     state.needsFullScan = true;
   }
