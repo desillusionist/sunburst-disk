@@ -386,6 +386,15 @@ const TERMINAL_COMMAND_PRESETS = [
     options: '-h human-readable; -k 1024-byte blocks; -P portable format; -T type where supported.',
     examples: 'df -h\ndf -h /System/Volumes/Data',
     help: 'Show filesystem free/used space. -h human-readable, -k 1024-byte blocks, -P portable one-line format, -T filesystem type on supported macOS versions. Examples: df -h, df -h /System/Volumes/Data. This drawer executes the safe df -h template only.'
+  },
+  {
+    command: 'clear',
+    label: 'clear',
+    syntax: 'clear',
+    purpose: 'Clear the visible Terminal output without running a shell command.',
+    options: 'No options. This is handled locally by Sunburst Disk.',
+    examples: 'clear',
+    help: 'Clear the Terminal output locally. No filesystem or shell operation is performed.'
   }
 ];
 
@@ -406,7 +415,9 @@ export default function App() {
   const [historyBack, setHistoryBack]       = useState([]);
   const [historyForward, setHistoryForward] = useState([]);
   const [detailsOpen, setDetailsOpen]       = useState(true);
-  const [matrixTheme, setMatrixTheme]       = useState(false);
+  const [matrixTheme, setMatrixTheme]       = useState(() => {
+    try { return window.localStorage.getItem('sunburst-disk.theme') === 'matrix'; } catch { return false; }
+  });
   const [focusedNode, setFocusedNode]       = useState(null);
   const [pointerNode, setPointerNode]       = useState(null);
   const [itemDetails, setItemDetails]       = useState(null);
@@ -434,7 +445,7 @@ export default function App() {
   const [terminalCommand, setTerminalCommand] = useState('df -h');
   const [terminalHelpKey, setTerminalHelpKey] = useState('df -h');
   const [terminalHelperHoverKey, setTerminalHelperHoverKey] = useState(null);
-  const [terminalOutput, setTerminalOutput] = useState('');
+  const [terminalOutput, setTerminalOutput] = useState(null);
   const [terminalBusy, setTerminalBusy] = useState(false);
   const [terminalFrame, setTerminalFrame] = useState({ left: 20, top: 20 });
   const [smartCleanOpen, setSmartCleanOpen] = useState(false);
@@ -449,6 +460,8 @@ export default function App() {
   const [assistantItem, setAssistantItem] = useState(null);
   const [assistantResult, setAssistantResult] = useState(null);
   const [assistantCopied, setAssistantCopied] = useState(false);
+  const [assistantTransformMode, setAssistantTransformMode] = useState(null);
+  const [assistantTransformError, setAssistantTransformError] = useState(null);
   const [folderWatchState, setFolderWatchState] = useState({ active: false, rootPath: null, updating: false, error: null, lastChangedAt: null });
 
   const terminalDragRef = useRef(null);
@@ -457,12 +470,17 @@ export default function App() {
   const folderWatchBusyRef = useRef(false);
   const folderWatchQueuedRef = useRef(null);
   const folderWatchGenerationRef = useRef(0);
+  const folderWatchUpdatingTimerRef = useRef(null);
   const breadcrumbRef = useRef(null);
   const breadcrumbMeasureRef = useRef(null);
   const countdownTimerRef = useRef(null);
   const [nodeLoading, setNodeLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [packageContentsShown, setPackageContentsShown] = useState({});
+
+  useEffect(() => {
+    try { window.localStorage.setItem('sunburst-disk.theme', matrixTheme ? 'matrix' : 'classic'); } catch {}
+  }, [matrixTheme]);
 
   // Keep the Set identity stable; Sunburst uses it as a draw dependency.
   // Recreating it on every App render forced a full canvas redraw on unrelated UI updates.
@@ -739,7 +757,10 @@ export default function App() {
 
     const rootPath = targetNode.path;
     const knownDirectoryForPath = changedPath => {
-      let candidatePath = changedPath;
+      // Always reconcile from the event's parent. A renamed/deleted directory
+      // may still exist in the old tree, but its former filesystem path no
+      // longer exists and cannot be passed to scanSubdir.
+      let candidatePath = changedPath === rootPath ? rootPath : pathDirname(changedPath);
       while (candidatePath && isWithinPath(candidatePath, rootPath)) {
         const knownNode = resolveByPath(tree, candidatePath);
         if (knownNode?.type === 'directory') return candidatePath;
@@ -758,6 +779,13 @@ export default function App() {
     if (!targetPaths.length) return;
 
     folderWatchBusyRef.current = true;
+    if (folderWatchUpdatingTimerRef.current) window.clearTimeout(folderWatchUpdatingTimerRef.current);
+    folderWatchUpdatingTimerRef.current = window.setTimeout(() => {
+      folderWatchUpdatingTimerRef.current = null;
+      if (folderWatchBusyRef.current && folderWatchTargetRef.current?.path === rootPath) {
+        setFolderWatchState(previous => ({ ...previous, updating: true }));
+      }
+    }, 160);
     recordPerfInstant('folder-watch.reconcile-start', {
       rootPath,
       targetCount: targetPaths.length,
@@ -766,7 +794,7 @@ export default function App() {
       truncated: Boolean(payload.truncated),
       rootMissing: Boolean(payload.rootMissing)
     });
-    setFolderWatchState(previous => ({ ...previous, updating: true, lastChangedAt: payload.observedAt || Date.now() }));
+    setFolderWatchState(previous => ({ ...previous, lastChangedAt: payload.observedAt || Date.now() }));
     try {
       let nextTree = folderWatchTreeRef.current;
       for (const targetPath of targetPaths) {
@@ -784,7 +812,12 @@ export default function App() {
         const updated = resolveByPath(nextTree, node.path);
         return updated || node;
       }));
-      setFocusedNode(previous => previous?.path ? resolveByPath(nextTree, previous.path) || previous : previous);
+      setFocusedNode(previous => previous?.path
+        ? resolveByPath(nextTree, previous.path) || (isWithinPath(previous.path, rootPath) ? null : previous)
+        : previous);
+      setHoveredNode(previous => previous?.path ? resolveByPath(nextTree, previous.path) || null : previous);
+      setPointerNode(previous => previous?.path ? resolveByPath(nextTree, previous.path) || null : previous);
+      setHighlightedPath(previous => previous && isWithinPath(previous, rootPath) && !resolveByPath(nextTree, previous) ? null : previous);
       recordPerfInstant('folder-watch.reconcile-complete', { rootPath, targetCount: targetPaths.length });
       setFolderWatchState(previous => ({ ...previous, updating: false, error: null }));
     } catch (error) {
@@ -793,6 +826,13 @@ export default function App() {
         setFolderWatchState(previous => ({ ...previous, updating: false, error: error.message || 'Folder update failed' }));
       }
     } finally {
+      if (folderWatchUpdatingTimerRef.current) {
+        window.clearTimeout(folderWatchUpdatingTimerRef.current);
+        folderWatchUpdatingTimerRef.current = null;
+      }
+      if (folderWatchTargetRef.current?.path === rootPath) {
+        setFolderWatchState(previous => ({ ...previous, updating: false }));
+      }
       folderWatchBusyRef.current = false;
       const queued = folderWatchQueuedRef.current;
       folderWatchQueuedRef.current = null;
@@ -816,6 +856,10 @@ export default function App() {
     folderWatchGenerationRef.current = generation;
     folderWatchQueuedRef.current = null;
     folderWatchBusyRef.current = false;
+    if (folderWatchUpdatingTimerRef.current) {
+      window.clearTimeout(folderWatchUpdatingTimerRef.current);
+      folderWatchUpdatingTimerRef.current = null;
+    }
 
     if (!api?.watchCurrentFolder || !api?.onFolderWatchChange || !watchPath) {
       setFolderWatchState(previous => ({ ...previous, active: false, updating: false, rootPath: null, error: null }));
@@ -868,6 +912,10 @@ export default function App() {
       folderWatchGenerationRef.current += 1;
       folderWatchQueuedRef.current = null;
       folderWatchBusyRef.current = false;
+      if (folderWatchUpdatingTimerRef.current) {
+        window.clearTimeout(folderWatchUpdatingTimerRef.current);
+        folderWatchUpdatingTimerRef.current = null;
+      }
       removeStatus?.();
       removeChange?.();
       if (api.stopCurrentFolderWatcher) void api.stopCurrentFolderWatcher();
@@ -910,11 +958,15 @@ export default function App() {
     const removeAskSiriStart = window.electronAPI.onAskSiriStart?.(({ item } = {}) => {
       setAssistantItem(item || null);
       setAssistantResult(null);
+      setAssistantTransformMode(null);
+      setAssistantTransformError(null);
       setAssistantLoading(true);
       setAssistantOpen(true);
     });
     const removeAskSiriResult = window.electronAPI.onAskSiriResult?.(payload => {
       setAssistantLoading(false);
+      setAssistantTransformMode(null);
+      setAssistantTransformError(null);
       setAssistantResult(payload || { ok: false, error: 'No result returned.' });
       setAssistantOpen(true);
     });
@@ -1368,7 +1420,12 @@ export default function App() {
   const handleDragLeave = () => setIsDragOver(false);
 
   const runTerminalCommand = useCallback(async () => {
-    if (!window.electronAPI?.terminalRunSafe || terminalBusy) return;
+    if (terminalBusy) return;
+    if (terminalCommand.trim() === 'clear') {
+      setTerminalOutput('');
+      return;
+    }
+    if (!window.electronAPI?.terminalRunSafe) return;
     setTerminalBusy(true);
     const cwd = currentViewNode?.type === 'directory' && !currentViewNode.path?.startsWith('__')
       ? currentViewNode.path
@@ -1526,6 +1583,22 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleQuickLook, loading, nodeLoading, pointerNode, viewState]);
 
+  const transformAssistantResult = useCallback(async mode => {
+    if (!window.electronAPI?.askSiriTransform || !assistantResult?.output || assistantTransformMode) return;
+    setAssistantTransformMode(mode);
+    setAssistantTransformError(null);
+    setAssistantCopied(false);
+    try {
+      const result = await window.electronAPI.askSiriTransform(mode, assistantResult.output, assistantItem?.name);
+      if (!result?.ok || !result.output) throw new Error(result?.error || 'The Shortcut returned no formatted text.');
+      setAssistantResult(previous => ({ ...previous, ...result, ok: true }));
+    } catch (error) {
+      setAssistantTransformError(error.message || 'Ask Siri could not reformat this answer.');
+    } finally {
+      setAssistantTransformMode(null);
+    }
+  }, [assistantItem?.name, assistantResult?.output, assistantTransformMode]);
+
   const copyAssistantResult = useCallback(async () => {
     const text = assistantResult?.output;
     if (!text) return;
@@ -1614,11 +1687,19 @@ export default function App() {
             ) : assistantResult?.ok ? (
               <>
                 <div className="assistant-result-toolbar">
-                  <div className="assistant-result-meta">Returned by {assistantResult.shortcutName || 'Sunburst Disk — Ask Siri'}</div>
-                  <button className="assistant-copy-btn" type="button" onClick={() => void copyAssistantResult()} title="Copy result to clipboard" aria-label="Copy result to clipboard">
-                    <Copy size={12} /> {assistantCopied ? 'Copied' : 'Copy'}
-                  </button>
+                  <div className="assistant-result-meta">
+                    {assistantTransformMode ? `Formatting ${assistantTransformMode}…` : `Returned by ${assistantResult.shortcutName || 'Sunburst Disk — Ask Siri'}`}
+                  </div>
+                  <div className="assistant-result-actions">
+                    <button className="assistant-format-btn" type="button" disabled={Boolean(assistantTransformMode)} onClick={() => void transformAssistantResult('expand')}>Expand</button>
+                    <button className="assistant-format-btn" type="button" disabled={Boolean(assistantTransformMode)} onClick={() => void transformAssistantResult('shorten')}>Shorten</button>
+                    <button className="assistant-format-btn" type="button" disabled={Boolean(assistantTransformMode)} onClick={() => void transformAssistantResult('bullets')}>Bullet List</button>
+                    <button className="assistant-copy-btn" type="button" disabled={Boolean(assistantTransformMode)} onClick={() => void copyAssistantResult()} title="Copy result to clipboard" aria-label="Copy result to clipboard">
+                      <Copy size={12} /> {assistantCopied ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
                 </div>
+                {assistantTransformError && <div className="assistant-transform-error" role="alert">{assistantTransformError}</div>}
                 <div className="assistant-output">{assistantResult.output}</div>
                 <div className="assistant-note">Informational result only. Sunburst Disk does not delete, move or modify anything from this panel.</div>
               </>
@@ -2179,7 +2260,8 @@ export default function App() {
                     </div>
                   );
                 })()}
-                <pre className="terminal-output">{terminalOutput || 'Safe commands: pwd · ls -la · du -sh · df -h'}</pre>
+                <pre className="terminal-output">{terminalOutput === null ? 'Safe commands: pwd · ls -la · du -sh · df -h · clear' : terminalOutput}</pre>
+                <div className="terminal-drawer-note">Filesystem changes, deletion, sudo and arbitrary shell commands are blocked. clear is handled locally.</div>
                 <div className="terminal-command-row">
                   <span className="terminal-prompt">›</span>
                   <input
@@ -2196,7 +2278,6 @@ export default function App() {
                     {terminalBusy ? 'Running…' : 'Run'}
                   </button>
                 </div>
-                <div className="terminal-drawer-note">Filesystem changes, deletion, sudo and arbitrary shell commands are blocked.</div>
               </div>
             )}
           </div>

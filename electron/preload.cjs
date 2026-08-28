@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     itemName: item?.name,
     item
   }),
+  askSiriTransform:      (mode, text, itemName) => ipcRenderer.invoke('ask-siri-transform', { mode, text, itemName }),
   inspectItem:            (itemPath)             => ipcRenderer.invoke('inspect-item', itemPath),
   inspectItems:           (itemPaths)            => ipcRenderer.invoke('inspect-items', itemPaths),
   inspectAppRelated:      (appPath)             => ipcRenderer.invoke('inspect-app-related', appPath),

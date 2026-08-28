@@ -1360,6 +1360,11 @@ body {
 .terminal-drawer {
   right: auto;
   bottom: auto;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: min(560px, calc(100% - 60px));
+  height: 210px;
   min-width: 330px;
   min-height: 210px;
   max-width: calc(100% - 20px);
@@ -1372,7 +1377,20 @@ body {
 .terminal-output,
 .terminal-command-help,
 .terminal-command-help pre { user-select: text; -webkit-user-select: text; cursor: text; }
-.terminal-output { max-height: none; height: 42%; min-height: 58px; }
+.terminal-output {
+  flex: 1 1 auto;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  box-sizing: border-box;
+}
+.terminal-command-presets,
+.terminal-command-help,
+.terminal-drawer-note,
+.terminal-command-row { flex: 0 0 auto; }
+.terminal-drawer-note { margin: 0 0 7px; }
+.terminal-command-row { margin-top: auto; }
 
 .scan-complete-toast {
   position: absolute;
@@ -1579,6 +1597,7 @@ body {
 }
 .assistant-result-meta { padding: 12px 0 8px; }
 .assistant-output {
+  height: clamp(160px, 48vh, 470px);
   min-height: 120px;
   max-height: 470px;
   padding: 12px;
@@ -1633,6 +1652,14 @@ body {
   padding: 12px 0 8px;
 }
 .assistant-result-toolbar .assistant-result-meta { padding: 0; }
+.assistant-result-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.assistant-format-btn,
 .assistant-copy-btn {
   display: inline-flex;
   align-items: center;
@@ -1646,17 +1673,28 @@ body {
   cursor: pointer;
   font-size: 10px;
 }
-.assistant-copy-btn:hover { border-color: #93c5fd; color: #fff; background: #2a313c; }
+.assistant-format-btn:hover:not(:disabled),
+.assistant-copy-btn:hover:not(:disabled) { border-color: #93c5fd; color: #fff; background: #2a313c; }
+.assistant-format-btn:disabled,
+.assistant-copy-btn:disabled { opacity: .5; cursor: default; }
+.assistant-transform-error {
+  margin: -2px 0 8px;
+  color: #fca5a5;
+  font-size: 10px;
+}
+.theme-matrix .assistant-format-btn,
 .theme-matrix .assistant-copy-btn {
   border-color: var(--matrix-line);
   background: #06150a;
   color: var(--matrix-text-dim);
 }
-.theme-matrix .assistant-copy-btn:hover {
+.theme-matrix .assistant-format-btn:hover:not(:disabled),
+.theme-matrix .assistant-copy-btn:hover:not(:disabled) {
   border-color: var(--matrix-line-bright);
   background: rgba(57,255,102,.12);
   color: var(--matrix-text);
 }
+.theme-matrix .assistant-transform-error { color: #ff9f9f; }
 
 .folder-watch-badge {
   display: inline-block;
