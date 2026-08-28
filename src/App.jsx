@@ -167,7 +167,18 @@ function compactBreadcrumbLabel(label) {
 }
 
 function isAppBundleNode(node) {
-  return Boolean(node?.type === 'directory' && (node.name?.endsWith('.app') || node.path?.endsWith('.app')));
+  if (node?.type !== 'directory') return false;
+  const name = String(node.name || '').trim().toLowerCase();
+  const nodePath = String(node.path || '').trim().toLowerCase();
+  return name.endsWith('.app') || nodePath.endsWith('.app');
+}
+
+function isPackageContainerNode(node) {
+  if (isAppBundleNode(node)) return true;
+  if (node?.type !== 'directory') return false;
+  const name = String(node.name || '').trim().toLowerCase();
+  const nodePath = String(node.path || '').trim().toLowerCase();
+  return name.endsWith('.photoslibrary') || nodePath.endsWith('.photoslibrary');
 }
 
 function getNodeChain(tree, targetPath) {
@@ -281,7 +292,7 @@ function buildShallowDisplayNode(
   needsMetadata
 ) {
   if (!node) return null;
-  const packageCollapsed = isAppBundleNode(node) && !packageContentsShown[node.path];
+  const packageCollapsed = isPackageContainerNode(node) && !packageContentsShown[node.path];
   const cacheKey = `${optionsKey}|shallow|${packageCollapsed ? 'collapsed' : 'expanded'}`;
   const cached = cache?.get(node);
   if (cached && cached.key === cacheKey && (!needsMetadata || cached.metadata === metadataByPath)) {
@@ -323,7 +334,7 @@ function buildDisplayNode(
   needsMetadata
 ) {
   if (!node) return null;
-  const packageCollapsed = isAppBundleNode(node) && !packageContentsShown[node.path];
+  const packageCollapsed = isPackageContainerNode(node) && !packageContentsShown[node.path];
   const cacheKey = `${optionsKey}|${packageCollapsed ? 'collapsed' : 'expanded'}`;
   const cached = cache?.get(node);
   if (cached && cached.key === cacheKey && (!needsMetadata || cached.metadata === metadataByPath)) {
@@ -447,6 +458,8 @@ export default function App() {
   const [terminalHelperHoverKey, setTerminalHelperHoverKey] = useState(null);
   const [terminalOutput, setTerminalOutput] = useState(null);
   const [terminalBusy, setTerminalBusy] = useState(false);
+  const [terminalHistory, setTerminalHistory] = useState([]);
+  const [terminalHistoryIndex, setTerminalHistoryIndex] = useState(-1);
   const [terminalFrame, setTerminalFrame] = useState({ left: 20, top: 20 });
   const [smartCleanOpen, setSmartCleanOpen] = useState(false);
   const [smartCleanLoading, setSmartCleanLoading] = useState(false);
@@ -465,6 +478,8 @@ export default function App() {
   const [folderWatchState, setFolderWatchState] = useState({ active: false, rootPath: null, updating: false, error: null, lastChangedAt: null });
 
   const terminalDragRef = useRef(null);
+  const terminalDrawerRef = useRef(null);
+  const terminalHelperPreviousHeightRef = useRef(null);
   const folderWatchTreeRef = useRef(null);
   const folderWatchTargetRef = useRef(null);
   const folderWatchBusyRef = useRef(false);
@@ -481,6 +496,24 @@ export default function App() {
   useEffect(() => {
     try { window.localStorage.setItem('sunburst-disk.theme', matrixTheme ? 'matrix' : 'classic'); } catch {}
   }, [matrixTheme]);
+
+  useEffect(() => {
+    const drawer = terminalDrawerRef.current;
+    if (!drawer || !terminalOpen) return undefined;
+    if (terminalHelperHoverKey) {
+      if (terminalHelperPreviousHeightRef.current === null) {
+        terminalHelperPreviousHeightRef.current = drawer.getBoundingClientRect().height;
+      }
+      const area = drawer.parentElement;
+      const availableHeight = area ? Math.max(210, area.clientHeight - drawer.offsetTop - 16) : 420;
+      const expandedHeight = Math.min(Math.max(terminalHelperPreviousHeightRef.current, 350), availableHeight);
+      drawer.style.height = `${expandedHeight}px`;
+    } else if (terminalHelperPreviousHeightRef.current !== null) {
+      drawer.style.height = `${terminalHelperPreviousHeightRef.current}px`;
+      terminalHelperPreviousHeightRef.current = null;
+    }
+    return undefined;
+  }, [terminalHelperHoverKey, terminalOpen]);
 
   // Keep the Set identity stable; Sunburst uses it as a draw dependency.
   // Recreating it on every App render forced a full canvas redraw on unrelated UI updates.
@@ -1193,7 +1226,7 @@ export default function App() {
   // hover previews and the sidebar have live contents to broadcast.
   const enrichNode = useCallback(async (node) => {
     if (!window.electronAPI?.scanSubdir || !node?.path || node.path.startsWith('__')) return;
-    if (isAppBundleNode(node) && !packageContentsShown[node.path]) return;
+    if (isPackageContainerNode(node) && !packageContentsShown[node.path]) return;
     try {
       const scanStartedAt = performance.now();
       const result = await window.electronAPI.scanSubdir(node.path);
@@ -1284,7 +1317,7 @@ export default function App() {
   }, []);
 
   const showPackageContents = useCallback(async (node) => {
-    if (!isAppBundleNode(node) || !window.electronAPI?.scanSubdir) return;
+    if (!isPackageContainerNode(node) || !window.electronAPI?.scanSubdir) return;
     setNodeLoading(true);
     try {
       const result = await window.electronAPI.scanSubdir(node.path, true);
@@ -1307,7 +1340,7 @@ export default function App() {
   }, []);
 
   const hidePackageContents = useCallback((node) => {
-    if (!isAppBundleNode(node)) return;
+    if (!isPackageContainerNode(node)) return;
     setScannedTree(previous => {
       const liveNode = resolveByPath(previous, node.path) || node;
       return previous ? updateNodeInTree(previous, node.path, { ...liveNode, children: [], itemCount: 0 }) : previous;
@@ -1323,7 +1356,7 @@ export default function App() {
   }, []);
 
   const togglePackageContents = useCallback((node) => {
-    if (!isAppBundleNode(node)) return;
+    if (!isPackageContainerNode(node)) return;
     if (packageContentsShown[node.path]) hidePackageContents(node);
     else void showPackageContents(node);
   }, [hidePackageContents, packageContentsShown, showPackageContents]);
@@ -1421,7 +1454,12 @@ export default function App() {
 
   const runTerminalCommand = useCallback(async () => {
     if (terminalBusy) return;
-    if (terminalCommand.trim() === 'clear') {
+    const enteredCommand = terminalCommand.trim();
+    if (!enteredCommand) return;
+    setTerminalCommand('');
+    setTerminalHistoryIndex(-1);
+    setTerminalHistory(previous => [...previous, enteredCommand].slice(-100));
+    if (enteredCommand === 'clear') {
       setTerminalOutput('');
       return;
     }
@@ -1443,6 +1481,34 @@ export default function App() {
       setTerminalBusy(false);
     }
   }, [currentViewNode, terminalBusy, terminalCommand]);
+
+  const handleTerminalCommandKeyDown = useCallback((event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void runTerminalCommand();
+      return;
+    }
+    if (event.key === 'ArrowUp' && terminalHistory.length > 0) {
+      event.preventDefault();
+      const nextIndex = terminalHistoryIndex < 0
+        ? terminalHistory.length - 1
+        : Math.max(0, terminalHistoryIndex - 1);
+      setTerminalHistoryIndex(nextIndex);
+      setTerminalCommand(terminalHistory[nextIndex] || '');
+      return;
+    }
+    if (event.key === 'ArrowDown' && terminalHistoryIndex >= 0) {
+      event.preventDefault();
+      const nextIndex = terminalHistoryIndex + 1;
+      if (nextIndex >= terminalHistory.length) {
+        setTerminalHistoryIndex(-1);
+        setTerminalCommand('');
+      } else {
+        setTerminalHistoryIndex(nextIndex);
+        setTerminalCommand(terminalHistory[nextIndex] || '');
+      }
+    }
+  }, [runTerminalCommand, terminalHistory, terminalHistoryIndex]);
 
   const refreshCurrentFolder = useCallback(async () => {
     if (!window.electronAPI || !currentViewNode?.path || currentViewNode.path.startsWith('__') || refreshing) return false;
@@ -2202,6 +2268,7 @@ export default function App() {
             {terminalOpen && (
               <div
                 className="terminal-drawer"
+                ref={terminalDrawerRef}
                 style={{ left: `${terminalFrame.left}px`, top: `${terminalFrame.top}px` }}
                 onClick={event => event.stopPropagation()}
               >
@@ -2228,7 +2295,7 @@ export default function App() {
                 >
                   <span>Terminal</span>
                   <span className="terminal-readonly-badge">READ ONLY</span>
-                  <button className="terminal-close" title="Hide Terminal" onClick={() => setTerminalOpen(false)}>×</button>
+                  <button className="terminal-close" title="Hide Terminal" onClick={() => { setTerminalHelperHoverKey(null); setTerminalOpen(false); }}>×</button>
                 </div>
                 <div className="terminal-command-presets" aria-label="Safe terminal command helpers">
                   {TERMINAL_COMMAND_PRESETS.map(preset => (
@@ -2241,7 +2308,7 @@ export default function App() {
                       onMouseLeave={() => setTerminalHelperHoverKey(null)}
                       onFocus={() => setTerminalHelperHoverKey(preset.command)}
                       onBlur={() => setTerminalHelperHoverKey(null)}
-                      onClick={() => { setTerminalCommand(preset.command); setTerminalHelpKey(preset.command); }}
+                      onClick={() => { setTerminalCommand(preset.command); setTerminalHistoryIndex(-1); setTerminalHelpKey(preset.command); }}
                     >
                       {preset.label}
                     </button>
@@ -2267,8 +2334,8 @@ export default function App() {
                   <input
                     className="terminal-command-input"
                     value={terminalCommand}
-                    onChange={event => setTerminalCommand(event.target.value)}
-                    onKeyDown={event => { if (event.key === 'Enter') void runTerminalCommand(); }}
+                    onChange={event => { setTerminalCommand(event.target.value); setTerminalHistoryIndex(-1); }}
+                    onKeyDown={handleTerminalCommandKeyDown}
                     aria-label="Read-only terminal command"
                     spellCheck="false"
                     autoCapitalize="off"
@@ -2492,7 +2559,7 @@ export default function App() {
             window.electronAPI?.revealInFinder(contextMenu.item.path);
             setContextMenu(null);
           }}>⌕ Reveal in Finder</div>
-          {isAppBundleNode(contextMenu.item) && (
+          {isPackageContainerNode(contextMenu.item) && (
             <div className="ctx-item" onClick={() => {
               togglePackageContents(contextMenu.item);
               setContextMenu(null);

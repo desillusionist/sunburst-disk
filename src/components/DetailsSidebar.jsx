@@ -48,11 +48,15 @@ export default function DetailsSidebar({ node, metadata, loading, risk, category
   const isHiddenSpace = node?.path === '__hidden__' || (node?.type === 'special' && !node?.isHiddenSpaceRemainder);
   const canQuickLook = Boolean(node && (isHiddenSpace || metadata?.type === 'file' || metadata?.type === 'symlink' || node.type === 'file') && (isHiddenSpace || !node.path.startsWith('__')));
   const canReveal = Boolean(node?.path && !node.path.startsWith('__'));
-  const isAppBundle = Boolean(node?.type === 'directory' && (node.name?.endsWith('.app') || node.path?.endsWith('.app')));
+  const packageName = String(node?.name || '').trim().toLowerCase();
+  const packagePath = String(node?.path || '').trim().toLowerCase();
+  const isPackageContainer = Boolean(node?.type === 'directory'
+    && (packageName.endsWith('.app') || packageName.endsWith('.photoslibrary')
+      || packagePath.endsWith('.app') || packagePath.endsWith('.photoslibrary')));
   const objectCount = node?.type === 'directory'
     ? (Number.isFinite(node.itemCount) ? node.itemCount : node.children?.length)
     : null;
-  const objectCountLabel = isAppBundle && !packageContentsShown
+  const objectCountLabel = isPackageContainer && !packageContentsShown
     ? 'Package contents hidden'
     : Number.isFinite(objectCount)
       ? formatCount(objectCount)
@@ -113,7 +117,7 @@ export default function DetailsSidebar({ node, metadata, loading, risk, category
             <p className="details-description">{categoryDescription}</p>
           </div>
 
-          {isAppBundle && (
+          {isPackageContainer && (
             <button
               className="details-package-btn"
               disabled={!onTogglePackageContents || loading}

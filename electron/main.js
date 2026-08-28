@@ -1200,11 +1200,16 @@ function getFallbackDrives() {
 // Hidden junk dirs (.Trash, .Spotlight, etc.) are excluded.
 const SKIP_NAMES = ['.Trash', '.Spotlight', '.fseventsd', '.DS_Store', '.DocumentRevisions-V100', '.TemporaryItems'];
 
-function isInsideAppBundle(itemPath, rootPath) {
+function isPackageContainerName(value) {
+  const name = String(value || '').trim().toLowerCase();
+  return name.endsWith('.app') || name.endsWith('.photoslibrary');
+}
+
+function isInsidePackageContainer(itemPath, rootPath) {
   if (itemPath === rootPath || !itemPath.startsWith(rootPath + '/')) return false;
-  if (rootPath.endsWith('.app')) return true;
+  if (isPackageContainerName(path.basename(rootPath))) return true;
   const relativeParts = itemPath.slice(rootPath.length + 1).split('/');
-  return relativeParts.slice(0, -1).some(part => part.endsWith('.app'));
+  return relativeParts.slice(0, -1).some(isPackageContainerName);
 }
 
 // ─── Native du-powered scanner ─────────────────────────────────────────────────
@@ -1254,7 +1259,7 @@ function buildTreeFromDu(rootPath, duLines, detailDepth, rootSizeOverride = null
     const base = p.slice(p.lastIndexOf('/') + 1);
     if (p !== rootNorm && SKIP_NAMES.some(x => base.startsWith(x))) continue;
     if (p !== rootNorm && !p.startsWith(rootNorm + '/')) continue;
-    if (!includePackageContents && isInsideAppBundle(p, rootNorm)) continue;
+    if (!includePackageContents && isInsidePackageContainer(p, rootNorm)) continue;
 
     entries.set(p, {
       name: p === '/' ? '/' : p.slice(p.lastIndexOf('/') + 1),
@@ -1274,7 +1279,7 @@ function buildTreeFromDu(rootPath, duLines, detailDepth, rootSizeOverride = null
       name: entry.name,
       path: p,
       size: entry.duSize,
-      type: p === rootNorm || parentPaths.has(p) || entry.name.endsWith('.app') ? 'directory' : 'file',
+      type: p === rootNorm || parentPaths.has(p) || isPackageContainerName(entry.name) ? 'directory' : 'file',
       children: []
     });
   }
@@ -1497,7 +1502,7 @@ ipcMain.handle('scan-subdir', async (event, { targetPath, includePackageContents
       runDu(targetPath),
       collectSymlinks(targetPath)
     ]);
-    const allowPackageContents = Boolean(includePackageContents && path.basename(targetPath).endsWith('.app'));
+    const allowPackageContents = Boolean(includePackageContents && isPackageContainerName(path.basename(targetPath)));
     const tree = buildTreeFromDu(targetPath, filterDuLines(rawLines, links), 10, null, allowPackageContents);
     return { tree };
   } catch (error) {
