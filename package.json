@@ -2,7 +2,8 @@
   "name": "sunburst-disk",
   "productName": "Sunburst Disk",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "A macOS disk usage analyzer with a visual sunburst, safe review tools and live updates for the current folder.",
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
@@ -42,8 +43,10 @@
     ],
     "mac": {
       "target": [
+        "dmg",
         "dir"
-      ]
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
   }
 }
