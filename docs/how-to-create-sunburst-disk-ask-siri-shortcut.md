@@ -78,13 +78,12 @@ Before testing from Sunburst Disk, run this harmless test in Terminal:
 output=$(mktemp -t sunburst-ask-siri-output).txt
 printf '%s\n' 'Explain what ~/Library/Caches is used for. Return a short text answer with official sources.' \\
   | shortcuts run "Sunburst Disk — Ask Siri" \\
-      --output-path "$output" \\
-      --output-type public.utf8-plain-text
+      --output-path "$output"
 cat "$output"
 rm -f "$output"
 ```
 
-The answer should be printed in Terminal after `cat "$output"`. The command should not require a click in Shortcuts or display a result window for this command-line run. If the output file is empty, inspect the final Stop and Output variable. If the command reports that the file is missing, verify that Stop and Output is the final action and that its value is the model's text. If it opens a result window, remove Show Response/Show Result and ensure that Stop and Output receives the model's text directly.
+The answer should be printed in Terminal after `cat "$output"`. Do not add `--output-type public.utf8-plain-text` to this test: on some macOS/Shortcut combinations it prevents the text output file from being created even though the shortcut exits with code 0. The command should not require a click in Shortcuts or display a result window for this command-line run. If the output file is empty, inspect the final Stop and Output variable. If the command reports that the file is missing, verify that Stop and Output is the final action and that its value is the model's text. If it opens a result window, remove Show Response/Show Result and ensure that Stop and Output receives the model's text directly.
 
 ## 7. Debug the output variable step by step
 
@@ -110,7 +109,6 @@ tmp=$(mktemp -d)
 printf '%s\n' 'Reply with exactly OK. Do not use web search.' \\
   | shortcuts run "Sunburst Disk — Ask Siri" \\
       --output-path "$tmp/result.txt" \\
-      --output-type public.utf8-plain-text \\
       >"$tmp/stdout.txt" 2>"$tmp/stderr.txt"
 status=$?
 printf 'exit=%s\\n' "$status"
@@ -126,7 +124,7 @@ Interpret the result as follows: `exit=0` with `result-bytes=0` means the Shortc
 
 ## 8. Use it from Sunburst Disk
 
-In Sunburst Disk, right-click a real file or folder in the content tree or Sunburst and choose **Ask Siri…**. The app opens an in-app **Object Information** panel, starts the named Shortcut through `/usr/bin/shortcuts`, pipes the object description as text, asks Shortcuts to write a plain-text temporary `output.txt` with `--output-path`, reads the result, and deletes the temporary directory.
+In Sunburst Disk, right-click a real file or folder in the content tree or Sunburst and choose **Ask Siri…**. The app opens an in-app **Object Information** panel, starts the named Shortcut through `/usr/bin/shortcuts`, pipes the object description as text, asks Shortcuts to write a temporary `output.txt` with `--output-path` (without forcing an output UTI), reads the result, and deletes the temporary directory.
 
 The result panel is informational only. Sunburst Disk does not delete, move, rename, modify, or upload objects as a consequence of Ask Siri.
 

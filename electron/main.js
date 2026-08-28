@@ -884,7 +884,7 @@ async function runAskSiriShortcut(prompt) {
     const processResult = await new Promise(resolve => {
       const child = execFile(
         '/usr/bin/shortcuts',
-        ['run', ASK_SIRI_SHORTCUT_NAME, '--output-path', outputPath, '--output-type', 'public.utf8-plain-text'],
+        ['run', ASK_SIRI_SHORTCUT_NAME, '--output-path', outputPath],
         { timeout: 120000, maxBuffer: 8 * 1024 * 1024 },
         (error, stdout, stderr) => resolve({
           error,
@@ -913,7 +913,7 @@ async function runAskSiriShortcut(prompt) {
       return {
         ok: false,
         diagnostics,
-        error: `${detail}\n\nDiagnostic: exit=${exitCode ?? 'unknown'}, output-file=${outputFileBytes} bytes, stdout=${stdoutBytes} bytes. Check that the shortcut accepts piped Text input and ends with Stop and Output. Do not use Show Result or Ask for Input in the background path.`
+        error: `${detail}\n\nDiagnostic: exit=${exitCode ?? 'unknown'}, output-file=${outputFileBytes} bytes, stdout=${stdoutBytes} bytes. Check that the shortcut accepts piped Text input and ends with Stop and Output. This bridge intentionally does not force --output-type. Do not use Show Result or Ask for Input in the background path.`
       };
     }
 
@@ -926,7 +926,7 @@ async function runAskSiriShortcut(prompt) {
       return {
         ok: false,
         diagnostics,
-        error: `The Shortcut exited successfully but returned no text. Diagnostic: exit=0, output-file=${outputFileBytes} bytes, stdout=${stdoutBytes} bytes.${stderrNote}\n\nIn Shortcuts, replace the final Stop and Output value with a plain Text action containing a visible test marker. If that marker returns, reconnect the model result through Get Text from Input and Stop and Output. Remove Show Response/Show Result from the input-present path.`
+        error: `The Shortcut exited successfully but returned no text. Diagnostic: exit=0, output-file=${outputFileBytes} bytes, stdout=${stdoutBytes} bytes.${stderrNote}\n\nThis bridge uses a real --output-path and deliberately omits --output-type. In Shortcuts, replace the final Stop and Output value with a plain Text action containing a visible test marker. If that marker returns, reconnect the model result through Get Text from Input and Stop and Output. Remove Show Response/Show Result from the input-present path.`
       };
     }
     return { ok: true, output, diagnostics };
