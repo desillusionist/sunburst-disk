@@ -42,6 +42,9 @@
       "electron/fsevents-watcher"
     ],
     "mac": {
+      "icon": "assets/SunburstDisk.icns",
+      "identity": "-",
+      "hardenedRuntime": false,
       "target": [
         "dmg",
         "dir"

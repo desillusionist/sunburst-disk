@@ -26,6 +26,30 @@ function isProtectedSystemPath(value) {
     || /^\/System\/Volumes\/Data\/(System|private|usr)(\/|$)/.test(normalized);
 }
 
+function installApplicationMenu() {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: 'Sunburst Disk',
+      submenu: [
+        { role: 'about', label: 'About Sunburst Disk' },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide', label: 'Hide Sunburst Disk' },
+        { role: 'hideOthers', label: 'Hide Others' },
+        { role: 'unhide', label: 'Show All' },
+        { type: 'separator' },
+        { role: 'quit', label: 'Quit Sunburst Disk' }
+      ]
+    },
+    { role: 'fileMenu' },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+    { role: 'help', submenu: [{ label: 'Sunburst Disk Help', enabled: false }] }
+  ]));
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1020,
@@ -54,6 +78,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  installApplicationMenu();
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
