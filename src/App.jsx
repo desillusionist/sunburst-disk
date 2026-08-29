@@ -40,6 +40,27 @@ function getDriveKey(drive) {
   return drive?.filesystem || drive?.mount || drive?.name;
 }
 
+function quoteTerminalPath(value) {
+  const text = String(value || '');
+  return `'${text.replaceAll("'", "'\\''")}'`;
+}
+
+function pathFromDataTransfer(dataTransfer) {
+  const rawJson = dataTransfer.getData('application/json');
+  if (rawJson) {
+    try {
+      const item = JSON.parse(rawJson);
+      if (typeof item?.path === 'string') return item.path;
+    } catch {}
+  }
+  const uri = dataTransfer.getData('text/uri-list').split(/\r?\n/).find(value => value && !value.startsWith('#'));
+  if (uri?.startsWith('file://')) {
+    try { return decodeURIComponent(uri.replace(/^file:\/\//, '')); } catch { return uri.replace(/^file:\/\//, ''); }
+  }
+  const plain = dataTransfer.getData('text/plain').trim();
+  return plain.startsWith('/') ? plain : '';
+}
+
 function isStartupDataCategory(node) {
   const parts = (node?.path || '').replace(/\/+$/, '').split('/').filter(Boolean);
   return parts.length === 4 && parts[0] === 'System' && parts[1] === 'Volumes' && parts[2] === 'Data';
@@ -409,6 +430,27 @@ const TERMINAL_COMMAND_PRESETS = [
   }
 ];
 
+const TERMINAL_ADMIN_COMMAND_PRESETS = [
+  {
+    command: 'touch new-file.txt',
+    label: 'touch',
+    syntax: 'touch [file]',
+    purpose: 'Create an empty file inside the current folder.',
+    options: 'Use a relative filename or path; the app rejects targets outside the current folder.',
+    examples: 'touch new-file.txt',
+    help: 'Admin-only write helper. Creates an empty file inside the current folder; delete, overwrite scripts and arbitrary shell syntax remain blocked.'
+  },
+  {
+    command: 'mkdir -p new-folder',
+    label: 'mkdir',
+    syntax: 'mkdir -p [folder]',
+    purpose: 'Create a folder, including missing parent folders, inside the current folder.',
+    options: '-p creates missing parents; the app rejects targets outside the current folder.',
+    examples: 'mkdir -p new-folder',
+    help: 'Admin-only write helper. Creates a directory inside the current folder; deletion and arbitrary shell syntax remain blocked.'
+  }
+];
+
 const DEFAULT_DRIVES = [
   { filesystem: '/dev/disk3s5', name: 'iDāsOS', total: 245.1e9, used: 231.3e9, free: 22.7e9, usePercent: '89%', mount: '/', scanPath: '/System/Volumes/Data', isStartup: true },
   { filesystem: '/dev/disk7s1', name: 'exAPFS', total: 2e12, used: 216.1e9, free: 1783.9e9, usePercent: '11%', mount: '/Volumes/exAPFS', scanPath: '/Volumes/exAPFS', isStartup: false },
@@ -460,6 +502,11 @@ export default function App() {
   const [terminalBusy, setTerminalBusy] = useState(false);
   const [terminalHistory, setTerminalHistory] = useState([]);
   const [terminalHistoryIndex, setTerminalHistoryIndex] = useState(-1);
+  const [terminalAdminMode, setTerminalAdminMode] = useState(false);
+  const [terminalAdminPassword, setTerminalAdminPassword] = useState('');
+  const [terminalAdminPromptOpen, setTerminalAdminPromptOpen] = useState(false);
+  const [terminalAdminError, setTerminalAdminError] = useState(null);
+  const [ejectingDriveKey, setEjectingDriveKey] = useState(null);
   const [terminalFrame, setTerminalFrame] = useState({ left: 20, top: 20 });
   const [smartCleanOpen, setSmartCleanOpen] = useState(false);
   const [smartCleanLoading, setSmartCleanLoading] = useState(false);
@@ -496,6 +543,13 @@ export default function App() {
   useEffect(() => {
     try { window.localStorage.setItem('sunburst-disk.theme', matrixTheme ? 'matrix' : 'classic'); } catch {}
   }, [matrixTheme]);
+
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api?.setWindowLayout) return;
+    const layout = viewState === 'drives' ? 'drives' : 'scan';
+    void api.setWindowLayout(layout, layout === 'drives' ? drives.length : 0).catch(() => {});
+  }, [drives.length, viewState]);
 
   useEffect(() => {
     const drawer = terminalDrawerRef.current;
@@ -1452,6 +1506,22 @@ export default function App() {
   const handleDragOver = (e) => { e.preventDefault(); setIsDragOver(true); };
   const handleDragLeave = () => setIsDragOver(false);
 
+  const handleTerminalPathDrop = useCallback(event => {
+    event.preventDefault();
+    const droppedPath = pathFromDataTransfer(event.dataTransfer);
+    if (!droppedPath || !droppedPath.startsWith('/') || droppedPath.startsWith('__')) return;
+    setTerminalCommand(current => {
+      const base = current.trim() || 'ls -lah';
+      return `${base} ${quoteTerminalPath(droppedPath)}`;
+    });
+    setTerminalHistoryIndex(-1);
+  }, []);
+
+  const handleTerminalPathDragOver = useCallback(event => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }, []);
+
   const runTerminalCommand = useCallback(async () => {
     if (terminalBusy) return;
     const enteredCommand = terminalCommand.trim();
@@ -1469,7 +1539,7 @@ export default function App() {
       ? currentViewNode.path
       : undefined;
     try {
-      const result = await window.electronAPI.terminalRunSafe(terminalCommand, cwd);
+      const result = await window.electronAPI.terminalRunSafe(enteredCommand, cwd, terminalAdminMode);
       const header = `$ ${result?.command || terminalCommand}${result?.cwd ? `  [${result.cwd}]` : ''}`;
       const output = [result?.stdout, result?.stderr ? `stderr:\n${result.stderr}` : '', result?.error ? `error: ${result.error}` : '']
         .filter(Boolean)
@@ -1480,7 +1550,7 @@ export default function App() {
     } finally {
       setTerminalBusy(false);
     }
-  }, [currentViewNode, terminalBusy, terminalCommand]);
+  }, [currentViewNode, terminalAdminMode, terminalBusy, terminalCommand]);
 
   const handleTerminalCommandKeyDown = useCallback((event) => {
     if (event.key === 'Enter') {
@@ -1509,6 +1579,50 @@ export default function App() {
       }
     }
   }, [runTerminalCommand, terminalHistory, terminalHistoryIndex]);
+
+  const authorizeTerminalAdmin = useCallback(async () => {
+    if (!window.electronAPI?.terminalAuthorizeAdmin || !terminalAdminPassword) return;
+    setTerminalAdminError(null);
+    const result = await window.electronAPI.terminalAuthorizeAdmin(terminalAdminPassword);
+    setTerminalAdminPassword('');
+    if (result?.ok) {
+      setTerminalAdminMode(true);
+      setTerminalAdminPromptOpen(false);
+      setTerminalOutput('Administrator mode enabled for this app session.\nOnly allowlisted commands are available.');
+    } else {
+      setTerminalAdminError(result?.error || 'Administrator authentication failed.');
+    }
+  }, [terminalAdminPassword]);
+
+  const revokeTerminalAdmin = useCallback(async () => {
+    await window.electronAPI?.terminalRevokeAdmin?.();
+    setTerminalAdminMode(false);
+    setTerminalAdminPromptOpen(false);
+    setTerminalAdminPassword('');
+    setTerminalAdminError(null);
+  }, []);
+
+  const handleEjectDrive = useCallback(async drive => {
+    if (!drive?.isEjectable || !window.electronAPI?.ejectDrive || ejectingDriveKey) return;
+    const confirmed = window.confirm(`Eject “${drive.name}”? Make sure no files are in use.`);
+    if (!confirmed) return;
+    const driveKey = getDriveKey(drive);
+    setEjectingDriveKey(driveKey);
+    setDriveMenuKey(null);
+    try {
+      const result = await window.electronAPI.ejectDrive(drive.mount);
+      if (result?.ok) {
+        setDrives(current => current.filter(item => getDriveKey(item) !== driveKey));
+        setScanNotice({ title: 'Volume ejected', body: `${drive.name} was safely ejected.` });
+      } else {
+        window.alert(result?.error || 'The volume could not be ejected.');
+      }
+    } catch (error) {
+      window.alert(error.message || 'The volume could not be ejected.');
+    } finally {
+      setEjectingDriveKey(null);
+    }
+  }, [ejectingDriveKey]);
 
   const refreshCurrentFolder = useCallback(async () => {
     if (!window.electronAPI || !currentViewNode?.path || currentViewNode.path.startsWith('__') || refreshing) return false;
@@ -2015,6 +2129,15 @@ export default function App() {
                       <button className="drive-menu-item" onClick={() => handleScanDrive(drive)}>
                         Scan again
                       </button>
+                      {drive.isEjectable && (
+                        <button
+                          className="drive-menu-item drive-eject-item"
+                          onClick={() => { void handleEjectDrive(drive); }}
+                          disabled={ejectingDriveKey === driveKey}
+                        >
+                          {ejectingDriveKey === driveKey ? 'Ejecting…' : `Eject “${drive.name}”`}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -2294,11 +2417,11 @@ export default function App() {
                   }}
                 >
                   <span>Terminal</span>
-                  <span className="terminal-readonly-badge">READ ONLY</span>
-                  <button className="terminal-close" title="Hide Terminal" onClick={() => { setTerminalHelperHoverKey(null); setTerminalOpen(false); }}>×</button>
+                  <span className={`terminal-readonly-badge ${terminalAdminMode ? 'terminal-readwrite-badge' : ''}`}>{terminalAdminMode ? 'READ & WRITE' : 'READ ONLY'}</span>
+                  <button className="terminal-close" title="Hide Terminal" onClick={() => { void revokeTerminalAdmin(); setTerminalHelperHoverKey(null); setTerminalOpen(false); }}>×</button>
                 </div>
-                <div className="terminal-command-presets" aria-label="Safe terminal command helpers">
-                  {TERMINAL_COMMAND_PRESETS.map(preset => (
+                <div className="terminal-command-presets" aria-label={terminalAdminMode ? 'Read and write terminal command helpers' : 'Safe terminal command helpers'}>
+                  {(terminalAdminMode ? [...TERMINAL_COMMAND_PRESETS, ...TERMINAL_ADMIN_COMMAND_PRESETS] : TERMINAL_COMMAND_PRESETS).map(preset => (
                     <button
                       key={preset.command}
                       className="terminal-command-preset"
@@ -2327,16 +2450,46 @@ export default function App() {
                     </div>
                   );
                 })()}
-                <pre className="terminal-output">{terminalOutput === null ? 'Safe commands: pwd · ls -la · du -sh · df -h · clear' : terminalOutput}</pre>
-                <div className="terminal-drawer-note">Filesystem changes, deletion, sudo and arbitrary shell commands are blocked. clear is handled locally.</div>
-                <div className="terminal-command-row">
+                <pre
+                  className="terminal-output"
+                  onDragOver={handleTerminalPathDragOver}
+                  onDrop={handleTerminalPathDrop}
+                >{terminalOutput === null ? 'Safe commands: pwd · ls -la · du -sh · df -h · clear' : terminalOutput}</pre>
+                <div className="terminal-drawer-note">
+                  Filesystem changes, deletion, sudo and arbitrary shell commands are blocked unless you have an{' '}
+                  <button className="terminal-admin-link" type="button" onClick={() => { if (!terminalAdminMode) { setTerminalAdminError(null); setTerminalAdminPromptOpen(true); } }} disabled={terminalAdminMode}>admin</button>{' '}
+                  accessing. clear is handled locally.
+                  {terminalAdminMode && <button className="terminal-lock-btn" type="button" onClick={() => { void revokeTerminalAdmin(); }}>Lock</button>}
+                </div>
+                {terminalAdminPromptOpen && !terminalAdminMode && (
+                  <div className="terminal-admin-prompt">
+                    <label htmlFor="terminal-admin-password">Administrator password</label>
+                    <input
+                      id="terminal-admin-password"
+                      type="password"
+                      value={terminalAdminPassword}
+                      onChange={event => setTerminalAdminPassword(event.target.value)}
+                      onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void authorizeTerminalAdmin(); } }}
+                      autoComplete="current-password"
+                      autoFocus
+                    />
+                    <button type="button" onClick={() => { void authorizeTerminalAdmin(); }} disabled={!terminalAdminPassword}>Unlock</button>
+                    <button type="button" onClick={() => { setTerminalAdminPromptOpen(false); setTerminalAdminPassword(''); setTerminalAdminError(null); }}>Cancel</button>
+                    {terminalAdminError && <span className="terminal-admin-error">{terminalAdminError}</span>}
+                  </div>
+                )}
+                <div
+                  className="terminal-command-row"
+                  onDragOver={handleTerminalPathDragOver}
+                  onDrop={handleTerminalPathDrop}
+                >
                   <span className="terminal-prompt">›</span>
                   <input
                     className="terminal-command-input"
                     value={terminalCommand}
                     onChange={event => { setTerminalCommand(event.target.value); setTerminalHistoryIndex(-1); }}
                     onKeyDown={handleTerminalCommandKeyDown}
-                    aria-label="Read-only terminal command"
+                    aria-label={terminalAdminMode ? 'Read and write terminal command' : 'Read-only terminal command'}
                     spellCheck="false"
                     autoCapitalize="off"
                     autoCorrect="off"

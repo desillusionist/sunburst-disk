@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getDrives:             ()                     => ipcRenderer.invoke('get-drives'),
+  setWindowLayout:       (layout, driveCount = 0) => ipcRenderer.invoke('set-window-layout', { layout, driveCount }),
   chooseFolder:          ()                     => ipcRenderer.invoke('choose-folder'),
   smartCleanPreview:     (scope, paths = {})    => ipcRenderer.invoke('smart-clean-preview', { scope, ...paths }),
   scanDirectory:         (targetPath, detailDepth) => ipcRenderer.invoke('scan-directory', { targetPath, detailDepth }),
@@ -11,6 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stopCurrentFolderWatcher: ()                     => ipcRenderer.invoke('watch-current-folder', { enabled: false }),
   deleteItems:           (items)                => ipcRenderer.invoke('delete-items', items),
   revealInFinder:        (itemPath)             => ipcRenderer.invoke('reveal-in-finder', itemPath),
+  ejectDrive:            (mount)                => ipcRenderer.invoke('eject-drive', { mount }),
   showContextMenu:       (item)                 => ipcRenderer.invoke('show-context-menu', item),
   askSiri:               (item)                 => ipcRenderer.invoke('ask-siri', {
     itemPath: item?.path,
@@ -21,7 +23,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   inspectItem:            (itemPath)             => ipcRenderer.invoke('inspect-item', itemPath),
   inspectItems:           (itemPaths)            => ipcRenderer.invoke('inspect-items', itemPaths),
   inspectAppRelated:      (appPath)             => ipcRenderer.invoke('inspect-app-related', appPath),
-  terminalRunSafe:        (command, cwd)       => ipcRenderer.invoke('terminal-run-safe', { command, cwd }),
+  terminalAuthorizeAdmin: (password)          => ipcRenderer.invoke('terminal-authorize-admin', { password }),
+  terminalRevokeAdmin:   ()                     => ipcRenderer.invoke('terminal-revoke-admin'),
+  terminalRunSafe:        (command, cwd, adminMode = false) => ipcRenderer.invoke('terminal-run-safe', { command, cwd, adminMode }),
   quickLook:              (itemPath)             => ipcRenderer.invoke('quick-look', itemPath),
   scanHiddenSpace:        (knownSize = 0)        => ipcRenderer.invoke('scan-hidden-space', { knownSize }),
   onScanProgress:        (cb)                   => ipcRenderer.on('scan-progress', (_, data) => cb(data)),

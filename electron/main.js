@@ -55,7 +55,7 @@ function createWindow() {
     width: 1020,
     height: 680,
     minWidth: 840,
-    minHeight: 540,
+    minHeight: 460,
     title: 'Sunburst Disk',
     titleBarStyle: 'hidden',
     trafficLightPosition: { x: 14, y: 12 },
@@ -87,6 +87,17 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+ipcMain.handle('set-window-layout', async (_event, { layout = 'scan', driveCount = 0 } = {}) => {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isFullScreen()) return { ok: false };
+  const count = Math.max(0, Math.min(8, Number(driveCount) || 0));
+  const targetHeight = layout === 'drives'
+    ? Math.min(860, Math.max(460, 210 + count * 84))
+    : 680;
+  const bounds = mainWindow.getBounds();
+  if (bounds.height !== targetHeight) mainWindow.setSize(bounds.width, targetHeight, true);
+  return { ok: true, height: targetHeight };
 });
 
 const FSEVENT_FLAGS = Object.freeze({
@@ -869,21 +880,82 @@ ipcMain.handle('inspect-app-related', async (event, appPath) => {
   }
 });
 
-const SAFE_TERMINAL_COMMANDS = /^(?:pwd|df -h|ls(?: -la|-lah)?(?: [A-Za-z0-9_./~ -]+)?|du -sh(?: [A-Za-z0-9_./~ -]+)?)$/;
+const SAFE_TERMINAL_ARGUMENT = "[^\\n\\r;|&><`$]+";
+const SAFE_TERMINAL_COMMANDS = new RegExp(`^(?:pwd|df -h|ls(?: -la|-lah)?(?: ${SAFE_TERMINAL_ARGUMENT})?|du -sh(?: ${SAFE_TERMINAL_ARGUMENT})?)$`);
+const SAFE_ADMIN_ARGUMENT = "[A-Za-z0-9_./~'() -]+";
+const SAFE_ADMIN_WRITE_COMMANDS = new RegExp(`^(?:touch|mkdir -p) (${SAFE_ADMIN_ARGUMENT})$`);
+let terminalAdminAuthorized = false;
 
-ipcMain.handle('terminal-run-safe', async (event, { command = '', cwd = '' } = {}) => {
+function validateAdminPassword(password) {
+  return new Promise(resolve => {
+    const child = spawn('/usr/bin/sudo', ['-S', '-k', '-v'], {
+      stdio: ['pipe', 'ignore', 'pipe']
+    });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 10000);
+    child.stdin.write(`${String(password || '')}\n`);
+    child.stdin.end();
+    child.on('close', code => {
+      clearTimeout(timer);
+      resolve(code === 0);
+    });
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolve(false);
+    });
+  });
+}
+
+function adminTargetIsInsideWorkingDirectory(command, workingDirectory) {
+  const normalizedWorkingDirectory = path.resolve(workingDirectory || '');
+  if (normalizedWorkingDirectory === '/'
+    || normalizedWorkingDirectory === '/System/Volumes/Data'
+    || isProtectedSystemPath(normalizedWorkingDirectory)) return false;
+  const match = command.match(SAFE_ADMIN_WRITE_COMMANDS);
+  if (!match) return false;
+  const rawTarget = match[1].trim().replace(/^'(.*)'$/, '$1').replace(/^"(.*)"$/, '$1');
+  const expandedTarget = rawTarget.replace(/^~(?=\/|$)/, os.homedir());
+  const resolvedTarget = path.resolve(workingDirectory, expandedTarget);
+  const root = path.resolve(workingDirectory).replace(/\/+$/, '');
+  return resolvedTarget === root || resolvedTarget.startsWith(`${root}${path.sep}`);
+}
+
+ipcMain.handle('terminal-authorize-admin', async (_event, { password = '' } = {}) => {
+  if (!String(password)) return { ok: false, error: 'An administrator password is required.' };
+  const valid = await validateAdminPassword(password);
+  terminalAdminAuthorized = valid;
+  return valid
+    ? { ok: true }
+    : { ok: false, error: 'Administrator authentication failed.' };
+});
+
+ipcMain.handle('terminal-revoke-admin', async () => {
+  terminalAdminAuthorized = false;
+  return { ok: true };
+});
+
+ipcMain.handle('terminal-run-safe', async (_event, { command = '', cwd = '', adminMode = false } = {}) => {
   const trimmed = String(command).trim();
-  if (!SAFE_TERMINAL_COMMANDS.test(trimmed)) {
-    return { ok: false, error: 'Only read-only commands are allowed: pwd, ls, du -sh and df -h.' };
-  }
   const workingDirectory = isFilesystemPath(cwd) ? cwd : os.homedir();
+  const readOnlyAllowed = SAFE_TERMINAL_COMMANDS.test(trimmed);
+  const adminWriteAllowed = SAFE_ADMIN_WRITE_COMMANDS.test(trimmed) && adminTargetIsInsideWorkingDirectory(trimmed, workingDirectory);
+  const useAdmin = Boolean(adminMode && terminalAdminAuthorized);
+  if (!readOnlyAllowed && !(useAdmin && adminWriteAllowed)) {
+    return {
+      ok: false,
+      error: useAdmin
+        ? 'Allowed commands are read-only helpers plus touch/mkdir -p inside the current folder. Deletion and arbitrary shell commands remain blocked.'
+        : 'Only read-only commands are allowed: pwd, ls, du -sh and df -h.'
+    };
+  }
   try {
     await fs.promises.access(workingDirectory, fs.constants.R_OK | fs.constants.X_OK);
   } catch {
     return { ok: false, error: 'The selected working directory is not accessible.' };
   }
+  const executable = useAdmin ? '/usr/bin/sudo' : '/bin/zsh';
+  const args = useAdmin ? ['-n', '/bin/zsh', '-lc', trimmed] : ['-lc', trimmed];
   return new Promise(resolve => {
-    execFile('/bin/zsh', ['-lc', trimmed], {
+    execFile(executable, args, {
       cwd: workingDirectory,
       timeout: 10000,
       maxBuffer: 2 * 1024 * 1024
@@ -893,6 +965,7 @@ ipcMain.handle('terminal-run-safe', async (event, { command = '', cwd = '' } = {
         ok: !error,
         command: trimmed,
         cwd: workingDirectory,
+        adminMode: useAdmin,
         stdout: String(stdout || '').slice(0, 2 * 1024 * 1024),
         stderr: String(stderr || '').slice(0, 2 * 1024 * 1024),
         error: error ? error.message : ''
@@ -1117,6 +1190,40 @@ ipcMain.handle('show-context-menu', async (event, { itemPath, itemName, item, ca
 });
 
 // ─── Drive Listing ─────────────────────────────────────────────────────────────
+function getDiskutilInfo(mount) {
+  return new Promise(resolve => {
+    execFile('/usr/sbin/diskutil', ['info', mount], { timeout: 5000, maxBuffer: 128 * 1024 }, (_error, stdout) => {
+      resolve(String(stdout || ''));
+    });
+  });
+}
+
+function isEjectableMountInfo(info) {
+  return /Device Location:\s+External/i.test(info)
+    || /Removable Media:\s+(?:Removable|Ejectable)/i.test(info);
+}
+
+ipcMain.handle('eject-drive', async (_event, { mount = '' } = {}) => {
+  const resolvedMount = path.resolve(String(mount || ''));
+  if (!resolvedMount.startsWith('/Volumes/') || resolvedMount === '/Volumes/') {
+    return { ok: false, error: 'Only mounted external volumes can be ejected.' };
+  }
+  const info = await getDiskutilInfo(resolvedMount);
+  if (!isEjectableMountInfo(info)) {
+    return { ok: false, error: 'This volume is not reported as ejectable by macOS.' };
+  }
+  return new Promise(resolve => {
+    execFile('/usr/sbin/diskutil', ['eject', resolvedMount], { timeout: 15000, maxBuffer: 128 * 1024 }, (error, stdout, stderr) => {
+      resolve({
+        ok: !error,
+        mount: resolvedMount,
+        message: String(stdout || '').trim(),
+        error: error ? String(stderr || error.message || 'The volume could not be ejected.') : ''
+      });
+    });
+  });
+});
+
 ipcMain.handle('get-drives', async () => {
   return new Promise((resolve) => {
     exec('df -k', (error, stdout) => {
@@ -1198,7 +1305,15 @@ ipcMain.handle('get-drives', async () => {
           }
         }
 
-        resolve({ drives: uniqueDrives.length ? uniqueDrives : getFallbackDrives(), userHome: os.homedir() });
+        Promise.all(uniqueDrives.map(async drive => {
+          if (drive.isStartup || !drive.mount.startsWith('/Volumes/')) return { ...drive, isEjectable: false };
+          const diskInfo = await getDiskutilInfo(drive.mount);
+          return { ...drive, isEjectable: isEjectableMountInfo(diskInfo) };
+        })).then(enrichedDrives => {
+          resolve({ drives: enrichedDrives.length ? enrichedDrives : getFallbackDrives(), userHome: os.homedir() });
+        }).catch(() => {
+          resolve({ drives: uniqueDrives.length ? uniqueDrives : getFallbackDrives(), userHome: os.homedir() });
+        });
       } catch {
         resolve({ drives: getFallbackDrives(), userHome: os.homedir() });
       }
@@ -1208,9 +1323,9 @@ ipcMain.handle('get-drives', async () => {
 
 function getFallbackDrives() {
   return [
-    { filesystem: '/dev/disk3s5', name: 'iDāsOS', total: 245.1e9, used: 231.3e9, free: 22.7e9, usePercent: '89%', mount: '/', scanPath: '/System/Volumes/Data', isStartup: true },
-    { filesystem: '/dev/disk7s1', name: 'exAPFS',  total: 2e12, used: 216.1e9, free: 1783.9e9, usePercent: '11%', mount: '/Volumes/exAPFS', scanPath: '/Volumes/exAPFS', isStartup: false },
-    { filesystem: '/dev/disk8s1', name: 'I-MOVIES', total: 2e12, used: 1286.9e9, free: 713.1e9, usePercent: '64%', mount: '/Volumes/I-MOVIES', scanPath: '/Volumes/I-MOVIES', isStartup: false }
+    { filesystem: '/dev/disk3s5', name: 'iDāsOS', total: 245.1e9, used: 231.3e9, free: 22.7e9, usePercent: '89%', mount: '/', scanPath: '/System/Volumes/Data', isStartup: true, isEjectable: false },
+    { filesystem: '/dev/disk7s1', name: 'exAPFS',  total: 2e12, used: 216.1e9, free: 1783.9e9, usePercent: '11%', mount: '/Volumes/exAPFS', scanPath: '/Volumes/exAPFS', isStartup: false, isEjectable: true },
+    { filesystem: '/dev/disk8s1', name: 'I-MOVIES', total: 2e12, used: 1286.9e9, free: 713.1e9, usePercent: '64%', mount: '/Volumes/I-MOVIES', scanPath: '/Volumes/I-MOVIES', isStartup: false, isEjectable: true }
   ];
 }
 
