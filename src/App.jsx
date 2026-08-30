@@ -211,6 +211,15 @@ function isPackageContainerNode(node) {
   return Boolean(photosLibrary || isArchiveNode(node));
 }
 
+function normalizeArchiveTree(node) {
+  if (!node) return node;
+  return {
+    ...node,
+    size: Number.isFinite(Number(node.size)) ? Number(node.size) : 0,
+    children: Array.isArray(node.children) ? node.children.map(normalizeArchiveTree) : []
+  };
+}
+
 function getNodeChain(tree, targetPath) {
   if (!tree || !targetPath) return [];
   const chain = [];
@@ -1491,12 +1500,13 @@ export default function App() {
         ? await window.electronAPI.scanArchive(node.path)
         : await window.electronAPI.scanSubdir(node.path, true);
       if (!result?.tree) throw new Error(result?.error || 'Package contents could not be read');
-      const children = result.tree.children || [];
+      const archiveTree = archive ? normalizeArchiveTree(result.tree) : result.tree;
+      const children = archiveTree.children || [];
       const enriched = {
         ...node,
         children,
-        size: result.tree.size ?? node.size,
-        itemCount: Number.isFinite(result.tree.itemCount) ? result.tree.itemCount : children.length,
+        size: Number.isFinite(Number(archiveTree.size)) ? Number(archiveTree.size) : node.size,
+        itemCount: Number.isFinite(archiveTree.itemCount) ? archiveTree.itemCount : children.length,
         archiveContainer: archive ? true : node.archiveContainer
       };
       const nextTree = scannedTree ? updateNodeInTree(scannedTree, node.path, enriched) : enriched;
@@ -1576,9 +1586,23 @@ export default function App() {
       await openHiddenSpace(node);
       return;
     }
-    const canNavigateArchive = isArchiveNode(node) && packageContentsShown[node.path] && node.children?.length;
+    const archiveChildren = isArchiveNode(node)
+      ? (archiveContentsByPath[node.path] || node.children || [])
+      : [];
+    const canNavigateArchive = isArchiveNode(node) && packageContentsShown[node.path] && archiveChildren.length > 0;
     if (node.type !== 'directory' && !node.archiveVirtual && !canNavigateArchive) {
       setFocusedNode(node);
+      return;
+    }
+
+    if (canNavigateArchive && node.type !== 'directory') {
+      const archiveNode = { ...node, children: archiveChildren, archiveContainer: true };
+      const archiveChain = getNodeChain(scannedTree, node.path);
+      const targetStack = archiveChain.length
+        ? [...archiveChain.slice(0, -1), archiveNode]
+        : [...navStack, archiveNode];
+      setScannedTree(previous => previous ? updateNodeInTree(previous, node.path, archiveNode) : previous);
+      commitNavigation(targetStack);
       return;
     }
 
