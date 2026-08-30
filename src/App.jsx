@@ -374,7 +374,7 @@ const ARROW_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
 const ARROW_MODULE_SELECTORS = [
   ['terminal', '.terminal-drawer'],
   ['view-options', '.view-options-panel'],
-  ['context-menu', '.context-menu'],
+  ['context-menu', '.ctx-menu'],
   ['assistant', '.assistant-drawer']
 ];
 
@@ -594,6 +594,7 @@ export default function App() {
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [hoveredNode, setHoveredNode]       = useState(null);
   const [highlightedPath, setHighlightedPath] = useState(null);
+  const [treeSelectionPath, setTreeSelectionPath] = useState(null);
   const [loading, setLoading]               = useState(false);
     const [scanError, setScanError]       = useState(null);
   const [scanNotice, setScanNotice]     = useState(null);
@@ -655,7 +656,7 @@ export default function App() {
   const folderWatchQueuedRef = useRef(null);
   const folderWatchGenerationRef = useRef(0);
   const folderWatchUpdatingTimerRef = useRef(null);
-  const arrowStateRef = useRef({ currentViewPath: null, visibleChildren: [], pointerNode: null, focusedNode: null, hoveredNode: null, highlightedPath: null });
+  const arrowStateRef = useRef({ currentViewPath: null, visibleChildren: [], treeSelectionPath: null, pointerNode: null, focusedNode: null, hoveredNode: null, highlightedPath: null });
   const arrowEventSequenceRef = useRef(0);
   const breadcrumbRef = useRef(null);
   const breadcrumbMeasureRef = useRef(null);
@@ -1253,6 +1254,7 @@ export default function App() {
     setScannedTree(null);
     setNavStack([]);
     setFocusedNode(null);
+    setTreeSelectionPath(null);
     setItemDetails(null);
     setMetadataByPath({});
     setPackageContentsShown({});
@@ -1395,6 +1397,7 @@ export default function App() {
     setScannedTree(cached);
     setNavStack([cached]);
     setFocusedNode(cached);
+    setTreeSelectionPath(null);
     setItemDetails(null);
     setHoveredNode(null);
     setHighlightedPath(null);
@@ -1460,6 +1463,7 @@ export default function App() {
     }
     setNavStack(nextStack);
     setFocusedNode(nextStack[nextStack.length - 1]);
+    setTreeSelectionPath(null);
     setHoveredNode(null);
     setHighlightedPath(null);
   };
@@ -1499,6 +1503,7 @@ export default function App() {
           return [...prefix, result.tree];
         });
         setFocusedNode(result.tree);
+        setTreeSelectionPath(null);
       } else if (result?.error && !result.settingsOpened) {
         alert(result.error);
       }
@@ -1885,6 +1890,7 @@ export default function App() {
       const refreshedChain = getNodeChain(nextMasterTree, currentPath);
       setNavStack(refreshedChain.length ? refreshedChain : [nextMasterTree]);
       setFocusedNode(resolveByPath(nextMasterTree, currentPath) || refreshedTree);
+      setTreeSelectionPath(null);
       setHoveredNode(null);
       setHighlightedPath(null);
       setScanError(null);
@@ -2156,22 +2162,27 @@ export default function App() {
     : (archiveDisplayChildren || previewNode?.children || []).filter(item => !collectedPaths.has(item.path));
   const currentArchivePath = currentViewDisplayNode && isArchiveNode(currentViewDisplayNode) ? currentViewDisplayNode.path : null;
   const currentArchiveStatus = currentArchivePath ? packageContentsStatus[currentArchivePath] : null;
+  const treeSelectionChildren = (chartNode?.children || []).filter(item => !collectedPaths.has(item.path));
   const visibleChildrenRef = useRef(visibleChildren);
+  const treeSelectionChildrenRef = useRef(treeSelectionChildren);
   visibleChildrenRef.current = visibleChildren;
+  treeSelectionChildrenRef.current = treeSelectionChildren;
   arrowStateRef.current = {
     currentViewPath: currentViewNode?.path || null,
     visibleChildren,
+    treeSelectionChildren,
+    treeSelectionPath,
     pointerNode,
     focusedNode: focusedLiveNode,
     hoveredNode: liveHoveredNode,
     highlightedPath
   };
-  const visibleChildrenKey = visibleChildren.map(item => item.path).join('\u0000');
   useEffect(() => {
     const getStateSnapshot = () => {
       const state = arrowStateRef.current;
-      const children = state.visibleChildren || [];
-      const activePath = state.pointerNode?.path || state.focusedNode?.path || state.highlightedPath || null;
+      const children = state.treeSelectionChildren || state.visibleChildren || [];
+      const renderedChildren = state.visibleChildren || [];
+      const activePath = state.treeSelectionPath || state.pointerNode?.path || state.focusedNode?.path || state.highlightedPath || null;
       return {
         currentViewPath: state.currentViewPath,
         pointerPath: state.pointerNode?.path || null,
@@ -2182,7 +2193,12 @@ export default function App() {
           count: children.length,
           paths: children.map(item => item.path).filter(Boolean),
           activeIndex: children.findIndex(item => item.path === activePath)
-        }
+        },
+        renderedList: {
+          count: renderedChildren.length,
+          paths: renderedChildren.map(item => item.path).filter(Boolean)
+        },
+        treeSelectionPath: state.treeSelectionPath || null
       };
     };
 
@@ -2208,7 +2224,7 @@ export default function App() {
         && !target.closest('.legend-row, .sunburst-stage, .content-tree-row');
       const before = getStateSnapshot();
       const arrowId = ++arrowEventSequenceRef.current;
-      const children = visibleChildrenRef.current;
+      const children = treeSelectionChildrenRef.current;
       const baseDetails = {
         arrowId,
         key: event.key,
@@ -2223,11 +2239,13 @@ export default function App() {
         activeElement: activeElementInfo,
         currentViewPath: before.currentViewPath,
         visibleList: before.visibleList,
+        renderedList: before.renderedList,
         before: {
           pointerPath: before.pointerPath,
           focusedPath: before.focusedPath,
           hoveredPath: before.hoveredPath,
-          highlightedPath: before.highlightedPath
+          highlightedPath: before.highlightedPath,
+          treeSelectionPath: before.treeSelectionPath || null
         },
         preventedBefore: Boolean(event.defaultPrevented)
       };
@@ -2255,7 +2273,9 @@ export default function App() {
           reason = 'empty-visible-list';
         } else {
           ownership = 'tree-global';
-          const currentPath = pointerNode?.path || focusedLiveNode?.path || highlightedPath;
+          const currentPath = (children.some(item => item.path === treeSelectionPath) ? treeSelectionPath : null)
+            || (children.some(item => item.path === focusedLiveNode?.path) ? focusedLiveNode?.path : null)
+            || (children.some(item => item.path === highlightedPath) ? highlightedPath : null);
           let currentIndex = children.findIndex(item => item.path === currentPath);
           if (currentIndex < 0) currentIndex = event.key === 'ArrowDown' ? -1 : children.length;
           const nextIndex = Math.max(0, Math.min(children.length - 1, currentIndex + (event.key === 'ArrowDown' ? 1 : -1)));
@@ -2264,7 +2284,8 @@ export default function App() {
             selectedTarget = { path: nextNode.path, index: nextIndex };
             handledByGlobalTree = true;
             event.preventDefault();
-            handleHoverNode(nextNode);
+            setTreeSelectionPath(nextNode.path);
+            setFocusedNode(nextNode);
             setHighlightedPath(nextNode.path);
             const row = document.querySelector(`[data-tree-path="${CSS.escape(nextNode.path)}"]`);
             row?.scrollIntoView({ block: 'nearest' });
@@ -2282,11 +2303,13 @@ export default function App() {
       const predictedAfter = handledByGlobalTree && selectedTarget
         ? {
           ...before,
-          pointerPath: selectedTarget.path,
+          pointerPath: before.pointerPath,
           focusedPath: selectedTarget.path,
-          hoveredPath: selectedTarget.path,
+          hoveredPath: before.hoveredPath,
           highlightedPath: selectedTarget.path,
-          visibleList: { ...before.visibleList, activeIndex: selectedTarget.index }
+          treeSelectionPath: selectedTarget.path,
+          visibleList: { ...before.visibleList, activeIndex: selectedTarget.index },
+          renderedList: before.renderedList
         }
         : before;
       recordPerfInstant('keyboard.arrow-keydown', {
@@ -2297,11 +2320,13 @@ export default function App() {
         handled: handledByGlobalTree,
         prevented: Boolean(event.defaultPrevented),
         after: {
-          pointerPath: predictedAfter.pointerPath,
-          focusedPath: predictedAfter.focusedPath,
-          hoveredPath: predictedAfter.hoveredPath,
-          highlightedPath: predictedAfter.highlightedPath
-        }
+            pointerPath: predictedAfter.pointerPath,
+            focusedPath: predictedAfter.focusedPath,
+            hoveredPath: predictedAfter.hoveredPath,
+            highlightedPath: predictedAfter.highlightedPath,
+            treeSelectionPath: predictedAfter.treeSelectionPath || null
+          }
+
       });
 
       window.setTimeout(() => {
@@ -2312,11 +2337,13 @@ export default function App() {
           ownership: ownership || 'ignored',
           currentViewPath: after.currentViewPath,
           visibleList: after.visibleList,
+          renderedList: after.renderedList,
           after: {
             pointerPath: after.pointerPath,
             focusedPath: after.focusedPath,
             hoveredPath: after.hoveredPath,
-            highlightedPath: after.highlightedPath
+            highlightedPath: after.highlightedPath,
+            treeSelectionPath: after.treeSelectionPath || null
           },
           prevented: Boolean(event.defaultPrevented)
         });
@@ -2324,7 +2351,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onArrowKey);
     return () => window.removeEventListener('keydown', onArrowKey);
-  }, [visibleChildrenKey, pointerNode, focusedLiveNode, highlightedPath, handleHoverNode, viewState, loading, nodeLoading]);
+  }, [treeSelectionPath, focusedLiveNode, highlightedPath, viewState, loading, nodeLoading]);
   const visibleChildCount = visibleChildren.length;
   const visibleSizesKey = visibleChildren.slice(0, 20).map(child => Number(child.size) || 0).join(',');
   useEffect(() => {
@@ -3137,12 +3164,14 @@ export default function App() {
                       e.dataTransfer.effectAllowed = 'copy';
                     }}
                     onClick={() => {
+                      setTreeSelectionPath(item.path);
                       setFocusedNode(item);
                       const archiveIsOpen = isArchiveNode(item) && packageContentsShown[item.path]
                         && Boolean(archiveContentsByPath[item.path]?.length || item.children?.length);
                       if (item.type === 'directory' || item.type === 'special' || archiveIsOpen) navigateTo(item);
                     }}
                     onMouseEnter={() => {
+                      setTreeSelectionPath(item.path);
                       setHighlightedPath(item.path);
                       setFocusedNode(item);
                       setPointerNode(item);

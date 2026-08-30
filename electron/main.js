@@ -5,10 +5,20 @@ import fs from 'fs';
 import { exec, execFile, spawn } from 'child_process';
 import os from 'os';
 import { createHash } from 'crypto';
+import { StringDecoder } from 'node:string_decoder';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FULL_DISK_ACCESS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles';
+// macOS GUI-launched Electron processes may not inherit a UTF-8 locale. BSD
+// command-line tools then render non-ASCII filenames as `?`, which would corrupt
+// the path before it reaches the renderer, Inspector, or Finder reveal.
+const UTF8_COMMAND_ENV = Object.freeze({
+  ...process.env,
+  LANG: 'en_US.UTF-8',
+  LC_ALL: 'en_US.UTF-8',
+  LC_CTYPE: 'en_US.UTF-8'
+});
 
 let mainWindow;
 
@@ -585,7 +595,7 @@ function makeSmartCleanCandidate(root, itemPath, stat, size, verification, reaso
 
 function measureDuSummary(targetPath) {
   return new Promise(resolve => {
-    execFile('du', ['-sk', '-x', targetPath], { maxBuffer: 1024 * 1024 }, (_error, stdout) => {
+    execFile('du', ['-sk', '-x', targetPath], { env: UTF8_COMMAND_ENV, maxBuffer: 1024 * 1024 }, (_error, stdout) => {
       const kb = Number.parseInt(String(stdout || '').trim().split(/\s+/)[0], 10);
       resolve(Number.isFinite(kb) ? kb * 1024 : 0);
     });
@@ -932,7 +942,7 @@ async function measureRelatedPath(targetPath) {
     const stat = await fs.promises.lstat(targetPath);
     if (stat.isFile() || stat.isSymbolicLink()) return stat.size;
     return await new Promise(resolve => {
-      execFile('/usr/bin/du', ['-sk', '-x', targetPath], { timeout: 5000 }, (error, stdout) => {
+      execFile('/usr/bin/du', ['-sk', '-x', targetPath], { env: UTF8_COMMAND_ENV, timeout: 5000 }, (error, stdout) => {
         if (error) return resolve(0);
         const kb = Number.parseInt(String(stdout).trim().split(/\s+/)[0], 10);
         resolve(Number.isFinite(kb) ? kb * 1024 : 0);
@@ -1713,7 +1723,7 @@ function listArchiveContents(archivePath) {
 
 function listArchiveContentsWithBsdtar(archivePath) {
   return new Promise((resolve, reject) => {
-    const fallbackByNames = () => execFile('/usr/bin/bsdtar', ['-tf', archivePath], { timeout: 20000, maxBuffer: 24 * 1024 * 1024 }, (fallbackError, names, fallbackStderr) => {
+    const fallbackByNames = () => execFile('/usr/bin/bsdtar', ['-tf', archivePath], { env: UTF8_COMMAND_ENV, timeout: 20000, maxBuffer: 24 * 1024 * 1024 }, (fallbackError, names, fallbackStderr) => {
       if (fallbackError) return reject(new Error(String(fallbackStderr || fallbackError.message || 'Archive could not be listed').trim()));
       const syntheticListing = String(names || '').split(/\r?\n/)
         .map(name => name.trim())
@@ -1725,7 +1735,7 @@ function listArchiveContentsWithBsdtar(archivePath) {
       resolve(tree);
     });
 
-    execFile('/usr/bin/bsdtar', ['-tvf', archivePath], { timeout: 20000, maxBuffer: 24 * 1024 * 1024 }, (error, stdout) => {
+    execFile('/usr/bin/bsdtar', ['-tvf', archivePath], { env: UTF8_COMMAND_ENV, timeout: 20000, maxBuffer: 24 * 1024 * 1024 }, (error, stdout) => {
       const tree = parseArchiveListing(stdout, archivePath);
       if (!error && tree.itemCount) return resolve(tree);
       fallbackByNames();
@@ -1870,7 +1880,7 @@ function runDu(targetPath) {
   return new Promise((resolve, reject) => {
     // -a all entries, -k kilobyte blocks, -x one filesystem
     const child = exec(`du -ak -x ${JSON.stringify(targetPath)} 2>/dev/null`,
-      { maxBuffer: 512 * 1024 * 1024 },
+      { env: UTF8_COMMAND_ENV, maxBuffer: 512 * 1024 * 1024 },
       (error, stdout) => {
         // du exits non-zero on permission errors — partial output is still useful.
         if (!stdout && error) return reject(error);
@@ -1888,9 +1898,10 @@ function runDu(targetPath) {
     let maxKbSeen = 0;
     let itemsSeen = 0;
     let carry = '';
+    const decoder = new StringDecoder('utf8');
     let lastSent = 0;
     child.stdout.on('data', chunk => {
-      carry += chunk.toString();
+      carry += decoder.write(chunk);
       const parts = carry.split('\n');
       carry = parts.pop(); // incomplete line waits for the next chunk
       for (const line of parts) {
@@ -1927,14 +1938,21 @@ function collectSymlinks(targetPath) {
     // /System/Volumes/Data/Volumes (other mounted drives!) and through the
     // /System firmlink, causing effectively infinite scans.
     const child = exec(`find -x ${JSON.stringify(targetPath)} -type l 2>/dev/null`,
-      { maxBuffer: 64 * 1024 * 1024 },
+      { env: UTF8_COMMAND_ENV, maxBuffer: 64 * 1024 * 1024 },
       () => resolve(links));
     let carry = '';
-    child.stdout.on('data', chunk => {
-      carry += chunk.toString();
+    const decoder = new StringDecoder('utf8');
+    const consume = text => {
+      carry += text;
       const parts = carry.split('\n');
       carry = parts.pop();
       for (const p of parts) if (p) links.add(p);
+    };
+    child.stdout.on('data', chunk => consume(decoder.write(chunk)));
+    child.once('close', () => {
+      consume(decoder.end());
+      if (carry) links.add(carry);
+      resolve(links);
     });
     child.on('error', () => resolve(links));
   });
