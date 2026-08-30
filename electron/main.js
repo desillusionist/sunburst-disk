@@ -293,6 +293,7 @@ app.on('before-quit', () => {
   stopFolderWatcher();
   if (quickLookChild && !quickLookChild.killed) quickLookChild.kill('SIGTERM');
   quickLookChild = null;
+  quickLookItemPath = null;
 });
 
 // ─── Folder watcher ──────────────────────────────────────────────────────────
@@ -839,16 +840,22 @@ async function chooseOtherApplication(itemPath) {
 
 // ─── Quick Look ────────────────────────────────────────────────────────────────
 let quickLookChild = null;
+let quickLookItemPath = null;
 
 function quickLookPath(itemPath) {
+  if (quickLookChild && !quickLookChild.killed && quickLookItemPath === itemPath) {
+    quickLookChild.kill('SIGTERM');
+    quickLookChild = null;
+    quickLookItemPath = null;
+    return Promise.resolve({ ok: true, closed: true });
+  }
   return new Promise(resolve => {
     const helperPath = getNativeHelperPath('quicklook-preview');
     if (!helperPath) return resolve({ ok: false, error: 'Native Quick Look helper is not built.' });
 
-    if (quickLookChild && !quickLookChild.killed) {
-      quickLookChild.kill('SIGTERM');
-      quickLookChild = null;
-    }
+    if (quickLookChild && !quickLookChild.killed) quickLookChild.kill('SIGTERM');
+    quickLookChild = null;
+    quickLookItemPath = itemPath;
 
     const child = spawn(helperPath, [itemPath], { stdio: ['ignore', 'ignore', 'pipe'] });
     quickLookChild = child;
@@ -863,7 +870,10 @@ function quickLookPath(itemPath) {
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', chunk => { stderr += chunk; });
     child.once('error', error => {
-      if (quickLookChild === child) quickLookChild = null;
+      if (quickLookChild === child) {
+        quickLookChild = null;
+        quickLookItemPath = null;
+      }
       settle({ ok: false, error: error.message });
     });
     child.once('spawn', () => {
@@ -873,7 +883,10 @@ function quickLookPath(itemPath) {
       setTimeout(() => settle({ ok: true, persistent: true }), 350);
     });
     child.once('close', (code, signal) => {
-      if (quickLookChild === child) quickLookChild = null;
+      if (quickLookChild === child) {
+        quickLookChild = null;
+        quickLookItemPath = null;
+      }
       if (!settled) {
         settle(code === 0
           ? { ok: true }
@@ -1324,7 +1337,7 @@ async function handleAskSiriFromMenu(payload) {
 }
 ipcMain.handle('ask-siri', async (event, payload = {}) => handleAskSiriFromMenu(payload));
 ipcMain.handle('ask-siri-transform', async (event, payload = {}) => reformatAskSiriResult(payload));
-ipcMain.handle('show-context-menu', async (event, { itemPath, itemName, item, canDelete = true, packageContentsShown = false } = {}) => {
+ipcMain.handle('show-context-menu', async (event, { itemPath, itemName, item, canDelete = true, packageContentsShown = false, x = 0, y = 0 } = {}) => {
   if (!isFilesystemPath(itemPath)) return;
   const stat = await fs.promises.lstat(itemPath).catch(() => null);
   const isFile = Boolean(stat?.isFile() || stat?.isSymbolicLink());
@@ -1376,7 +1389,10 @@ ipcMain.handle('show-context-menu', async (event, { itemPath, itemName, item, ca
       }
     }
   ]);
-  menu.popup({ window: mainWindow });
+  const contentBounds = mainWindow.getContentBounds();
+  const popupX = Math.max(8, Math.min(Number(x) || 8, contentBounds.width - 320));
+  const popupY = Math.max(8, Math.min(Number(y) || 8, contentBounds.height - 300));
+  menu.popup({ window: mainWindow, x: popupX, y: popupY });
 });
 
 // ─── Drive Listing ─────────────────────────────────────────────────────────────

@@ -282,10 +282,24 @@ function getNodeFileClass(node, metadataByPath) {
   return 'other';
 }
 
+const TYPE_FILTER_OPTIONS = [
+  ['folders', 'Folders'],
+  ['files', 'Files'],
+  ['audio', 'Audio'],
+  ['video', 'Video'],
+  ['image', 'Image'],
+  ['text', 'Text'],
+  ['document', 'Document'],
+  ['archive', 'Archive'],
+  ['font', 'Font'],
+  ['database', 'Database'],
+  ['other', 'Other files'],
+  ['special', 'System accounting']
+];
 const DEFAULT_VIEW_OPTIONS = {
   sortBy: 'size',
   sortDirection: 'desc',
-  typeFilter: 'all',
+  typeFilter: [],
   sizeFilter: 'all',
   dateFilter: 'all',
   nameQuery: ''
@@ -298,10 +312,19 @@ function getNodeDate(node, metadataByPath) {
 function matchesViewFilters(node, options, metadataByPath) {
   const query = options.nameQuery.trim().toLocaleLowerCase();
   if (query && !String(node.name || '').toLocaleLowerCase().includes(query)) return false;
-  if (options.typeFilter === 'files' && node.type !== 'file') return false;
-  if (options.typeFilter === 'folders' && node.type !== 'directory') return false;
-  if (options.typeFilter === 'special' && node.type !== 'special') return false;
-  if (!['all', 'files', 'folders', 'special'].includes(options.typeFilter) && getNodeFileClass(node, metadataByPath) !== options.typeFilter) return false;
+  const selectedTypes = Array.isArray(options.typeFilter)
+    ? options.typeFilter
+    : (options.typeFilter && options.typeFilter !== 'all' ? [options.typeFilter] : []);
+  if (selectedTypes.length) {
+    const nodeClass = getNodeFileClass(node, metadataByPath);
+    const matchesAnyType = selectedTypes.some(type => {
+      if (type === 'files') return node.type === 'file';
+      if (type === 'folders') return node.type === 'directory';
+      if (type === 'special') return node.type === 'special';
+      return nodeClass === type;
+    });
+    if (!matchesAnyType) return false;
+  }
 
   const size = Number(node.size || 0);
   if (options.sizeFilter === '1mb' && size < 1e6) return false;
@@ -588,6 +611,7 @@ export default function App() {
   const [assistantTransformError, setAssistantTransformError] = useState(null);
   const [folderWatchState, setFolderWatchState] = useState({ active: false, rootPath: null, updating: false, error: null, lastChangedAt: null });
 
+  const contextOpenWithRequestRef = useRef(0);
   const terminalDragRef = useRef(null);
   const terminalDrawerRef = useRef(null);
   const terminalHelperPreviousHeightRef = useRef(null);
@@ -603,6 +627,7 @@ export default function App() {
   const [nodeLoading, setNodeLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [packageContentsShown, setPackageContentsShown] = useState({});
+  const [packageContentsStatus, setPackageContentsStatus] = useState({});
 
   useEffect(() => {
     try { window.localStorage.setItem('sunburst-disk.theme', matrixTheme ? 'matrix' : 'classic'); } catch {}
@@ -1436,30 +1461,50 @@ export default function App() {
   }, []);
 
   const showPackageContents = useCallback(async (node) => {
-    if (!isPackageContainerNode(node) || !window.electronAPI?.scanSubdir) return;
+    if (!isPackageContainerNode(node)) return;
+    const archive = isArchiveNode(node);
+    if (archive && !window.electronAPI?.scanArchive) {
+      const message = 'Archive Viewer is unavailable in this build.';
+      setPackageContentsStatus(previous => ({ ...previous, [node.path]: { status: 'error', message } }));
+      alert(message);
+      return;
+    }
+    if (!archive && !window.electronAPI?.scanSubdir) return;
     setNodeLoading(true);
+    setPackageContentsStatus(previous => ({ ...previous, [node.path]: { status: 'loading', message: archive ? 'Listing archive without extraction…' : 'Reading package contents…' } }));
     try {
-      const result = isArchiveNode(node)
-        ? await window.electronAPI.scanArchive?.(node.path)
+      const result = archive
+        ? await window.electronAPI.scanArchive(node.path)
         : await window.electronAPI.scanSubdir(node.path, true);
       if (!result?.tree) throw new Error(result?.error || 'Package contents could not be read');
+      const children = result.tree.children || [];
       const enriched = {
         ...node,
-        children: result.tree.children || [],
+        children,
         size: result.tree.size ?? node.size,
-        itemCount: Number.isFinite(result.tree.itemCount) ? result.tree.itemCount : (result.tree.children || []).length,
-        archiveContainer: isArchiveNode(node) ? true : node.archiveContainer
+        itemCount: Number.isFinite(result.tree.itemCount) ? result.tree.itemCount : children.length,
+        archiveContainer: archive ? true : node.archiveContainer
       };
-      setScannedTree(previous => previous ? updateNodeInTree(previous, node.path, enriched) : previous);
-      setNavStack(previous => previous.map(current => current.path === node.path ? enriched : current));
+      const nextTree = scannedTree ? updateNodeInTree(scannedTree, node.path, enriched) : enriched;
+      setScannedTree(nextTree);
+      if (archive && nextTree) {
+        const archiveChain = getNodeChain(nextTree, node.path);
+        if (archiveChain.length) setNavStack(archiveChain);
+        else setNavStack(previous => previous.map(current => current.path === node.path ? enriched : current));
+      } else {
+        setNavStack(previous => previous.map(current => current.path === node.path ? enriched : current));
+      }
       setFocusedNode(enriched);
       setPackageContentsShown(previous => ({ ...previous, [node.path]: true }));
+      setPackageContentsStatus(previous => ({ ...previous, [node.path]: { status: 'ready', message: `${children.length.toLocaleString()} top-level entries loaded` } }));
     } catch (error) {
-      alert(`Package contents could not be shown: ${error.message}`);
+      const message = error.message || 'Package contents could not be read';
+      setPackageContentsStatus(previous => ({ ...previous, [node.path]: { status: 'error', message } }));
+      alert(message);
     } finally {
       setNodeLoading(false);
     }
-  }, []);
+  }, [scannedTree]);
 
   const hidePackageContents = useCallback((node) => {
     if (!isPackageContainerNode(node)) return;
@@ -1475,6 +1520,7 @@ export default function App() {
     setFocusedNode(current => current?.path === node.path ? { ...current, children: [], itemCount: 0 } : current);
     setHoveredNode(current => current?.path === node.path ? null : current);
     setPackageContentsShown(previous => ({ ...previous, [node.path]: false }));
+    setPackageContentsStatus(previous => ({ ...previous, [node.path]: { status: 'idle', message: 'Package contents hidden' } }));
   }, []);
 
   const togglePackageContents = useCallback((node) => {
@@ -1892,11 +1938,18 @@ export default function App() {
         itemName: item.name,
         item,
         canDelete: getRiskInfo(item).canDelete,
-        packageContentsShown: Boolean(packageContentsShown[item.path])
+        packageContentsShown: Boolean(packageContentsShown[item.path]),
+        x: e.clientX,
+        y: e.clientY
       });
     } else {
       setContextOpenWith(null);
-      setContextMenu({ x: e.clientX, y: e.clientY, item });
+      const menuHeightReserve = matrixTheme ? Math.min(420, window.innerHeight - 24) : 260;
+      setContextMenu({
+        x: Math.min(e.clientX, Math.max(8, window.innerWidth - 310)),
+        y: Math.min(e.clientY, Math.max(8, window.innerHeight - menuHeightReserve - 8)),
+        item
+      });
     }
   };
 
@@ -1908,12 +1961,28 @@ export default function App() {
   };
 
   const handleContextOpenWith = async item => {
+    const requestId = ++contextOpenWithRequestRef.current;
+    if (contextOpenWith?.path === item.path) {
+      setContextOpenWith(null);
+      return;
+    }
     setContextOpenWith({ path: item.path, loading: true, apps: [] });
     const result = await window.electronAPI?.getOpenWithApps?.(item.path);
+    if (requestId !== contextOpenWithRequestRef.current) return;
     setContextOpenWith({ path: item.path, loading: false, apps: result?.apps || [] });
   };
 
   const totalCollectorSize = collector.reduce((s, i) => s + (i.size || 0), 0);
+  const selectedTypeFilters = Array.isArray(viewOptions.typeFilter)
+    ? viewOptions.typeFilter
+    : (viewOptions.typeFilter && viewOptions.typeFilter !== 'all' ? [viewOptions.typeFilter] : []);
+  const toggleTypeFilter = value => setViewOptions(options => {
+    const current = Array.isArray(options.typeFilter)
+      ? options.typeFilter
+      : (options.typeFilter && options.typeFilter !== 'all' ? [options.typeFilter] : []);
+    const next = current.includes(value) ? current.filter(item => item !== value) : [...current, value];
+    return { ...options, typeFilter: next };
+  });
 
   // Filter out items already collected from the TOC list. A real file hover
   // has no relevant child list, so keep only its header and size visible.
@@ -2650,23 +2719,21 @@ export default function App() {
                     {viewOptions.sortDirection === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />}
                     {viewOptions.sortDirection === 'asc' ? 'Ascending' : 'Descending'}
                   </button>
-                  <label>Type
-                    <select value={viewOptions.typeFilter} onChange={event => setViewOptions(options => ({ ...options, typeFilter: event.target.value }))}>
-                      <option value="all">All types</option>
-                      <option value="folders">Folders</option>
-                      <option value="files">Files</option>
-                      <option value="audio">Audio</option>
-                      <option value="video">Video</option>
-                      <option value="image">Image</option>
-                      <option value="text">Text</option>
-                      <option value="document">Document</option>
-                      <option value="archive">Archive</option>
-                      <option value="font">Font</option>
-                      <option value="database">Database</option>
-                      <option value="other">Other files</option>
-                      <option value="special">System accounting</option>
-                    </select>
-                  </label>
+                  <div className="view-options-type-field">
+                    <div className="view-options-field-label">Type <span>{selectedTypeFilters.length ? `${selectedTypeFilters.length} selected` : 'All types'}</span></div>
+                    <div className="view-type-multiselect" role="group" aria-label="Filter by one or more object types">
+                      {TYPE_FILTER_OPTIONS.map(([value, label]) => (
+                        <label key={value} className="view-type-option">
+                          <input
+                            type="checkbox"
+                            checked={selectedTypeFilters.includes(value)}
+                            onChange={() => toggleTypeFilter(value)}
+                          />
+                          <span>{label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
                   <label>Minimum size
                     <select value={viewOptions.sizeFilter} onChange={event => setViewOptions(options => ({ ...options, sizeFilter: event.target.value }))}>
                       <option value="all">Any size</option>
@@ -2779,6 +2846,7 @@ export default function App() {
               onRevealInFinder={itemPath => window.electronAPI?.revealInFinder(itemPath)}
               onTogglePackageContents={togglePackageContents}
               packageContentsShown={Boolean(packageContentsShown[focusedLiveNode?.path])}
+              packageContentsStatus={packageContentsStatus[focusedLiveNode?.path]}
             />
           )}
           <DebugDownbar
@@ -2814,7 +2882,7 @@ export default function App() {
             setContextMenu(null);
           }}>⌕ Reveal in Finder</div>
           <div className="ctx-item" onClick={() => { void handleContextGetInfo(contextMenu.item); }}>ⓘ Get Info</div>
-          <div className="ctx-item" onClick={() => { void handleContextOpenWith(contextMenu.item); }}>▸ Open with…</div>
+          <div className="ctx-item" onClick={() => { void handleContextOpenWith(contextMenu.item); }}>{contextOpenWith?.path === contextMenu.item.path ? '▾ Open with…' : '▸ Open with…'}</div>
           {contextOpenWith?.path === contextMenu.item.path && (
             <div className="ctx-submenu">
               {contextOpenWith.loading && <div className="ctx-item disabled">Loading compatible apps…</div>}

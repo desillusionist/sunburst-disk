@@ -54,7 +54,7 @@ function getAccessState(metadata, risk) {
   return 'Restricted';
 }
 
-export default function DetailsSidebar({ node, metadata, loading, risk, categoryDescription, onAddToCollector, onQuickLook, onRevealInFinder, onTogglePackageContents, packageContentsShown }) {
+export default function DetailsSidebar({ node, metadata, loading, risk, categoryDescription, onAddToCollector, onQuickLook, onRevealInFinder, onTogglePackageContents, packageContentsShown, packageContentsStatus }) {
   const RiskIcon = risk?.Icon || AlertTriangle;
   const NodeIcon = node?.type === 'directory' ? Folder : node?.type === 'bulk' ? PackageOpen : FileText;
   const canDelete = Boolean(node && !node.archiveVirtual && risk?.canDelete && node.path && !node.path.startsWith('__'));
@@ -147,14 +147,21 @@ export default function DetailsSidebar({ node, metadata, loading, risk, category
           </div>
 
           {isPackageContainer && (
-            <button
-              className="details-package-btn"
-              disabled={!onTogglePackageContents || loading}
-              onClick={() => onTogglePackageContents?.(node)}
-            >
-              <PackageOpen size={13} />
-              {packageContentsShown ? 'Hide Package Contents' : 'Show Package Contents'}
-            </button>
+            <>
+              <button
+                className="details-package-btn"
+                disabled={!onTogglePackageContents || loading || packageContentsStatus?.status === 'loading'}
+                onClick={() => onTogglePackageContents?.(node)}
+              >
+                <PackageOpen size={13} />
+                {packageContentsShown ? 'Hide Package Contents' : 'Show Package Contents'}
+              </button>
+              {packageContentsStatus?.message && (
+                <div className={`details-package-status ${packageContentsStatus.status || ''}`} role={packageContentsStatus.status === 'error' ? 'alert' : undefined}>
+                  {packageContentsStatus.message}
+                </div>
+              )}
+            </>
           )}
 
           <div className={`details-risk-card risk-${risk.level}`}>
