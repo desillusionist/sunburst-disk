@@ -1486,6 +1486,15 @@ export default function App() {
   const showPackageContents = useCallback(async (node) => {
     if (!isPackageContainerNode(node)) return;
     const archive = isArchiveNode(node);
+    if (archive) {
+      recordPerfInstant('archive.show-start', {
+        path: node.path,
+        name: node.name,
+        cachedChildren: archiveContentsByPath[node.path]?.length || 0,
+        nodeChildren: node.children?.length || 0,
+        size: Number(node.size) || 0
+      });
+    }
     if (archive && !window.electronAPI?.scanArchive) {
       const message = 'Archive Viewer is unavailable in this build.';
       setPackageContentsStatus(previous => ({ ...previous, [node.path]: { status: 'error', message } }));
@@ -1502,6 +1511,15 @@ export default function App() {
       if (!result?.tree) throw new Error(result?.error || 'Package contents could not be read');
       const archiveTree = archive ? normalizeArchiveTree(result.tree) : result.tree;
       const children = archiveTree.children || [];
+      if (archive) {
+        recordPerfInstant('archive.show-response', {
+          path: node.path,
+          rootSize: Number(archiveTree.size) || 0,
+          rootItemCount: Number(archiveTree.itemCount) || 0,
+          childCount: children.length,
+          children: children.slice(0, 20).map(child => ({ name: child.name, path: child.path, type: child.type, size: Number(child.size) || 0, archiveVirtual: Boolean(child.archiveVirtual) }))
+        });
+      }
       const enriched = {
         ...node,
         children,
@@ -1510,7 +1528,14 @@ export default function App() {
         archiveContainer: archive ? true : node.archiveContainer
       };
       const nextTree = scannedTree ? updateNodeInTree(scannedTree, node.path, enriched) : enriched;
-      if (archive) setArchiveContentsByPath(previous => ({ ...previous, [node.path]: children }));
+      if (archive) {
+        setArchiveContentsByPath(previous => ({ ...previous, [node.path]: children }));
+        recordPerfInstant('archive.cache-write', {
+          path: node.path,
+          childCount: children.length,
+          childSizes: children.slice(0, 20).map(child => Number(child.size) || 0)
+        });
+      }
       setScannedTree(nextTree);
       if (archive && nextTree) {
         const archiveChain = getNodeChain(nextTree, node.path);
@@ -1522,14 +1547,16 @@ export default function App() {
       setFocusedNode(enriched);
       setPackageContentsShown(previous => ({ ...previous, [node.path]: true }));
       setPackageContentsStatus(previous => ({ ...previous, [node.path]: { status: 'ready', message: `${children.length.toLocaleString()} top-level entries loaded` } }));
+      if (archive) recordPerfInstant('archive.show-complete', { path: node.path, childCount: children.length, firstChildSizes: children.slice(0, 20).map(child => Number(child.size) || 0) });
     } catch (error) {
       const message = error.message || 'Package contents could not be read';
+      if (archive) recordPerfInstant('archive.show-error', { path: node.path, message });
       setPackageContentsStatus(previous => ({ ...previous, [node.path]: { status: 'error', message } }));
       alert(message);
     } finally {
       setNodeLoading(false);
     }
-  }, [scannedTree]);
+  }, [scannedTree, archiveContentsByPath]);
 
   const hidePackageContents = useCallback((node) => {
     if (!isPackageContainerNode(node)) return;
@@ -1553,6 +1580,7 @@ export default function App() {
     setHoveredNode(current => current?.path === node.path ? null : current);
     setPackageContentsShown(previous => ({ ...previous, [node.path]: false }));
     setPackageContentsStatus(previous => ({ ...previous, [node.path]: { status: 'idle', message: 'Package contents hidden' } }));
+    if (isArchiveNode(node)) recordPerfInstant('archive.hide', { path: node.path });
   }, []);
 
   const togglePackageContents = useCallback((node) => {
@@ -1590,6 +1618,16 @@ export default function App() {
       ? (archiveContentsByPath[node.path] || node.children || [])
       : [];
     const canNavigateArchive = isArchiveNode(node) && packageContentsShown[node.path] && archiveChildren.length > 0;
+    if (isArchiveNode(node)) {
+      recordPerfInstant('archive.navigate-attempt', {
+        path: node.path,
+        type: node.type,
+        shown: Boolean(packageContentsShown[node.path]),
+        cachedChildren: archiveContentsByPath[node.path]?.length || 0,
+        nodeChildren: node.children?.length || 0,
+        canNavigate: canNavigateArchive
+      });
+    }
     if (node.type !== 'directory' && !node.archiveVirtual && !canNavigateArchive) {
       setFocusedNode(node);
       return;
@@ -1602,6 +1640,7 @@ export default function App() {
         ? [...archiveChain.slice(0, -1), archiveNode]
         : [...navStack, archiveNode];
       setScannedTree(previous => previous ? updateNodeInTree(previous, node.path, archiveNode) : previous);
+      if (isArchiveNode(node)) recordPerfInstant('archive.navigate-commit', { path: node.path, targetDepth: targetStack.length, childCount: archiveChildren.length, childSizes: archiveChildren.slice(0, 20).map(child => Number(child.size) || 0) });
       commitNavigation(targetStack);
       return;
     }
@@ -2093,6 +2132,23 @@ export default function App() {
     : (archiveDisplayChildren || previewNode?.children || []).filter(item => !collectedPaths.has(item.path));
   const currentArchivePath = currentViewDisplayNode && isArchiveNode(currentViewDisplayNode) ? currentViewDisplayNode.path : null;
   const currentArchiveStatus = currentArchivePath ? packageContentsStatus[currentArchivePath] : null;
+  const visibleChildCount = visibleChildren.length;
+  const visibleSizesKey = visibleChildren.slice(0, 20).map(child => Number(child.size) || 0).join(',');
+  useEffect(() => {
+    if (!currentArchivePath) return;
+    const cachedChildren = archiveContentsByPath[currentArchivePath] || [];
+    recordPerfInstant('archive.render-state', {
+      path: currentArchivePath,
+      shown: Boolean(packageContentsShown[currentArchivePath]),
+      cacheChildren: cachedChildren.length,
+      cacheSizes: cachedChildren.slice(0, 20).map(child => Number(child.size) || 0),
+      currentNodeChildren: currentViewDisplayNode?.children?.length || 0,
+      chartChildren: chartNode?.children?.length || 0,
+      previewChildren: previewNode?.children?.length || 0,
+      visibleChildren: visibleChildCount,
+      visibleSizes: visibleSizesKey ? visibleSizesKey.split(',').map(Number) : []
+    });
+  }, [currentArchivePath, archiveContentsByPath, packageContentsShown, currentViewDisplayNode, chartNode, previewNode, visibleChildCount, visibleSizesKey]);
   // The node size is authoritative; summing children can differ because du
   // reports allocated directory blocks and hidden/excluded entries separately.
   const currentTotalSize = previewNode?.size || 0;
