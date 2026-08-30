@@ -730,6 +730,16 @@ export default function App() {
     if (!hoveredNode?.path || !scannedTree) return hoveredNode;
     return resolveByPath(scannedTree, hoveredNode.path) || hoveredNode;
   }, [hoveredNode, scannedTree]);
+  const currentArchiveChildren = currentViewNode?.path ? archiveContentsByPath[currentViewNode.path] : null;
+  const currentViewDisplayNode = useMemo(() => {
+    if (!currentViewNode || !Array.isArray(currentArchiveChildren)) return currentViewNode;
+    return {
+      ...currentViewNode,
+      children: currentArchiveChildren,
+      archiveContainer: true,
+      itemCount: currentArchiveChildren.reduce((sum, child) => sum + 1 + (child.itemCount || 0), 0)
+    };
+  }, [currentViewNode, currentArchiveChildren]);
   const isCollapsedAppHover = Boolean(
     liveHoveredNode?.path?.toLowerCase?.().endsWith('.app')
       && !packageContentsShown[liveHoveredNode.path]
@@ -738,7 +748,7 @@ export default function App() {
     ? liveHoveredNode
     : liveHoveredNode && liveHoveredNode.children && liveHoveredNode.children.length > 0
       ? liveHoveredNode
-      : currentViewNode;
+      : currentViewDisplayNode;
   const needsDisplayMetadata = viewOptions.sortBy === 'date' || viewOptions.dateFilter !== 'all';
   const displayMetadata = needsDisplayMetadata ? metadataByPath : EMPTY_METADATA;
   const displayCacheRef = useRef(new WeakMap());
@@ -749,7 +759,7 @@ export default function App() {
   const displayOptionsKey = `${viewOptions.sortBy}|${viewOptions.sortDirection}|${viewOptions.typeFilter}|${viewOptions.sizeFilter}|${viewOptions.dateFilter}|${viewOptions.nameQuery}|packages:${packageContentsKey}`;
   const previewNode = useMemo(() => {
     const startedAt = performance.now();
-    const isHoverPreview = previewSource !== currentViewNode;
+    const isHoverPreview = previewSource?.path !== currentViewNode?.path;
     const result = isHoverPreview
       ? buildShallowDisplayNode(
         previewSource,
@@ -782,7 +792,7 @@ export default function App() {
   const chartNode = useMemo(() => {
     const startedAt = performance.now();
     const result = buildDisplayNode(
-      currentViewNode,
+      currentViewDisplayNode,
       viewOptions,
       displayMetadata,
       packageContentsShown,
@@ -791,12 +801,12 @@ export default function App() {
       needsDisplayMetadata
     );
     recordPerfEvent('display-tree.build', performance.now() - startedAt, {
-      path: currentViewNode?.path || null,
-      children: currentViewNode?.children?.length || 0,
+      path: currentViewDisplayNode?.path || null,
+      children: currentViewDisplayNode?.children?.length || 0,
       role: 'chart'
     });
     return result;
-  }, [currentViewNode, viewOptions, displayMetadata, packageContentsShown, displayOptionsKey, needsDisplayMetadata]);
+  }, [currentViewDisplayNode, viewOptions, displayMetadata, packageContentsShown, displayOptionsKey, needsDisplayMetadata]);
   const isPreviewNode = Boolean(liveHoveredNode && liveHoveredNode.children && liveHoveredNode.children.length > 0);
   const colorAssignments = useMemo(() => Object.fromEntries((previewNode?.children || []).map((item, index) => [
     item.path,
@@ -2057,7 +2067,7 @@ export default function App() {
   const visibleChildren = isFileHover
     ? []
     : (archiveDisplayChildren || previewNode?.children || []).filter(item => !collectedPaths.has(item.path));
-  const currentArchivePath = currentViewNode && isArchiveNode(currentViewNode) ? currentViewNode.path : null;
+  const currentArchivePath = currentViewDisplayNode && isArchiveNode(currentViewDisplayNode) ? currentViewDisplayNode.path : null;
   const currentArchiveStatus = currentArchivePath ? packageContentsStatus[currentArchivePath] : null;
   // The node size is authoritative; summing children can differ because du
   // reports allocated directory blocks and hidden/excluded entries separately.
