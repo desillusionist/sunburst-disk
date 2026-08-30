@@ -130,7 +130,7 @@ body {
   border: 1px solid #3a3f4a; border-radius: 7px; background: #2a2d35;
   box-shadow: 0 8px 24px rgba(0,0,0,.5); -webkit-app-region: no-drag;
 }
-.smart-clean-menu-item { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 7px 9px; border: 0; border-radius: 4px; background: transparent; color: #d1d5db; text-align: left; font: inherit; font-size: 11px; cursor: pointer; }
+.smart-clean-menu-item { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 7px 9px; border: 0; border-radius: 4px; background: transparent; color: #d1d5db; text-align: left; font-family: var(--toolbar-control-font-family); font-size: var(--toolbar-control-font-size); cursor: pointer; }
 .smart-clean-menu-item:hover:not(:disabled) { background: #343a44; color: #fff; }
 .smart-clean-menu-item:disabled { color: #656c7a; cursor: default; }
 .smart-clean-menu-hint { color: #7f8694; font-size: 9px; }
@@ -710,6 +710,25 @@ body {
 .details-collector-btn:disabled { color: #656c7a; border-color: #252a31; background: #22262d; cursor: not-allowed; }
 .details-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 45px 14px; color: #656c7a; font-size: 11px; line-height: 1.45; text-align: center; }
 
+:root {
+  --toolbar-control-font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --toolbar-control-font-size: 10px;
+}
+.smart-clean-toolbar-btn,
+.themes-toggle,
+.details-toggle,
+.view-options-trigger {
+  font-family: var(--toolbar-control-font-family);
+  font-size: var(--toolbar-control-font-size);
+}
+.smart-clean-menu-item,
+.theme-menu-item,
+.filter-select-trigger,
+.filter-select-option {
+  font-family: var(--toolbar-control-font-family);
+  font-size: var(--toolbar-control-font-size);
+}
+
 /* ── Legend Area ──────────────────────────────────────────────────────────── */
 .legend-area {
   flex: 0.9;
@@ -1259,14 +1278,14 @@ body {
   border-radius: 4px;
   background: transparent;
   color: #d1d5db;
-  font: inherit;
-  font-size: 12px;
+  font-family: var(--toolbar-control-font-family);
+  font-size: var(--toolbar-control-font-size);
   text-align: left;
   cursor: pointer;
 }
 .theme-menu-item:hover,
 .theme-menu-item.selected { background: #3a414d; color: #fff; }
-.theme-check { color: #86efac; margin-left: 12px; }
+.theme-check { color: #86efac; margin-left: 12px; font-size: var(--toolbar-control-font-size); font-weight: 600; line-height: 1; }
 .theme-matrix .themes-toggle {
   background: var(--matrix-panel);
   border-color: var(--matrix-line);

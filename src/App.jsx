@@ -2239,6 +2239,10 @@ export default function App() {
   const selectedTypeFilters = Array.isArray(viewOptions.typeFilter)
     ? viewOptions.typeFilter
     : (viewOptions.typeFilter && viewOptions.typeFilter !== 'all' ? [viewOptions.typeFilter] : []);
+  const filtersActive = selectedTypeFilters.length > 0
+    || viewOptions.sizeFilter !== 'all'
+    || viewOptions.dateFilter !== 'all'
+    || Boolean(viewOptions.nameQuery.trim());
   const toggleTypeFilter = value => setViewOptions(options => {
     const current = Array.isArray(options.typeFilter)
       ? options.typeFilter
@@ -3195,7 +3199,7 @@ export default function App() {
 
                 </div>
                 <button
-                  className={`view-options-trigger ${viewOptionsOpen ? 'active' : ''}`}
+                  className={`view-options-trigger ${viewOptionsOpen ? 'active' : ''} ${filtersActive ? 'filters-active' : ''}`}
                   title="Sort and filter"
                   aria-label="Sort and filter"
                   aria-expanded={viewOptionsOpen}
@@ -3292,7 +3296,7 @@ export default function App() {
                     key={idx}
                     className={`legend-row ${isHigh ? 'highlighted' : ''}`}
                     data-tree-path={item.path || undefined}
-                    title={item.path && !item.path.startsWith('__') ? `${item.name}\n${item.path}` : item.name}
+                    title={item.name}
                     draggable={item.path && !item.path.startsWith('__')}
                     onDragStart={e => {
                       if (!item.path || item.path.startsWith('__')) { e.preventDefault(); return; }
