@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ChevronDown, PanelRight, PanelRightClose, RefreshCw, ShieldCheck, ShieldAlert, LockKeyhole, AlertTriangle, Folder, FileText, Trash2, X, RotateCcw, Copy } from 'lucide-react';
 import SunburstChart from './components/SunburstChart';
 import DetailsSidebar from './components/DetailsSidebar';
@@ -574,6 +574,7 @@ export default function App() {
   const [collectorExpanded, setCollectorExpanded] = useState(false);
   const [countdown, setCountdown]           = useState(null);
   const [contextMenu, setContextMenu]       = useState(null);
+  const contextMenuRef = useRef(null);
   const [contextOpenWith, setContextOpenWith] = useState(null);
   const [viewOptions, setViewOptions]       = useState(DEFAULT_VIEW_OPTIONS);
   const [metadataByPath, setMetadataByPath] = useState({});
@@ -613,6 +614,7 @@ export default function App() {
 
   const contextOpenWithRequestRef = useRef(0);
   const quickLookPathRef = useRef(null);
+  const quickLookFollowRequestRef = useRef(0);
   const terminalDragRef = useRef(null);
   const terminalDrawerRef = useRef(null);
   const terminalHelperPreviousHeightRef = useRef(null);
@@ -629,6 +631,7 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [packageContentsShown, setPackageContentsShown] = useState({});
   const [packageContentsStatus, setPackageContentsStatus] = useState({});
+  const [archiveContentsByPath, setArchiveContentsByPath] = useState({});
 
   useEffect(() => {
     try { window.localStorage.setItem('sunburst-disk.theme', matrixTheme ? 'matrix' : 'classic'); } catch {}
@@ -1487,6 +1490,7 @@ export default function App() {
         archiveContainer: archive ? true : node.archiveContainer
       };
       const nextTree = scannedTree ? updateNodeInTree(scannedTree, node.path, enriched) : enriched;
+      if (archive) setArchiveContentsByPath(previous => ({ ...previous, [node.path]: children }));
       setScannedTree(nextTree);
       if (archive && nextTree) {
         const archiveChain = getNodeChain(nextTree, node.path);
@@ -1509,6 +1513,13 @@ export default function App() {
 
   const hidePackageContents = useCallback((node) => {
     if (!isPackageContainerNode(node)) return;
+    if (isArchiveNode(node)) {
+      setArchiveContentsByPath(previous => {
+        const next = { ...previous };
+        delete next[node.path];
+        return next;
+      });
+    }
     setScannedTree(previous => {
       const liveNode = resolveByPath(previous, node.path) || node;
       return previous ? updateNodeInTree(previous, node.path, { ...liveNode, children: [], itemCount: 0 }) : previous;
@@ -1894,6 +1905,21 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleQuickLook, loading, nodeLoading, pointerNode, viewState]);
 
+  useEffect(() => {
+    const activePath = quickLookPathRef.current;
+    const candidate = pointerNode;
+    if (!activePath || !candidate?.path || candidate.path === activePath || candidate.archiveVirtual || candidate.path.startsWith('__')) return undefined;
+    if (!['file', 'directory', 'symlink'].includes(candidate.type) || !window.electronAPI?.quickLook) return undefined;
+    const requestId = ++quickLookFollowRequestRef.current;
+    const timer = window.setTimeout(async () => {
+      if (requestId !== quickLookFollowRequestRef.current || quickLookPathRef.current !== activePath) return;
+      const result = await window.electronAPI.quickLook(candidate.path);
+      if (requestId !== quickLookFollowRequestRef.current) return;
+      if (result?.ok && quickLookPathRef.current === activePath) quickLookPathRef.current = candidate.path;
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [pointerNode]);
+
   const transformAssistantResult = useCallback(async mode => {
     if (!window.electronAPI?.askSiriTransform || !assistantResult?.output || assistantTransformMode) return;
     setAssistantTransformMode(mode);
@@ -1944,13 +1970,29 @@ export default function App() {
     e.stopPropagation();
     if (!item || !item.path || item.path.startsWith('__') || item.archiveVirtual) return;
     setContextOpenWith(null);
-    const menuHeightReserve = Math.max(0, window.innerHeight - 16);
     setContextMenu({
       x: Math.min(e.clientX, Math.max(8, window.innerWidth - 310)),
-      y: Math.min(e.clientY, Math.max(8, window.innerHeight - menuHeightReserve - 8)),
+      y: e.clientY,
+      anchorX: e.clientX,
+      anchorY: e.clientY,
       item
     });
   };
+
+  useLayoutEffect(() => {
+    if (!contextMenu || !contextMenuRef.current) return;
+    const rect = contextMenuRef.current.getBoundingClientRect();
+    const margin = 8;
+    const anchorX = Number.isFinite(contextMenu.anchorX) ? contextMenu.anchorX : contextMenu.x;
+    const anchorY = Number.isFinite(contextMenu.anchorY) ? contextMenu.anchorY : contextMenu.y;
+    const nextX = Math.min(Math.max(margin, anchorX), Math.max(margin, window.innerWidth - rect.width - margin));
+    const fitsBelow = anchorY + rect.height <= window.innerHeight - margin;
+    const nextY = fitsBelow
+      ? Math.max(margin, anchorY)
+      : Math.max(margin, anchorY - rect.height);
+    if (Math.abs(nextX - contextMenu.x) < 1 && Math.abs(nextY - contextMenu.y) < 1) return;
+    setContextMenu(previous => previous ? { ...previous, x: nextX, y: nextY } : previous);
+  }, [contextMenu, contextOpenWith?.loading, contextOpenWith?.apps?.length]);
 
   const handleContextGetInfo = async item => {
     const result = await window.electronAPI?.finderGetInfo?.(item.path);
@@ -1986,17 +2028,18 @@ export default function App() {
   // Filter out items already collected from the TOC list. A real file hover
   // has no relevant child list, so keep only its header and size visible.
   const expandedArchivePaths = new Set(Object.keys(packageContentsShown).filter(path => packageContentsShown[path]));
+  const hoveredArchiveChildren = liveHoveredNode ? (archiveContentsByPath[liveHoveredNode.path] || liveHoveredNode.children || []) : [];
   const hoveredExpandedArchive = Boolean(
     liveHoveredNode &&
     isArchiveNode(liveHoveredNode) &&
     expandedArchivePaths.has(liveHoveredNode.path) &&
-    liveHoveredNode.children?.length
+    hoveredArchiveChildren.length
   );
   const currentExpandedArchive = Boolean(
     previewNode &&
     isArchiveNode(previewNode) &&
     expandedArchivePaths.has(previewNode.path) &&
-    previewNode.children?.length
+    ((archiveContentsByPath[previewNode.path]?.length || 0) > 0 || (previewNode.children?.length || 0) > 0)
   );
   const isFileHover = (liveHoveredNode?.type === 'file' && !hoveredExpandedArchive && !currentExpandedArchive) || isCollapsedAppHover;
   const archiveDisplaySource = hoveredExpandedArchive
@@ -2006,7 +2049,7 @@ export default function App() {
       : null;
   const archiveDisplayChildren = archiveDisplaySource
     ? sortNodes(
-      (archiveDisplaySource.children || []).filter(item => matchesViewFilters(item, viewOptions, displayMetadata)),
+      (archiveContentsByPath[archiveDisplaySource.path] || archiveDisplaySource.children || []).filter(item => matchesViewFilters(item, viewOptions, displayMetadata)),
       viewOptions,
       displayMetadata
     )
@@ -2894,6 +2937,7 @@ export default function App() {
       {/* ── Styled context menu: also used in Matrix because native menus cannot inherit CSS ── */}
       {contextMenu && (
         <div
+          ref={contextMenuRef}
           className={`ctx-menu ${matrixTheme ? 'ctx-menu-matrix' : ''}`}
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={e => e.stopPropagation()}
