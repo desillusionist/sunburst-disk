@@ -4,6 +4,7 @@ import {
   clearPerformanceLogs,
   getPerformanceSnapshot,
   recordPerfEvent,
+  recordPerfInstant,
   setPerformanceLogging,
   subscribePerformanceLogs
 } from '../debug/perfTelemetry';
@@ -46,7 +47,15 @@ export default function DebugDownbar({ terminalOpen = false, onToggleTerminal })
     };
   }, []);
 
-  const toggleLogging = () => setPerformanceLogging(!snapshot.enabled);
+  const toggleLogging = () => {
+    const nextEnabled = !snapshot.enabled;
+    setPerformanceLogging(nextEnabled);
+    if (nextEnabled) {
+      recordPerfInstant('keyboard.arrow-session-start', {
+        instruction: 'Run each requested Arrow-key scenario once, then export this JSON log.'
+      });
+    }
+  };
 
   const copyLogs = async () => {
     const text = JSON.stringify(getPerformanceSnapshot(), null, 2);

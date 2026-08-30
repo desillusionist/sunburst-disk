@@ -370,6 +370,28 @@ function sortNodes(nodes, options, metadataByPath) {
 
 const EMPTY_METADATA = Object.freeze({});
 const MAX_PREVIEW_CHILDREN = 100;
+const ARROW_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+const ARROW_MODULE_SELECTORS = [
+  ['terminal', '.terminal-drawer'],
+  ['view-options', '.view-options-panel'],
+  ['context-menu', '.context-menu'],
+  ['assistant', '.assistant-drawer']
+];
+
+function describeArrowElement(element) {
+  if (!element || typeof element.closest !== 'function') {
+    return { tag: null, id: null, className: null, closestModule: null };
+  }
+  const className = element.getAttribute?.('class') || (typeof element.className === 'string' ? element.className : null);
+  const moduleMatch = ARROW_MODULE_SELECTORS.find(([, selector]) => element.closest(selector));
+  return {
+    tag: element.tagName ? element.tagName.toLowerCase() : null,
+    id: element.id || null,
+    className: className || null,
+    closestModule: moduleMatch?.[0] || null
+  };
+}
+
 
 function buildShallowDisplayNode(
   node,
@@ -633,6 +655,8 @@ export default function App() {
   const folderWatchQueuedRef = useRef(null);
   const folderWatchGenerationRef = useRef(0);
   const folderWatchUpdatingTimerRef = useRef(null);
+  const arrowStateRef = useRef({ currentViewPath: null, visibleChildren: [], pointerNode: null, focusedNode: null, hoveredNode: null, highlightedPath: null });
+  const arrowEventSequenceRef = useRef(0);
   const breadcrumbRef = useRef(null);
   const breadcrumbMeasureRef = useRef(null);
   const countdownTimerRef = useRef(null);
@@ -2134,27 +2158,169 @@ export default function App() {
   const currentArchiveStatus = currentArchivePath ? packageContentsStatus[currentArchivePath] : null;
   const visibleChildrenRef = useRef(visibleChildren);
   visibleChildrenRef.current = visibleChildren;
+  arrowStateRef.current = {
+    currentViewPath: currentViewNode?.path || null,
+    visibleChildren,
+    pointerNode,
+    focusedNode: focusedLiveNode,
+    hoveredNode: liveHoveredNode,
+    highlightedPath
+  };
   const visibleChildrenKey = visibleChildren.map(item => item.path).join('\u0000');
   useEffect(() => {
-    const onArrowKey = event => {
-      if (!['ArrowUp', 'ArrowDown'].includes(event.key) || event.repeat || viewState !== 'scan' || loading || nodeLoading) return;
-      const target = event.target;
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target?.isContentEditable) return;
-      if (target?.closest?.('.terminal-drawer, .view-options-panel, .context-menu, .assistant-drawer')) return;
-      const children = visibleChildrenRef.current;
-      if (!children.length) return;
+    const getStateSnapshot = () => {
+      const state = arrowStateRef.current;
+      const children = state.visibleChildren || [];
+      const activePath = state.pointerNode?.path || state.focusedNode?.path || state.highlightedPath || null;
+      return {
+        currentViewPath: state.currentViewPath,
+        pointerPath: state.pointerNode?.path || null,
+        focusedPath: state.focusedNode?.path || null,
+        hoveredPath: state.hoveredNode?.path || null,
+        highlightedPath: state.highlightedPath || null,
+        visibleList: {
+          count: children.length,
+          paths: children.map(item => item.path).filter(Boolean),
+          activeIndex: children.findIndex(item => item.path === activePath)
+        }
+      };
+    };
 
-      const currentPath = pointerNode?.path || focusedLiveNode?.path || highlightedPath;
-      let currentIndex = children.findIndex(item => item.path === currentPath);
-      if (currentIndex < 0) currentIndex = event.key === 'ArrowDown' ? -1 : children.length;
-      const nextIndex = Math.max(0, Math.min(children.length - 1, currentIndex + (event.key === 'ArrowDown' ? 1 : -1)));
-      const nextNode = children[nextIndex];
-      if (!nextNode) return;
-      event.preventDefault();
-      handleHoverNode(nextNode);
-      setHighlightedPath(nextNode.path);
-      const row = document.querySelector(`[data-tree-path="${CSS.escape(nextNode.path)}"]`);
-      row?.scrollIntoView({ block: 'nearest' });
+    const onArrowKey = event => {
+      if (!ARROW_KEYS.has(event.key)) return;
+
+      const target = event.target;
+      const activeElement = document.activeElement;
+      const targetInfo = describeArrowElement(target);
+      const activeElementInfo = describeArrowElement(activeElement);
+      const moduleOwner = targetInfo.closestModule || activeElementInfo.closestModule;
+      const isEditableOrNative = Boolean(
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || target?.isContentEditable
+        || activeElement instanceof HTMLInputElement
+        || activeElement instanceof HTMLTextAreaElement
+        || activeElement instanceof HTMLSelectElement
+        || activeElement?.isContentEditable
+      );
+      const buttonOutsideTree = target instanceof HTMLButtonElement
+        && !target.closest('.legend-row, .sunburst-stage, .content-tree-row');
+      const before = getStateSnapshot();
+      const arrowId = ++arrowEventSequenceRef.current;
+      const children = visibleChildrenRef.current;
+      const baseDetails = {
+        arrowId,
+        key: event.key,
+        repeat: Boolean(event.repeat),
+        modifiers: {
+          alt: Boolean(event.altKey),
+          ctrl: Boolean(event.ctrlKey),
+          meta: Boolean(event.metaKey),
+          shift: Boolean(event.shiftKey)
+        },
+        target: targetInfo,
+        activeElement: activeElementInfo,
+        currentViewPath: before.currentViewPath,
+        visibleList: before.visibleList,
+        before: {
+          pointerPath: before.pointerPath,
+          focusedPath: before.focusedPath,
+          hoveredPath: before.hoveredPath,
+          highlightedPath: before.highlightedPath
+        },
+        preventedBefore: Boolean(event.defaultPrevented)
+      };
+
+      let ownership = moduleOwner || null;
+      let reason = moduleOwner ? 'existing-module-focus' : null;
+      let selectedTarget = null;
+      let handledByGlobalTree = false;
+
+      if (!ownership && isEditableOrNative) {
+        ownership = 'editable/native-control';
+        reason = 'native-or-editable-focus';
+      } else if (!ownership && (viewState !== 'scan' || loading || nodeLoading)) {
+        ownership = 'ignored';
+        reason = viewState !== 'scan' ? 'not-in-scan-view' : loading ? 'scan-loading' : 'node-loading';
+      } else if (!ownership && event.repeat) {
+        ownership = 'ignored';
+        reason = 'repeat-ignored-by-current-handler';
+      } else if (!ownership && buttonOutsideTree) {
+        ownership = 'ignored';
+        reason = 'button-outside-tree-or-chart';
+      } else if (!ownership && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+        if (!children.length) {
+          ownership = 'ignored';
+          reason = 'empty-visible-list';
+        } else {
+          ownership = 'tree-global';
+          const currentPath = pointerNode?.path || focusedLiveNode?.path || highlightedPath;
+          let currentIndex = children.findIndex(item => item.path === currentPath);
+          if (currentIndex < 0) currentIndex = event.key === 'ArrowDown' ? -1 : children.length;
+          const nextIndex = Math.max(0, Math.min(children.length - 1, currentIndex + (event.key === 'ArrowDown' ? 1 : -1)));
+          const nextNode = children[nextIndex];
+          if (nextNode) {
+            selectedTarget = { path: nextNode.path, index: nextIndex };
+            handledByGlobalTree = true;
+            event.preventDefault();
+            handleHoverNode(nextNode);
+            setHighlightedPath(nextNode.path);
+            const row = document.querySelector(`[data-tree-path="${CSS.escape(nextNode.path)}"]`);
+            row?.scrollIntoView({ block: 'nearest' });
+            reason = 'current-global-tree-handler';
+          } else {
+            ownership = 'ignored';
+            reason = 'no-selectable-target';
+          }
+        }
+      } else if (!ownership) {
+        ownership = 'tree-global';
+        reason = 'direction-not-handled-by-current-global-handler';
+      }
+
+      const predictedAfter = handledByGlobalTree && selectedTarget
+        ? {
+          ...before,
+          pointerPath: selectedTarget.path,
+          focusedPath: selectedTarget.path,
+          hoveredPath: selectedTarget.path,
+          highlightedPath: selectedTarget.path,
+          visibleList: { ...before.visibleList, activeIndex: selectedTarget.index }
+        }
+        : before;
+      recordPerfInstant('keyboard.arrow-keydown', {
+        ...baseDetails,
+        ownership: ownership || 'ignored',
+        reason,
+        selectedTarget,
+        handled: handledByGlobalTree,
+        prevented: Boolean(event.defaultPrevented),
+        after: {
+          pointerPath: predictedAfter.pointerPath,
+          focusedPath: predictedAfter.focusedPath,
+          hoveredPath: predictedAfter.hoveredPath,
+          highlightedPath: predictedAfter.highlightedPath
+        }
+      });
+
+      window.setTimeout(() => {
+        const after = getStateSnapshot();
+        recordPerfInstant('keyboard.arrow-state-after', {
+          arrowId,
+          key: event.key,
+          ownership: ownership || 'ignored',
+          currentViewPath: after.currentViewPath,
+          visibleList: after.visibleList,
+          after: {
+            pointerPath: after.pointerPath,
+            focusedPath: after.focusedPath,
+            hoveredPath: after.hoveredPath,
+            highlightedPath: after.highlightedPath
+          },
+          prevented: Boolean(event.defaultPrevented)
+        });
+      }, 0);
     };
     window.addEventListener('keydown', onArrowKey);
     return () => window.removeEventListener('keydown', onArrowKey);
