@@ -752,9 +752,54 @@ body {
 .view-type-option input { accent-color: #60a5fa; }
 .view-type-option:hover { background: #303742; border-radius: 3px; }
 .theme-matrix .view-options-field-label span { color: var(--matrix-text); }
-.theme-matrix .view-type-multiselect { border-color: var(--matrix-line); background: #020703; }
-.theme-matrix .view-type-option { color: var(--matrix-text) !important; }
-.theme-matrix .view-type-option:hover { background: rgba(57,255,102,.1); }
+.theme-matrix .view-type-multiselect { border-color: var(--matrix-line); background: #020703; box-shadow: inset 0 0 6px rgba(57,255,102,.08); }
+.theme-matrix .view-type-option { color: var(--matrix-text) !important; border-radius: 2px; }
+.theme-matrix .view-type-option:hover,
+.theme-matrix .view-type-option:has(input[type="checkbox"]:checked) { background: rgba(57,255,102,.1); color: #b8ffc1 !important; }
+.theme-matrix .view-type-option input[type="checkbox"] {
+  accent-color: var(--matrix-line-bright);
+  color-scheme: dark;
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  flex: 0 0 auto;
+  filter: drop-shadow(0 0 2px rgba(57,255,102,.3));
+}
+.theme-matrix .view-options-grid select,
+.theme-matrix .view-options-grid input:not([type="checkbox"]) {
+  color: var(--matrix-text);
+  background-color: var(--matrix-panel);
+  border-color: var(--matrix-line);
+  border-radius: 2px;
+  color-scheme: dark;
+  box-shadow: inset 0 0 5px rgba(57,255,102,.08);
+}
+.theme-matrix .view-options-grid select {
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--matrix-line-bright) 50%),
+    linear-gradient(135deg, var(--matrix-line-bright) 50%, transparent 50%);
+  background-position: calc(100% - 9px) 50%, calc(100% - 5px) 50%;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+  padding-right: 18px;
+}
+.theme-matrix .view-options-grid select option {
+  background: var(--matrix-panel);
+  color: var(--matrix-text);
+}
+.theme-matrix .view-options-grid select:focus,
+.theme-matrix .view-options-grid input:not([type="checkbox"]):focus {
+  outline: 1px solid var(--matrix-line-bright);
+  border-color: var(--matrix-line-bright);
+  box-shadow: 0 0 7px rgba(57,255,102,.2), inset 0 0 5px rgba(57,255,102,.08);
+}
+.theme-matrix .view-options-grid select:disabled,
+.theme-matrix .view-options-grid input:disabled {
+  color: var(--matrix-text-dim);
+  border-color: rgba(29,158,60,.5);
+  opacity: .65;
+}
 .view-options-search { grid-column: span 2; }
 .sort-direction-btn {
   align-self: end; min-height: 26px; display: flex; align-items: center; justify-content: center; gap: 5px;
@@ -924,7 +969,7 @@ body {
 .theme-matrix .sort-direction-btn,
 .theme-matrix .view-options-panel,
 .theme-matrix .view-options-grid select,
-.theme-matrix .view-options-grid input {
+.theme-matrix .view-options-grid input:not([type="checkbox"]) {
   background: var(--matrix-panel);
   border-color: var(--matrix-line);
   color: var(--matrix-text);

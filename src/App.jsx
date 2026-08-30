@@ -2261,9 +2261,6 @@ export default function App() {
       } else if (!ownership && (viewState !== 'scan' || loading || nodeLoading)) {
         ownership = 'ignored';
         reason = viewState !== 'scan' ? 'not-in-scan-view' : loading ? 'scan-loading' : 'node-loading';
-      } else if (!ownership && event.repeat) {
-        ownership = 'ignored';
-        reason = 'repeat-ignored-by-current-handler';
       } else if (!ownership && buttonOutsideTree) {
         ownership = 'ignored';
         reason = 'button-outside-tree-or-chart';
@@ -2273,9 +2270,9 @@ export default function App() {
           reason = 'empty-visible-list';
         } else {
           ownership = 'tree-global';
-          const currentPath = (children.some(item => item.path === treeSelectionPath) ? treeSelectionPath : null)
-            || (children.some(item => item.path === focusedLiveNode?.path) ? focusedLiveNode?.path : null)
-            || (children.some(item => item.path === highlightedPath) ? highlightedPath : null);
+          const currentPath = (children.some(item => item.path === before.treeSelectionPath) ? before.treeSelectionPath : null)
+            || (children.some(item => item.path === before.focusedPath) ? before.focusedPath : null)
+            || (children.some(item => item.path === before.highlightedPath) ? before.highlightedPath : null);
           let currentIndex = children.findIndex(item => item.path === currentPath);
           if (currentIndex < 0) currentIndex = event.key === 'ArrowDown' ? -1 : children.length;
           const nextIndex = Math.max(0, Math.min(children.length - 1, currentIndex + (event.key === 'ArrowDown' ? 1 : -1)));
@@ -2289,7 +2286,7 @@ export default function App() {
             setHighlightedPath(nextNode.path);
             const row = document.querySelector(`[data-tree-path="${CSS.escape(nextNode.path)}"]`);
             row?.scrollIntoView({ block: 'nearest' });
-            reason = 'current-global-tree-handler';
+            reason = event.repeat ? 'current-global-tree-handler-repeat' : 'current-global-tree-handler';
           } else {
             ownership = 'ignored';
             reason = 'no-selectable-target';
