@@ -14,10 +14,9 @@ final class PreviewItem: NSObject, QLPreviewItem {
     var previewItemTitle: String? { url.lastPathComponent }
 }
 
-final class PreviewPanelController: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class PreviewPanelController: NSObject, NSApplicationDelegate, QLPreviewPanelDataSource, QLPreviewPanelDelegate {
     private let item: PreviewItem
-    private var panel: NSPanel!
-    private var preview: QLPreviewView!
+    private var previewPanel: QLPreviewPanel?
 
     init(url: URL) {
         item = PreviewItem(url: url)
@@ -25,42 +24,38 @@ final class PreviewPanelController: NSObject, NSApplicationDelegate, NSWindowDel
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let frame = NSRect(x: 0, y: 0, width: 860, height: 640)
-        panel = NSPanel(
-            contentRect: frame,
-            styleMask: [.titled, .closable, .resizable, .nonactivatingPanel, .utilityWindow],
-            backing: .buffered,
-            defer: false
-        )
-        panel.title = "Quick Look — Sunburst Disk"
-        panel.minSize = NSSize(width: 420, height: 320)
-        panel.isFloatingPanel = true
-        panel.hidesOnDeactivate = false
-        panel.becomesKeyOnlyIfNeeded = false
-        panel.level = .floating
-        panel.collectionBehavior = [.fullScreenAuxiliary, .canJoinAllSpaces]
-        panel.delegate = self
-        panel.center()
-
-        preview = QLPreviewView(frame: frame, style: .normal)
-        preview.autostarts = true
-        preview.shouldCloseWithWindow = true
-        preview.previewItem = item
-        panel.contentView = preview
-
-        // Keep the helper as an accessory process and order the nonactivating
-        // panel above the current Sunburst Disk window without stealing focus.
+        // Accessory policy keeps this helper out of the Dock while QLPreviewPanel
+        // supplies the same native Quick Look chrome used by macOS preview flows.
         NSApp.setActivationPolicy(.accessory)
-        panel.orderFrontRegardless()
-        preview.refreshPreviewItem()
+
+        guard let panel = QLPreviewPanel.shared() else {
+            fputs("Quick Look preview panel is unavailable\n", stderr)
+            NSApp.terminate(nil)
+            return
+        }
+        previewPanel = panel;
+        panel.dataSource = self
+        panel.delegate = self
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.fullScreenAuxiliary, .canJoinAllSpaces]
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        panel.reloadData()
+    }
+
+    func numberOfPreviewItems(in panel: QLPreviewPanel) -> Int { 1 }
+
+    func previewPanel(_ panel: QLPreviewPanel, previewItemAt index: Int) -> QLPreviewItem {
+        item
+    }
+
+    func previewPanelWillClose(_ panel: QLPreviewPanel) {
+        NSApp.terminate(nil)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        NSApp.terminate(nil)
     }
 }
 

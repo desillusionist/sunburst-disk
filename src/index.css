@@ -27,7 +27,7 @@ body {
   background: var(--mac-window-bg);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
 }
 
 /* ── Header ───────────────────────────────────────────────────────────────── */
@@ -773,6 +773,12 @@ body {
   margin-left: 6px;
   font-weight: 400;
 }
+.archive-status-loading { color: #93c5fd; }
+.archive-status-ready { color: #86efac; }
+.archive-status-error { color: #fca5a5; }
+.theme-matrix .archive-status-loading { color: var(--matrix-text); }
+.theme-matrix .archive-status-ready { color: var(--matrix-text); }
+.theme-matrix .archive-status-error { color: #ff9b9b; }
 .legend-total { font-size: 16px; font-weight: 400; color: #a0a6b2; }
 
 /* ── Scrollable list ────────────────────────────────────────────────────── */

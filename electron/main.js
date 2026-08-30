@@ -842,12 +842,16 @@ async function chooseOtherApplication(itemPath) {
 let quickLookChild = null;
 let quickLookItemPath = null;
 
+function closeQuickLook() {
+  if (quickLookChild && !quickLookChild.killed) quickLookChild.kill('SIGTERM');
+  quickLookChild = null;
+  quickLookItemPath = null;
+  return { ok: true, closed: true };
+}
+
 function quickLookPath(itemPath) {
-  if (quickLookChild && !quickLookChild.killed && quickLookItemPath === itemPath) {
-    quickLookChild.kill('SIGTERM');
-    quickLookChild = null;
-    quickLookItemPath = null;
-    return Promise.resolve({ ok: true, closed: true });
+  if (quickLookChild && quickLookItemPath === itemPath) {
+    return Promise.resolve(closeQuickLook());
   }
   return new Promise(resolve => {
     const helperPath = getNativeHelperPath('quicklook-preview');
@@ -897,6 +901,8 @@ function quickLookPath(itemPath) {
     });
   });
 }
+
+ipcMain.handle('quick-look-close', async () => closeQuickLook());
 
 ipcMain.handle('quick-look', async (event, itemPath) => {
   if (!isFilesystemPath(itemPath)) return { ok: false, error: 'Invalid filesystem path' };
@@ -1391,7 +1397,7 @@ ipcMain.handle('show-context-menu', async (event, { itemPath, itemName, item, ca
   ]);
   const contentBounds = mainWindow.getContentBounds();
   const popupX = Math.max(8, Math.min(Number(x) || 8, contentBounds.width - 320));
-  const popupY = Math.max(8, Math.min(Number(y) || 8, contentBounds.height - 300));
+  const popupY = Math.max(8, Math.min(Number(y) || 8, contentBounds.height - 420));
   menu.popup({ window: mainWindow, x: popupX, y: popupY });
 });
 

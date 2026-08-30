@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   terminalRevokeAdmin:   ()                     => ipcRenderer.invoke('terminal-revoke-admin'),
   terminalRunSafe:        (command, cwd, adminMode = false) => ipcRenderer.invoke('terminal-run-safe', { command, cwd, adminMode }),
   quickLook:              (itemPath)             => ipcRenderer.invoke('quick-look', itemPath),
+  quickLookClose:         ()                     => ipcRenderer.invoke('quick-look-close'),
   scanHiddenSpace:        (knownSize = 0)        => ipcRenderer.invoke('scan-hidden-space', { knownSize }),
   onScanProgress:        (cb)                   => ipcRenderer.on('scan-progress', (_, data) => cb(data)),
   onFolderWatchChange:   (cb)                   => {

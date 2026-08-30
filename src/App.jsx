@@ -612,6 +612,7 @@ export default function App() {
   const [folderWatchState, setFolderWatchState] = useState({ active: false, rootPath: null, updating: false, error: null, lastChangedAt: null });
 
   const contextOpenWithRequestRef = useRef(0);
+  const quickLookPathRef = useRef(null);
   const terminalDragRef = useRef(null);
   const terminalDrawerRef = useRef(null);
   const terminalHelperPreviousHeightRef = useRef(null);
@@ -1866,7 +1867,16 @@ export default function App() {
       alert('Quick Look is available in the Electron app only.');
       return;
     }
+    if (quickLookPathRef.current === item.path) {
+      const closed = await window.electronAPI.quickLookClose?.();
+      if (closed?.closed) {
+        quickLookPathRef.current = null;
+        return;
+      }
+    }
+    quickLookPathRef.current = item.path;
     const result = await window.electronAPI.quickLook(item.path);
+    if (result?.closed || !result?.ok) quickLookPathRef.current = null;
     if (!result?.ok) alert(result?.error || 'Quick Look could not open this file');
   }, [openHiddenSpace]);
 
@@ -1874,7 +1884,8 @@ export default function App() {
     const onKeyDown = event => {
       if (event.key !== ' ' || event.repeat || viewState !== 'scan' || loading || nodeLoading) return;
       const target = event.target;
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable || target instanceof HTMLButtonElement) return;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable) return;
+      if (target instanceof HTMLButtonElement && !target.closest('.legend-row, .sunburst-stage, .content-tree-row')) return;
       if (!pointerNode || pointerNode.archiveVirtual || !['file', 'directory', 'symlink'].includes(pointerNode.type)) return;
       event.preventDefault();
       handleQuickLook(pointerNode);
@@ -1932,25 +1943,13 @@ export default function App() {
     e.preventDefault();
     e.stopPropagation();
     if (!item || !item.path || item.path.startsWith('__') || item.archiveVirtual) return;
-    if (window.electronAPI && !matrixTheme) {
-      window.electronAPI.showContextMenu({
-        itemPath: item.path,
-        itemName: item.name,
-        item,
-        canDelete: getRiskInfo(item).canDelete,
-        packageContentsShown: Boolean(packageContentsShown[item.path]),
-        x: e.clientX,
-        y: e.clientY
-      });
-    } else {
-      setContextOpenWith(null);
-      const menuHeightReserve = matrixTheme ? Math.min(420, window.innerHeight - 24) : 260;
-      setContextMenu({
-        x: Math.min(e.clientX, Math.max(8, window.innerWidth - 310)),
-        y: Math.min(e.clientY, Math.max(8, window.innerHeight - menuHeightReserve - 8)),
-        item
-      });
-    }
+    setContextOpenWith(null);
+    const menuHeightReserve = Math.max(0, window.innerHeight - 16);
+    setContextMenu({
+      x: Math.min(e.clientX, Math.max(8, window.innerWidth - 310)),
+      y: Math.min(e.clientY, Math.max(8, window.innerHeight - menuHeightReserve - 8)),
+      item
+    });
   };
 
   const handleContextGetInfo = async item => {
@@ -1986,10 +1985,37 @@ export default function App() {
 
   // Filter out items already collected from the TOC list. A real file hover
   // has no relevant child list, so keep only its header and size visible.
-  const isFileHover = liveHoveredNode?.type === 'file' || isCollapsedAppHover;
+  const expandedArchivePaths = new Set(Object.keys(packageContentsShown).filter(path => packageContentsShown[path]));
+  const hoveredExpandedArchive = Boolean(
+    liveHoveredNode &&
+    isArchiveNode(liveHoveredNode) &&
+    expandedArchivePaths.has(liveHoveredNode.path) &&
+    liveHoveredNode.children?.length
+  );
+  const currentExpandedArchive = Boolean(
+    previewNode &&
+    isArchiveNode(previewNode) &&
+    expandedArchivePaths.has(previewNode.path) &&
+    previewNode.children?.length
+  );
+  const isFileHover = (liveHoveredNode?.type === 'file' && !hoveredExpandedArchive && !currentExpandedArchive) || isCollapsedAppHover;
+  const archiveDisplaySource = hoveredExpandedArchive
+    ? liveHoveredNode
+    : currentExpandedArchive
+      ? currentViewNode
+      : null;
+  const archiveDisplayChildren = archiveDisplaySource
+    ? sortNodes(
+      (archiveDisplaySource.children || []).filter(item => matchesViewFilters(item, viewOptions, displayMetadata)),
+      viewOptions,
+      displayMetadata
+    )
+    : null;
   const visibleChildren = isFileHover
     ? []
-    : (previewNode?.children || []).filter(item => !collectedPaths.has(item.path));
+    : (archiveDisplayChildren || previewNode?.children || []).filter(item => !collectedPaths.has(item.path));
+  const currentArchivePath = currentViewNode && isArchiveNode(currentViewNode) ? currentViewNode.path : null;
+  const currentArchiveStatus = currentArchivePath ? packageContentsStatus[currentArchivePath] : null;
   // The node size is authoritative; summing children can differ because du
   // reports allocated directory blocks and hidden/excluded entries separately.
   const currentTotalSize = previewNode?.size || 0;
@@ -2671,6 +2697,15 @@ export default function App() {
                 )}
                 {previewNode?.previewLimited && !isFileHover && (
                   <span className="legend-preview-badge"> top 100</span>
+                )}
+                {currentArchiveStatus?.status === 'loading' && (
+                  <span className="legend-preview-badge archive-status-loading"> {currentArchiveStatus.message}</span>
+                )}
+                {currentArchiveStatus?.status === 'ready' && (
+                  <span className="legend-preview-badge archive-status-ready"> {currentArchiveStatus.message}</span>
+                )}
+                {currentArchiveStatus?.status === 'error' && (
+                  <span className="legend-preview-badge archive-status-error" title={currentArchiveStatus.message}> Archive Viewer error</span>
                 )}
                 {folderWatchState.updating && (
                   <span className="folder-watch-badge updating" title="The open folder is being reconciled with the filesystem"> Updating…</span>
