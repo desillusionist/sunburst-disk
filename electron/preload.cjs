@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   scanDirectory:         (targetPath, detailDepth) => ipcRenderer.invoke('scan-directory', { targetPath, detailDepth }),
   notifyScanComplete:     (scanPath, itemCount = 0) => ipcRenderer.invoke('notify-scan-complete', { scanPath, itemCount }),
   scanSubdir:            (targetPath, includePackageContents = false) => ipcRenderer.invoke('scan-subdir', { targetPath, includePackageContents }),
+  scanArchive:           (archivePath) => ipcRenderer.invoke('scan-archive', archivePath),
   watchCurrentFolder:    (folderPath)            => ipcRenderer.invoke('watch-current-folder', { folderPath, enabled: true }),
   stopCurrentFolderWatcher: ()                     => ipcRenderer.invoke('watch-current-folder', { enabled: false }),
   deleteItems:           (items)                => ipcRenderer.invoke('delete-items', items),

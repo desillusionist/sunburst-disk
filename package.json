@@ -10,8 +10,9 @@
     "dev": "vite",
     "build": "vite build",
     "build:fsevents": "swiftc electron/fsevents-watcher.swift -o electron/fsevents-watcher && chmod 755 electron/fsevents-watcher",
+    "build:quicklook": "swiftc electron/quicklook-preview.swift -framework Cocoa -framework QuickLookUI -o electron/quicklook-preview && chmod 755 electron/quicklook-preview",
     "electron:dev": "concurrently \"VITE_DEV_SERVER_URL=http://localhost:3000 vite --port 3000\" \"wait-on http://localhost:3000 && electron .\"",
-    "electron:build": "vite build && npm run build:fsevents && electron-builder --mac",
+    "electron:build": "vite build && npm run build:fsevents && npm run build:quicklook && electron-builder --mac",
     "lint": "oxlint",
     "preview": "vite preview"
   },
@@ -39,7 +40,8 @@
       "electron/**/*"
     ],
     "asarUnpack": [
-      "electron/fsevents-watcher"
+      "electron/fsevents-watcher",
+      "electron/quicklook-preview"
     ],
     "mac": {
       "icon": "assets/SunburstDisk.icns",

@@ -17,6 +17,19 @@ function formatCount(value) {
   return Number(value || 0).toLocaleString();
 }
 
+function prettifyClassification(value) {
+  if (!value) return 'Not available';
+  return String(value).replace(/(^|[-_ ])([a-z])/g, (_, prefix, letter) => `${prefix}${letter.toUpperCase()}`);
+}
+
+function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  const total = Math.round(seconds);
+  const minutes = Math.floor(total / 60);
+  const remainder = total % 60;
+  return `${minutes}:${String(remainder).padStart(2, '0')}`;
+}
+
 function getTypeLabel(node, metadata) {
   const type = metadata?.type || node?.type;
   if (type === 'directory') return 'Folder';
@@ -44,15 +57,17 @@ function getAccessState(metadata, risk) {
 export default function DetailsSidebar({ node, metadata, loading, risk, categoryDescription, onAddToCollector, onQuickLook, onRevealInFinder, onTogglePackageContents, packageContentsShown }) {
   const RiskIcon = risk?.Icon || AlertTriangle;
   const NodeIcon = node?.type === 'directory' ? Folder : node?.type === 'bulk' ? PackageOpen : FileText;
-  const canDelete = Boolean(node && risk?.canDelete && node.path && !node.path.startsWith('__'));
+  const canDelete = Boolean(node && !node.archiveVirtual && risk?.canDelete && node.path && !node.path.startsWith('__'));
   const isHiddenSpace = node?.path === '__hidden__' || (node?.type === 'special' && !node?.isHiddenSpaceRemainder);
-  const canQuickLook = Boolean(node && (isHiddenSpace || metadata?.type === 'file' || metadata?.type === 'symlink' || node.type === 'file') && (isHiddenSpace || !node.path.startsWith('__')));
-  const canReveal = Boolean(node?.path && !node.path.startsWith('__'));
+  const canQuickLook = Boolean(node && !node.archiveVirtual && (isHiddenSpace || metadata?.type === 'file' || metadata?.type === 'directory' || metadata?.type === 'symlink' || ['file', 'directory'].includes(node.type)) && (isHiddenSpace || !node.path.startsWith('__')));
+  const canReveal = Boolean(node?.path && !node.archiveVirtual && !node.path.startsWith('__'));
   const packageName = String(node?.name || '').trim().toLowerCase();
   const packagePath = String(node?.path || '').trim().toLowerCase();
-  const isPackageContainer = Boolean(node?.type === 'directory'
+  const archiveSuffixes = ['.7z', '.bz2', '.cpio', '.gz', '.iso', '.rar', '.tar', '.tbz', '.tbz2', '.tgz', '.txz', '.xz', '.zip'];
+  const isArchiveContainer = node?.type === 'file' && archiveSuffixes.some(suffix => packageName.endsWith(suffix) || packagePath.endsWith(suffix));
+  const isPackageContainer = Boolean((node?.type === 'directory'
     && (packageName.endsWith('.app') || packageName.endsWith('.photoslibrary')
-      || packagePath.endsWith('.app') || packagePath.endsWith('.photoslibrary')));
+      || packagePath.endsWith('.app') || packagePath.endsWith('.photoslibrary'))) || isArchiveContainer);
   const objectCount = node?.type === 'directory'
     ? (Number.isFinite(node.itemCount) ? node.itemCount : node.children?.length)
     : null;
@@ -61,6 +76,17 @@ export default function DetailsSidebar({ node, metadata, loading, risk, category
     : Number.isFinite(objectCount)
       ? formatCount(objectCount)
       : 'Not available';
+  const media = metadata?.media || {};
+  const mediaRows = [
+    [media.pixelWidth && media.pixelHeight ? 'Dimensions' : null, media.pixelWidth && media.pixelHeight ? `${media.pixelWidth} × ${media.pixelHeight} px` : null],
+    [formatDuration(media.durationSeconds) ? 'Duration' : null, formatDuration(media.durationSeconds)],
+    [media.videoCodec ? 'Video codec' : null, media.videoCodec],
+    [media.audioCodec ? 'Audio codec' : null, media.audioCodec],
+    [Number.isFinite(media.sampleRate) ? 'Sample rate' : null, Number.isFinite(media.sampleRate) ? `${media.sampleRate.toLocaleString()} Hz` : null],
+    [Number.isFinite(media.audioBitsPerSample) ? 'Bit depth' : null, Number.isFinite(media.audioBitsPerSample) ? `${media.audioBitsPerSample} bit` : null],
+    [Number.isFinite(media.audioChannels) ? 'Audio channels' : null, Number.isFinite(media.audioChannels) ? String(media.audioChannels) : null],
+    [Number.isFinite(media.audioBitRate) ? 'Audio bitrate' : null, Number.isFinite(media.audioBitRate) ? `${Math.round(media.audioBitRate / 1000)} kbps` : null]
+  ].filter(([, value]) => value);
 
   return (
     <aside className="details-sidebar" aria-label="Details sidebar">
@@ -90,8 +116,8 @@ export default function DetailsSidebar({ node, metadata, loading, risk, category
             </div>
             <button
               className="details-quicklook-btn"
-              title={canQuickLook ? (isHiddenSpace ? 'Request access to Hidden Space' : 'Quick Look') : 'Quick Look is available for files only'}
-              aria-label={canQuickLook ? (isHiddenSpace ? 'Request access to Hidden Space' : `Quick Look ${node.name}`) : 'Quick Look unavailable for folders'}
+                title={canQuickLook ? (isHiddenSpace ? 'Request access to Hidden Space' : 'Quick Look') : 'Quick Look unavailable for this item'}
+                aria-label={canQuickLook ? (isHiddenSpace ? 'Request access to Hidden Space' : `Quick Look ${node.name}`) : 'Quick Look unavailable'}
               disabled={!canQuickLook || loading}
               onClick={() => canQuickLook && onQuickLook(node)}
             >
@@ -102,8 +128,11 @@ export default function DetailsSidebar({ node, metadata, loading, risk, category
           <div className="details-section">
             <div className="details-section-title">Item information</div>
             <DetailRow label="Type" value={getTypeLabel(node, metadata)} />
+            {metadata?.classification && <DetailRow label="Class" value={prettifyClassification(metadata.classification)} />}
+            {metadata?.extension && <DetailRow label="Extension" value={metadata.extension} mono />}
             <DetailRow label="Size" value={formatBytes(node.size)} />
-            {node.type === 'directory' && <DetailRow label="Objects inside" value={objectCountLabel} />}
+            {mediaRows.map(([label, value]) => <DetailRow key={label} label={label} value={value} />)}
+            {(node.type === 'directory' || isArchiveContainer) && <DetailRow label="Objects inside" value={objectCountLabel} />}
             <DetailRow label="Created" value={loading ? 'Reading…' : formatDate(metadata?.createdAt)} />
             <DetailRow label="Modified" value={loading ? 'Reading…' : formatDate(metadata?.modifiedAt)} />
             <DetailRow label="Access" value={loading ? 'Reading…' : getAccessLabel(metadata)} />

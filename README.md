@@ -50,6 +50,12 @@
 
 Содержимое `.app` и Photos Library packages (`.photoslibrary`, включая `Photos Library.photoslibrary`) по умолчанию свернуто: сам package отображается как единый directory entry с полным размером, но его внутренние пути не попадают в sunburst или content tree. Кнопка `Show Package Contents` в Details sidebar запускает отдельный scan только после явного запроса пользователя; для `.app` сохраняется также context-menu toggle.
 
+Для физических archive-файлов (`.zip`, `.tar`, `.tar.gz`, `.tgz`, `.xz` и совместимых форматов) `Show Package Contents` открывает bounded read-only virtual tree через `bsdtar -tvf`. Архив не распаковывается и не изменяется; virtual members не являются filesystem paths и не доступны для удаления, Collector или write-mode Terminal. Архивная навигация описана отдельно в [`docs/archive-preview-design.md`](docs/archive-preview-design.md).
+
+Inspector классифицирует файлы по расширению и базовой категории — `audio`, `video`, `image`, `text`, `document`, `archive`, `font`, `database` и `other`. Для media-файлов macOS `mdls` может добавить dimensions, duration, codecs, sample rate, bitrate, channels и bit depth, если эти значения доступны в metadata.
+
+Context menu содержит `Get Info` и `Open with`: первый открывает нативное Finder information window, второй строит список приложений из пользовательского Applications, `/Applications` и `/System/Applications` и запускает выбранное приложение с исходным объектом через argument-safe `open`. Quick Look теперь использует отдельный native Swift `QLPreviewView` helper, а не прямой `qlmanage` child process, поэтому падение Quick Look preview process не должно завершать Electron.
+
 Путь в Details sidebar является действием `Reveal in Finder`. Вход в `Hidden Space` каждый раз требует явного подтверждения пользователя; затем Electron проверяет Full Disk Access. Если разрешение отсутствует, приложение открывает системные настройки macOS вместо чтения защищённых областей.
 
 ## Запуск

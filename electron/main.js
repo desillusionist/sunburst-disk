@@ -227,13 +227,7 @@ function startFolderWatcher(rootPath) {
     });
     return { ok: true, active: false, disabled: true, rootPath: displayRoot };
   }
-  const helperCandidates = app.isPackaged
-    ? [
-      path.join(process.resourcesPath, 'app.asar.unpacked', 'electron', 'fsevents-watcher'),
-      path.join(__dirname, 'fsevents-watcher')
-    ]
-    : [path.join(__dirname, 'fsevents-watcher')];
-  const helperPath = helperCandidates.find(candidate => fs.existsSync(candidate));
+  const helperPath = getNativeHelperPath('fsevents-watcher');
   if (!helperPath) {
     return { ok: false, error: 'FSEvents helper is not built. Run npm run build:fsevents on macOS.' };
   }
@@ -736,12 +730,73 @@ ipcMain.handle('smart-clean-preview', async (_event, { scope = 'storage', folder
   };
 });
 
+function getNativeHelperPath(name) {
+  const candidates = app.isPackaged
+    ? [
+      path.join(process.resourcesPath, 'app.asar.unpacked', 'electron', name),
+      path.join(__dirname, name)
+    ]
+    : [path.join(__dirname, name)];
+  return candidates.find(candidate => fs.existsSync(candidate)) || null;
+}
+
+// ─── Finder actions ───────────────────────────────────────────────────────────
+function openFinderGetInfo(itemPath) {
+  const appleScriptPath = JSON.stringify(String(itemPath));
+  const script = `tell application "Finder" to open information window of (POSIX file ${appleScriptPath} as alias)`;
+  return new Promise(resolve => {
+    execFile('/usr/bin/osascript', ['-e', script], { timeout: 10000 }, error => resolve(!error));
+  });
+}
+
+async function listOpenWithApplications() {
+  const roots = [path.join(os.homedir(), 'Applications'), '/Applications', '/System/Applications'];
+  const applications = new Map();
+  for (const root of roots) {
+    try {
+      const entries = await fs.promises.readdir(root, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory() || !entry.name.toLowerCase().endsWith('.app')) continue;
+        applications.set(entry.name, path.join(root, entry.name));
+      }
+    } catch {}
+  }
+  return [...applications.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(0, 80)
+    .map(([label, appPath]) => ({ label: label.replace(/\.app$/i, ''), appPath }));
+}
+
+function openItemWithApplication(appPath, itemPath) {
+  execFile('/usr/bin/open', ['-a', appPath, itemPath], { timeout: 15000 }, error => {
+    if (error) console.error('Open With error:', error.message);
+  });
+}
+
 // ─── Quick Look ────────────────────────────────────────────────────────────────
 function quickLookPath(itemPath) {
   return new Promise(resolve => {
-    execFile('/usr/bin/qlmanage', ['-p', itemPath], { timeout: 15000 }, error => {
-      if (error) console.error('Quick Look error:', error.message);
-      resolve(!error);
+    const helperPath = getNativeHelperPath('quicklook-preview');
+    if (!helperPath) return resolve({ ok: false, error: 'Native Quick Look helper is not built.' });
+    const child = spawn(helperPath, [itemPath], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      resolve({ ok: false, error: 'Quick Look helper timed out.' });
+    }, 20000);
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('error', error => {
+      clearTimeout(timer);
+      resolve({ ok: false, error: error.message });
+    });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve({ ok: true });
+      } else {
+        resolve({ ok: false, error: stderr.trim() || `Quick Look helper stopped (${signal || `exit ${code}`}).` });
+      }
     });
   });
 }
@@ -750,11 +805,10 @@ ipcMain.handle('quick-look', async (event, itemPath) => {
   if (!isFilesystemPath(itemPath)) return { ok: false, error: 'Invalid filesystem path' };
   try {
     const stat = await fs.promises.lstat(itemPath);
-    if (!stat.isFile() && !stat.isSymbolicLink()) {
-      return { ok: false, error: 'Quick Look is available for files only' };
+    if (!stat.isFile() && !stat.isDirectory() && !stat.isSymbolicLink()) {
+      return { ok: false, error: 'Quick Look is unavailable for this filesystem object.' };
     }
-    const ok = await quickLookPath(itemPath);
-    return ok ? { ok: true } : { ok: false, error: 'Quick Look could not open this file' };
+    return await quickLookPath(itemPath);
   } catch (error) {
     return { ok: false, error: error.message };
   }
@@ -883,7 +937,7 @@ ipcMain.handle('inspect-app-related', async (event, appPath) => {
 const SAFE_TERMINAL_ARGUMENT = "[^\\n\\r;|&><`$]+";
 const SAFE_TERMINAL_COMMANDS = new RegExp(`^(?:pwd|df -h|ls(?: -la|-lah)?(?: ${SAFE_TERMINAL_ARGUMENT})?|du -sh(?: ${SAFE_TERMINAL_ARGUMENT})?)$`);
 const SAFE_ADMIN_ARGUMENT = "[A-Za-z0-9_./~'() -]+";
-const SAFE_ADMIN_WRITE_COMMANDS = new RegExp(`^(?:touch|mkdir -p) (${SAFE_ADMIN_ARGUMENT})$`);
+const SAFE_ADMIN_COMMANDS = new RegExp(`^(?:touch|mkdir -p|rm(?: -i)? --|mv --|cp -R --) ${SAFE_ADMIN_ARGUMENT}(?: ${SAFE_ADMIN_ARGUMENT})?$`);
 let terminalAdminAuthorized = false;
 
 function validateAdminPassword(password) {
@@ -905,18 +959,52 @@ function validateAdminPassword(password) {
   });
 }
 
-function adminTargetIsInsideWorkingDirectory(command, workingDirectory) {
-  const normalizedWorkingDirectory = path.resolve(workingDirectory || '');
-  if (normalizedWorkingDirectory === '/'
-    || normalizedWorkingDirectory === '/System/Volumes/Data'
-    || isProtectedSystemPath(normalizedWorkingDirectory)) return false;
-  const match = command.match(SAFE_ADMIN_WRITE_COMMANDS);
-  if (!match) return false;
-  const rawTarget = match[1].trim().replace(/^'(.*)'$/, '$1').replace(/^"(.*)"$/, '$1');
+function parseSimpleAdminCommand(command) {
+  if (!SAFE_ADMIN_COMMANDS.test(command)) return null;
+  const tokens = command.match(/"[^"]*"|'[^']*'|[^\s]+/g) || [];
+  return tokens.map(token => (token.startsWith('"') || token.startsWith("'")) ? token.slice(1, -1) : token);
+}
+
+function adminTargetPath(rawTarget, workingDirectory) {
+  if (!rawTarget || rawTarget.startsWith('-')) return null;
   const expandedTarget = rawTarget.replace(/^~(?=\/|$)/, os.homedir());
   const resolvedTarget = path.resolve(workingDirectory, expandedTarget);
   const root = path.resolve(workingDirectory).replace(/\/+$/, '');
-  return resolvedTarget === root || resolvedTarget.startsWith(`${root}${path.sep}`);
+  if (resolvedTarget === root || !resolvedTarget.startsWith(`${root}${path.sep}`)) return null;
+  if (isProtectedSystemPath(resolvedTarget)) return null;
+  return resolvedTarget;
+}
+
+function getAdminCommandOperation(command, workingDirectory) {
+  const normalizedWorkingDirectory = path.resolve(workingDirectory || '');
+  if (normalizedWorkingDirectory === '/'
+    || normalizedWorkingDirectory === '/System/Volumes/Data'
+    || isProtectedSystemPath(normalizedWorkingDirectory)) return null;
+  const tokens = parseSimpleAdminCommand(command);
+  if (!tokens?.length) return null;
+  const operation = tokens[0];
+  if (operation === 'touch' && tokens.length === 2) {
+    return adminTargetPath(tokens[1], normalizedWorkingDirectory) ? { operation, targets: [tokens[1]] } : null;
+  }
+  if (operation === 'mkdir' && tokens[1] === '-p' && tokens.length === 3) {
+    return adminTargetPath(tokens[2], normalizedWorkingDirectory) ? { operation, targets: [tokens[2]] } : null;
+  }
+  if (operation === 'rm' && (tokens.length === 3 || tokens.length === 4)) {
+    const target = tokens[tokens.length - 1];
+    const hasOnlySafeFlags = tokens.slice(1, -1).every(token => token === '-i' || token === '--');
+    return hasOnlySafeFlags && adminTargetPath(target, normalizedWorkingDirectory) ? { operation, targets: [target] } : null;
+  }
+  if (operation === 'mv' && tokens.length === 4 && tokens[1] === '--') {
+    const sourceTarget = adminTargetPath(tokens[2], normalizedWorkingDirectory);
+    const destinationTarget = adminTargetPath(tokens[3], normalizedWorkingDirectory);
+    return sourceTarget && destinationTarget ? { operation, targets: [tokens[2], tokens[3]] } : null;
+  }
+  if (operation === 'cp' && tokens.length === 5 && tokens[1] === '-R' && tokens[2] === '--') {
+    const sourceTarget = adminTargetPath(tokens[3], normalizedWorkingDirectory);
+    const destinationTarget = adminTargetPath(tokens[4], normalizedWorkingDirectory);
+    return sourceTarget && destinationTarget ? { operation, targets: [tokens[3], tokens[4]] } : null;
+  }
+  return null;
 }
 
 ipcMain.handle('terminal-authorize-admin', async (_event, { password = '' } = {}) => {
@@ -937,13 +1025,13 @@ ipcMain.handle('terminal-run-safe', async (_event, { command = '', cwd = '', adm
   const trimmed = String(command).trim();
   const workingDirectory = isFilesystemPath(cwd) ? cwd : os.homedir();
   const readOnlyAllowed = SAFE_TERMINAL_COMMANDS.test(trimmed);
-  const adminWriteAllowed = SAFE_ADMIN_WRITE_COMMANDS.test(trimmed) && adminTargetIsInsideWorkingDirectory(trimmed, workingDirectory);
+  const adminWriteAllowed = Boolean(getAdminCommandOperation(trimmed, workingDirectory));
   const useAdmin = Boolean(adminMode && terminalAdminAuthorized);
   if (!readOnlyAllowed && !(useAdmin && adminWriteAllowed)) {
     return {
       ok: false,
       error: useAdmin
-        ? 'Allowed commands are read-only helpers plus touch/mkdir -p inside the current folder. Deletion and arbitrary shell commands remain blocked.'
+        ? 'Allowed commands are read-only helpers plus scoped touch, mkdir -p, rm, mv and cp -R inside the current folder. Sudo and arbitrary shell commands remain blocked.'
         : 'Only read-only commands are allowed: pwd, ls, du -sh and df -h.'
     };
   }
@@ -1156,16 +1244,26 @@ ipcMain.handle('show-context-menu', async (event, { itemPath, itemName, item, ca
   if (!isFilesystemPath(itemPath)) return;
   const stat = await fs.promises.lstat(itemPath).catch(() => null);
   const isFile = Boolean(stat?.isFile() || stat?.isSymbolicLink());
-  const isAppBundle = Boolean(stat?.isDirectory() && itemPath.endsWith('.app'));
+  const isDirectory = Boolean(stat?.isDirectory());
+  const isArchive = Boolean(isFile && isArchiveFilePath(itemPath));
+  const isPackage = Boolean((isDirectory && isPackageContainerName(path.basename(itemPath))) || isArchive);
+  const openWithApps = await listOpenWithApplications();
   const menu = Menu.buildFromTemplate([
     { label: `▣ ${itemName}`, enabled: false },
     { type: 'separator' },
-    { label: '◉ Quick Look', enabled: isFile, click: () => { void quickLookPath(itemPath); } },
+    { label: '◉ Quick Look', enabled: isFile || isDirectory, click: () => { void quickLookPath(itemPath); } },
     { label: '◌ Ask Siri…', click: () => { void handleAskSiriFromMenu({ itemPath, itemName, item }); } },
     { label: '⌕ Reveal in Finder', click: () => shell.showItemInFolder(itemPath) },
+    { label: 'Get Info', click: () => { void openFinderGetInfo(itemPath); } },
+    {
+      label: 'Open with',
+      submenu: openWithApps.length
+        ? openWithApps.map(application => ({ label: application.label, click: () => openItemWithApplication(application.appPath, itemPath) }))
+        : [{ label: 'No applications found', enabled: false }]
+    },
     {
       label: packageContentsShown ? '▤ Hide Package Contents' : '▤ Show Package Contents',
-      visible: isAppBundle,
+      visible: isPackage,
       click: () => {
         mainWindow.webContents.send('toggle-package-contents-request', {
           ...(item || {}),
@@ -1343,6 +1441,86 @@ const SKIP_NAMES = ['.Trash', '.Spotlight', '.fseventsd', '.DS_Store', '.Documen
 function isPackageContainerName(value) {
   const name = String(value || '').trim().toLowerCase();
   return name.endsWith('.app') || name.endsWith('.photoslibrary');
+}
+
+const ARCHIVE_SUFFIXES = Object.freeze(['.7z', '.bz2', '.cpio', '.gz', '.iso', '.rar', '.tar', '.tbz', '.tbz2', '.tgz', '.txz', '.xz', '.zip']);
+
+function isArchiveFilePath(value) {
+  const name = String(value || '').trim().toLowerCase();
+  return ARCHIVE_SUFFIXES.some(suffix => name.endsWith(suffix));
+}
+
+function parseArchiveListing(stdout, archivePath) {
+  const root = {
+    name: path.basename(archivePath),
+    path: archivePath,
+    size: 0,
+    type: 'file',
+    archiveContainer: true,
+    children: []
+  };
+  const nodes = new Map();
+  const childrenByParent = new Map();
+  const entries = [];
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    const match = line.match(/^([dl-][rwxst-]{9})\s+\d+\s+\S+\s+\S+\s+(\d+)\s+\w{3}\s+\d{1,2}\s+\S+\s+(.+)$/);
+    if (!match) continue;
+    const entryName = match[3].replace(/\/$/, '').trim();
+    if (!entryName || entryName === '.' || entryName.startsWith('../') || entryName.includes('/../')) continue;
+    entries.push({ name: entryName, size: Number(match[2]) || 0, directory: match[1].startsWith('d') || line.trimEnd().endsWith('/') });
+  }
+  for (const entry of entries.slice(0, 20000)) {
+    const parts = entry.name.split('/').filter(Boolean);
+    let parentKey = '';
+    for (let index = 0; index < parts.length; index += 1) {
+      const relative = parts.slice(0, index + 1).join('/');
+      const key = `archive://${encodeURIComponent(archivePath)}?entry=${encodeURIComponent(relative)}`;
+      if (!nodes.has(key)) {
+        nodes.set(key, {
+          name: parts[index],
+          path: key,
+          size: index === parts.length - 1 ? entry.size : 0,
+          type: index === parts.length - 1 && !entry.directory ? 'file' : 'directory',
+          archiveVirtual: true,
+          archivePath,
+          archiveEntry: relative,
+          children: []
+        });
+        childrenByParent.set(key, []);
+      } else if (index === parts.length - 1 && !entry.directory) {
+        nodes.get(key).size = entry.size;
+        nodes.get(key).type = 'file';
+      }
+      if (parentKey) childrenByParent.get(parentKey).push(nodes.get(key));
+      parentKey = key;
+    }
+  }
+  for (const [key, children] of childrenByParent) {
+    const unique = [...new Map(children.map(child => [child.path, child])).values()];
+    const node = nodes.get(key);
+    if (node) {
+      node.children = unique.sort((a, b) => (b.size || 0) - (a.size || 0) || a.name.localeCompare(b.name));
+      if (node.type === 'directory') node.size = node.children.reduce((sum, child) => sum + (child.size || 0), 0);
+      node.itemCount = node.children.reduce((sum, child) => sum + 1 + (child.itemCount || 0), 0);
+    }
+  }
+  const roots = [];
+  for (const node of nodes.values()) {
+    const slash = node.archiveEntry.lastIndexOf('/');
+    if (slash < 0) roots.push(node);
+  }
+  root.children = roots.sort((a, b) => (b.size || 0) - (a.size || 0) || a.name.localeCompare(b.name));
+  root.itemCount = root.children.reduce((sum, child) => sum + 1 + (child.itemCount || 0), 0);
+  return root;
+}
+
+function listArchiveContents(archivePath) {
+  return new Promise((resolve, reject) => {
+    execFile('/usr/bin/bsdtar', ['-tvf', '--', archivePath], { timeout: 20000, maxBuffer: 24 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) return reject(new Error(String(stderr || error.message || 'Archive could not be listed').trim()));
+      resolve(parseArchiveListing(stdout, archivePath));
+    });
+  });
 }
 
 function isInsidePackageContainer(itemPath, rootPath) {
@@ -1650,7 +1828,82 @@ ipcMain.handle('scan-subdir', async (event, { targetPath, includePackageContents
   }
 });
 
+ipcMain.handle('scan-archive', async (_event, archivePath) => {
+  if (!isFilesystemPath(archivePath) || !isArchiveFilePath(archivePath)) {
+    return { error: 'Unsupported archive path' };
+  }
+  try {
+    const stat = await fs.promises.lstat(archivePath);
+    if (!stat.isFile()) return { error: 'Archive preview requires a regular file' };
+    const tree = await listArchiveContents(archivePath);
+    tree.size = stat.size;
+    tree.modifiedAt = stat.mtimeMs || null;
+    return { tree };
+  } catch (error) {
+    return { error: error.message || 'Archive could not be listed' };
+  }
+});
+
 // ─── Metadata / Delete / Trash ──────────────────────────────────────────────────
+const FILE_CLASS_EXTENSIONS = Object.freeze({
+  audio: new Set(['.aac', '.aiff', '.alac', '.caf', '.flac', '.m4a', '.m4b', '.mp3', '.oga', '.ogg', '.opus', '.wav', '.wma']),
+  video: new Set(['.3gp', '.avi', '.flv', '.m2ts', '.m4v', '.mkv', '.mov', '.mp4', '.mpeg', '.mpg', '.ts', '.webm', '.wmv']),
+  image: new Set(['.avif', '.bmp', '.gif', '.heic', '.heif', '.ico', '.jpeg', '.jpg', '.png', '.raw', '.svg', '.tif', '.tiff', '.webp']),
+  archive: new Set(['.7z', '.bz2', '.gz', '.iso', '.rar', '.tar', '.tbz', '.tgz', '.xz', '.zip']),
+  text: new Set(['.c', '.cc', '.conf', '.cpp', '.css', '.csv', '.h', '.hpp', '.html', '.ini', '.java', '.js', '.json', '.jsx', '.log', '.md', '.plist', '.py', '.rb', '.rs', '.sh', '.sql', '.swift', '.toml', '.ts', '.tsx', '.txt', '.xml', '.yaml', '.yml']),
+  document: new Set(['.doc', '.docx', '.epub', '.key', '.numbers', '.pages', '.pdf', '.ppt', '.pptx', '.rtf', '.xls', '.xlsx']),
+  font: new Set(['.otf', '.ttf', '.woff', '.woff2']),
+  database: new Set(['.db', '.db3', '.sqlite', '.sqlite3'])
+});
+
+function classifyFileExtension(itemPath) {
+  const extension = path.extname(itemPath).toLowerCase();
+  for (const [category, extensions] of Object.entries(FILE_CLASS_EXTENSIONS)) {
+    if (extensions.has(extension)) return { category, extension };
+  }
+  return { category: extension === '.app' ? 'application package' : 'other', extension };
+}
+
+function parseMdlsOutput(stdout) {
+  const values = {};
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    const match = line.match(/^([A-Za-z0-9_]+)\s*=\s*(.*)$/);
+    if (!match || match[2] === '(null)') continue;
+    let value = match[2].trim();
+    if (value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1);
+    values[match[1]] = value;
+  }
+  return values;
+}
+
+async function readMediaMetadata(itemPath, classification) {
+  if (!['audio', 'video', 'image'].includes(classification.category)) return {};
+  const names = [
+    'kMDItemContentType', 'kMDItemPixelWidth', 'kMDItemPixelHeight', 'kMDItemDurationSeconds',
+    'kMDItemVideoCodec', 'kMDItemAudioCodec', 'kMDItemAudioSampleRate', 'kMDItemAudioBitRate',
+    'kMDItemAudioChannelCount', 'kMDItemAudioBitsPerSample'
+  ];
+  return new Promise(resolve => {
+    execFile('/usr/bin/mdls', names.flatMap(name => ['-name', name]).concat(itemPath), { timeout: 5000, maxBuffer: 64 * 1024 }, (error, stdout) => {
+      if (error) return resolve({});
+      const raw = parseMdlsOutput(stdout);
+      const number = key => raw[key] && Number.isFinite(Number(raw[key])) ? Number(raw[key]) : null;
+      resolve({
+        contentType: raw.kMDItemContentType || null,
+        pixelWidth: number('kMDItemPixelWidth'),
+        pixelHeight: number('kMDItemPixelHeight'),
+        durationSeconds: number('kMDItemDurationSeconds'),
+        videoCodec: raw.kMDItemVideoCodec || null,
+        audioCodec: raw.kMDItemAudioCodec || null,
+        sampleRate: number('kMDItemAudioSampleRate'),
+        audioBitRate: number('kMDItemAudioBitRate'),
+        audioChannels: number('kMDItemAudioChannelCount'),
+        audioBitsPerSample: number('kMDItemAudioBitsPerSample')
+      });
+    });
+  });
+}
+
 async function inspectPath(itemPath) {
   if (!isFilesystemPath(itemPath)) return null;
   try {
@@ -1660,9 +1913,15 @@ async function inspectPath(itemPath) {
       writable: await fs.promises.access(itemPath, fs.constants.W_OK).then(() => true).catch(() => false),
       executable: await fs.promises.access(itemPath, fs.constants.X_OK).then(() => true).catch(() => false)
     };
+    const isDirectory = stat.isDirectory();
+    const classification = isDirectory ? { category: 'folder', extension: '' } : classifyFileExtension(itemPath);
+    const media = isDirectory ? {} : await readMediaMetadata(itemPath, classification);
     return {
-      type: stat.isDirectory() ? 'directory' : stat.isSymbolicLink() ? 'symlink' : 'file',
-      logicalSize: stat.isDirectory() ? null : stat.size,
+      type: isDirectory ? 'directory' : stat.isSymbolicLink() ? 'symlink' : 'file',
+      classification: classification.category,
+      extension: classification.extension ? classification.extension.toUpperCase() : '',
+      media,
+      logicalSize: isDirectory ? null : stat.size,
       createdAt: stat.birthtimeMs || stat.ctimeMs || null,
       modifiedAt: stat.mtimeMs || null,
       access,

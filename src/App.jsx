@@ -194,12 +194,21 @@ function isAppBundleNode(node) {
   return name.endsWith('.app') || nodePath.endsWith('.app');
 }
 
-function isPackageContainerNode(node) {
-  if (isAppBundleNode(node)) return true;
-  if (node?.type !== 'directory') return false;
+const ARCHIVE_FILE_SUFFIXES = ['.7z', '.bz2', '.cpio', '.gz', '.iso', '.rar', '.tar', '.tbz', '.tbz2', '.tgz', '.txz', '.xz', '.zip'];
+
+function isArchiveNode(node) {
+  if (!node || node.archiveVirtual) return false;
   const name = String(node.name || '').trim().toLowerCase();
   const nodePath = String(node.path || '').trim().toLowerCase();
-  return name.endsWith('.photoslibrary') || nodePath.endsWith('.photoslibrary');
+  return node.type === 'file' && ARCHIVE_FILE_SUFFIXES.some(suffix => name.endsWith(suffix) || nodePath.endsWith(suffix));
+}
+
+function isPackageContainerNode(node) {
+  if (isAppBundleNode(node)) return true;
+  const name = String(node?.name || '').trim().toLowerCase();
+  const nodePath = String(node?.path || '').trim().toLowerCase();
+  const photosLibrary = node?.type === 'directory' && (name.endsWith('.photoslibrary') || nodePath.endsWith('.photoslibrary'));
+  return Boolean(photosLibrary || isArchiveNode(node));
 }
 
 function getNodeChain(tree, targetPath) {
@@ -448,6 +457,33 @@ const TERMINAL_ADMIN_COMMAND_PRESETS = [
     options: '-p creates missing parents; the app rejects targets outside the current folder.',
     examples: 'mkdir -p new-folder',
     help: 'Admin-only write helper. Creates a directory inside the current folder; deletion and arbitrary shell syntax remain blocked.'
+  },
+  {
+    command: 'rm -- file.txt',
+    label: 'rm',
+    syntax: 'rm -- [file]',
+    purpose: 'Remove one selected file or folder from the current folder.',
+    options: '-- ends options; the app rejects targets outside the current folder and protected roots.',
+    examples: 'rm -- old-file.txt',
+    help: 'Admin-only destructive helper. The app asks for confirmation before running it and blocks protected roots.'
+  },
+  {
+    command: 'mv -- source target',
+    label: 'mv',
+    syntax: 'mv -- [source] [target]',
+    purpose: 'Move or rename an object inside the current folder.',
+    options: '-- ends options; both source and destination must stay inside the current folder.',
+    examples: 'mv -- draft.txt Archive/draft.txt',
+    help: 'Admin-only move/rename helper. The app asks for confirmation and keeps both paths inside the current folder.'
+  },
+  {
+    command: 'cp -R -- source target',
+    label: 'cp -R',
+    syntax: 'cp -R -- [source] [target]',
+    purpose: 'Copy a file or folder inside the current folder.',
+    options: '-R copies directories; -- ends options; both paths remain scoped to the current folder.',
+    examples: 'cp -R -- Photos Photos-copy',
+    help: 'Admin-only copy helper. The app asks for confirmation and rejects paths outside the current folder.'
   }
 ];
 
@@ -1374,13 +1410,16 @@ export default function App() {
     if (!isPackageContainerNode(node) || !window.electronAPI?.scanSubdir) return;
     setNodeLoading(true);
     try {
-      const result = await window.electronAPI.scanSubdir(node.path, true);
+      const result = isArchiveNode(node)
+        ? await window.electronAPI.scanArchive?.(node.path)
+        : await window.electronAPI.scanSubdir(node.path, true);
       if (!result?.tree) throw new Error(result?.error || 'Package contents could not be read');
       const enriched = {
         ...node,
         children: result.tree.children || [],
         size: result.tree.size ?? node.size,
-        itemCount: Number.isFinite(result.tree.itemCount) ? result.tree.itemCount : (result.tree.children || []).length
+        itemCount: Number.isFinite(result.tree.itemCount) ? result.tree.itemCount : (result.tree.children || []).length,
+        archiveContainer: isArchiveNode(node) ? true : node.archiveContainer
       };
       setScannedTree(previous => previous ? updateNodeInTree(previous, node.path, enriched) : previous);
       setNavStack(previous => previous.map(current => current.path === node.path ? enriched : current));
@@ -1440,7 +1479,8 @@ export default function App() {
       await openHiddenSpace(node);
       return;
     }
-    if (node.type !== 'directory') {
+    const canNavigateArchive = isArchiveNode(node) && packageContentsShown[node.path] && node.children?.length;
+    if (node.type !== 'directory' && !node.archiveVirtual && !canNavigateArchive) {
       setFocusedNode(node);
       return;
     }
@@ -1454,7 +1494,8 @@ export default function App() {
       node.children &&
       node.children.length === 0 &&
       node.path &&
-      !node.path.startsWith('__')
+      !node.path.startsWith('__') &&
+      !node.archiveVirtual
     );
 
     if (needsLazyScan) {
@@ -1526,6 +1567,10 @@ export default function App() {
     if (terminalBusy) return;
     const enteredCommand = terminalCommand.trim();
     if (!enteredCommand) return;
+    if (terminalAdminMode && /^(?:rm|mv|cp -R)\s/.test(enteredCommand)) {
+      const confirmed = window.confirm(`Run this admin filesystem command?\n\n${enteredCommand}`);
+      if (!confirmed) return;
+    }
     setTerminalCommand('');
     setTerminalHistoryIndex(-1);
     setTerminalHistory(previous => [...previous, enteredCommand].slice(-100));
@@ -1741,7 +1786,7 @@ export default function App() {
       await openHiddenSpace(item);
       return;
     }
-    if (item.path.startsWith('__') || item.type !== 'file') return;
+    if (item.archiveVirtual || item.path.startsWith('__') || !['file', 'directory', 'symlink'].includes(item.type)) return;
     if (!window.electronAPI?.quickLook) {
       alert('Quick Look is available in the Electron app only.');
       return;
@@ -1755,7 +1800,7 @@ export default function App() {
       if (event.key !== ' ' || event.repeat || viewState !== 'scan' || loading || nodeLoading) return;
       const target = event.target;
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable || target instanceof HTMLButtonElement) return;
-      if (!pointerNode || pointerNode.type !== 'file') return;
+      if (!pointerNode || pointerNode.archiveVirtual || !['file', 'directory', 'symlink'].includes(pointerNode.type)) return;
       event.preventDefault();
       handleQuickLook(pointerNode);
     };
@@ -2604,8 +2649,10 @@ export default function App() {
                     title={item.path && !item.path.startsWith('__') ? `${item.name}\n${item.path}` : item.name}
                     draggable={item.path && !item.path.startsWith('__')}
                     onDragStart={e => {
+                      if (!item.path || item.path.startsWith('__')) { e.preventDefault(); return; }
                       e.dataTransfer.setData('application/json', JSON.stringify(item));
-                      e.dataTransfer.effectAllowed = 'move';
+                      e.dataTransfer.setData('text/plain', item.path);
+                      e.dataTransfer.effectAllowed = 'copy';
                     }}
                     onClick={() => {
                       setFocusedNode(item);
