@@ -1630,9 +1630,22 @@ function parseArchiveListing(stdout, archivePath) {
 
 function listArchiveContents(archivePath) {
   return new Promise((resolve, reject) => {
-    execFile('/usr/bin/bsdtar', ['-tvf', archivePath], { timeout: 20000, maxBuffer: 24 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) return reject(new Error(String(stderr || error.message || 'Archive could not be listed').trim()));
-      resolve(parseArchiveListing(stdout, archivePath));
+    const fallbackByNames = () => execFile('/usr/bin/bsdtar', ['-tf', archivePath], { timeout: 20000, maxBuffer: 24 * 1024 * 1024 }, (fallbackError, names, fallbackStderr) => {
+      if (fallbackError) return reject(new Error(String(fallbackStderr || fallbackError.message || 'Archive could not be listed').trim()));
+      const syntheticListing = String(names || '').split(/\r?\n/)
+        .map(name => name.trim())
+        .filter(Boolean)
+        .map(name => `-rw-r--r-- 1 owner group 0 Jan 01 00:00 ${name}`)
+        .join('\n');
+      const tree = parseArchiveListing(syntheticListing, archivePath);
+      if (!tree.itemCount) return reject(new Error('Archive contains no readable entries.'));
+      resolve(tree);
+    });
+
+    execFile('/usr/bin/bsdtar', ['-tvf', archivePath], { timeout: 20000, maxBuffer: 24 * 1024 * 1024 }, (error, stdout) => {
+      const tree = parseArchiveListing(stdout, archivePath);
+      if (!error && tree.itemCount) return resolve(tree);
+      fallbackByNames();
     });
   });
 }
