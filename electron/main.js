@@ -289,7 +289,11 @@ function startFolderWatcher(rootPath) {
   return { ok: true, active: true, rootPath: displayRoot };
 }
 
-app.on('before-quit', () => stopFolderWatcher());
+app.on('before-quit', () => {
+  stopFolderWatcher();
+  if (quickLookChild && !quickLookChild.killed) quickLookChild.kill('SIGTERM');
+  quickLookChild = null;
+});
 
 // ─── Folder watcher ──────────────────────────────────────────────────────────
 ipcMain.handle('watch-current-folder', async (_event, { folderPath = null, enabled = true } = {}) => {
@@ -340,6 +344,49 @@ ipcMain.handle('reveal-in-finder', async (event, itemPath) => {
   if (!isFilesystemPath(itemPath)) return false;
   shell.showItemInFolder(itemPath);
   return true;
+});
+
+ipcMain.handle('finder-get-info', async (_event, itemPath) => {
+  if (!isFilesystemPath(itemPath)) return { ok: false, error: 'Invalid filesystem path' };
+  try {
+    await fs.promises.lstat(itemPath);
+    return await openFinderGetInfo(itemPath);
+  } catch (error) {
+    return { ok: false, error: error.message || 'Object no longer exists' };
+  }
+});
+
+ipcMain.handle('get-open-with-apps', async (_event, itemPath) => {
+  if (!isFilesystemPath(itemPath)) return { apps: [], error: 'Invalid filesystem path' };
+  return { apps: await listOpenWithApplications(itemPath) };
+});
+
+ipcMain.handle('open-with-application', async (_event, { appPath = '', itemPath = '' } = {}) => {
+  if (!isFilesystemPath(itemPath) || !isFilesystemPath(appPath) || !appPath.toLowerCase().endsWith('.app')) {
+    return { ok: false, error: 'Invalid application or item path' };
+  }
+  try {
+    const appStat = await fs.promises.lstat(appPath);
+    const itemStat = await fs.promises.lstat(itemPath);
+    if (!appStat.isDirectory() || (!itemStat.isFile() && !itemStat.isDirectory() && !itemStat.isSymbolicLink())) {
+      return { ok: false, error: 'Application or item is unavailable' };
+    }
+    openItemWithApplication(appPath, itemPath);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message || 'Open With failed' };
+  }
+});
+
+ipcMain.handle('choose-other-application', async (_event, itemPath) => {
+  if (!isFilesystemPath(itemPath)) return { ok: false, error: 'Invalid filesystem path' };
+  try {
+    await fs.promises.lstat(itemPath);
+    await chooseOtherApplication(itemPath);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message || 'Application chooser failed' };
+  }
 });
 
 // ─── Hidden Space access ───────────────────────────────────────────────────────
@@ -743,28 +790,36 @@ function getNativeHelperPath(name) {
 // ─── Finder actions ───────────────────────────────────────────────────────────
 function openFinderGetInfo(itemPath) {
   const appleScriptPath = JSON.stringify(String(itemPath));
-  const script = `tell application "Finder" to open information window of (POSIX file ${appleScriptPath} as alias)`;
+  const script = `tell application "Finder"\n  activate\n  set targetItem to (POSIX file ${appleScriptPath} as alias)\n  reveal targetItem\n  open information window of targetItem\nend tell`;
   return new Promise(resolve => {
-    execFile('/usr/bin/osascript', ['-e', script], { timeout: 10000 }, error => resolve(!error));
+    execFile('/usr/bin/open', ['-R', String(itemPath)], { timeout: 10000 }, () => {
+      execFile('/usr/bin/osascript', ['-e', script], { timeout: 10000 }, (error, _stdout, stderr) => {
+        resolve({ ok: !error, error: error ? String(stderr || error.message || 'Finder Get Info failed').trim() : '' });
+      });
+    });
   });
 }
 
-async function listOpenWithApplications() {
-  const roots = [path.join(os.homedir(), 'Applications'), '/Applications', '/System/Applications'];
-  const applications = new Map();
-  for (const root of roots) {
-    try {
-      const entries = await fs.promises.readdir(root, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory() || !entry.name.toLowerCase().endsWith('.app')) continue;
-        applications.set(entry.name, path.join(root, entry.name));
+async function listOpenWithApplications(itemPath) {
+  const helperPath = getNativeHelperPath('openwith-applications');
+  if (!helperPath) return [];
+  return new Promise(resolve => {
+    execFile(helperPath, [itemPath], { timeout: 10000, maxBuffer: 2 * 1024 * 1024 }, (error, stdout) => {
+      if (error) return resolve([]);
+      const applications = [];
+      const seen = new Set();
+      for (const appPath of String(stdout || '').split(/\r?\n/)) {
+        const normalized = appPath.trim();
+        if (!normalized || !normalized.endsWith('.app') || seen.has(normalized)) continue;
+        seen.add(normalized);
+        applications.push({
+          label: path.basename(normalized).replace(/\.app$/i, ''),
+          appPath: normalized
+        });
       }
-    } catch {}
-  }
-  return [...applications.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .slice(0, 80)
-    .map(([label, appPath]) => ({ label: label.replace(/\.app$/i, ''), appPath }));
+      resolve(applications.slice(0, 80));
+    });
+  });
 }
 
 function openItemWithApplication(appPath, itemPath) {
@@ -773,29 +828,58 @@ function openItemWithApplication(appPath, itemPath) {
   });
 }
 
+async function chooseOtherApplication(itemPath) {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose an application',
+    properties: ['openFile'],
+    filters: [{ name: 'Applications', extensions: ['app'] }]
+  });
+  if (!result.canceled && result.filePaths?.[0]) openItemWithApplication(result.filePaths[0], itemPath);
+}
+
 // ─── Quick Look ────────────────────────────────────────────────────────────────
+let quickLookChild = null;
+
 function quickLookPath(itemPath) {
   return new Promise(resolve => {
     const helperPath = getNativeHelperPath('quicklook-preview');
     if (!helperPath) return resolve({ ok: false, error: 'Native Quick Look helper is not built.' });
+
+    if (quickLookChild && !quickLookChild.killed) {
+      quickLookChild.kill('SIGTERM');
+      quickLookChild = null;
+    }
+
     const child = spawn(helperPath, [itemPath], { stdio: ['ignore', 'ignore', 'pipe'] });
+    quickLookChild = child;
     let stderr = '';
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      resolve({ ok: false, error: 'Quick Look helper timed out.' });
-    }, 20000);
+    let settled = false;
+    const settle = result => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', chunk => { stderr += chunk; });
-    child.on('error', error => {
-      clearTimeout(timer);
-      resolve({ ok: false, error: error.message });
+    child.once('error', error => {
+      if (quickLookChild === child) quickLookChild = null;
+      settle({ ok: false, error: error.message });
     });
-    child.on('close', (code, signal) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        resolve({ ok: true });
-      } else {
-        resolve({ ok: false, error: stderr.trim() || `Quick Look helper stopped (${signal || `exit ${code}`}).` });
+    child.once('spawn', () => {
+      // The helper intentionally remains alive while its preview window is open.
+      // Confirm startup only; never kill it merely because the user keeps Quick
+      // Look open. Closing the native window ends this child naturally.
+      setTimeout(() => settle({ ok: true, persistent: true }), 350);
+    });
+    child.once('close', (code, signal) => {
+      if (quickLookChild === child) quickLookChild = null;
+      if (!settled) {
+        settle(code === 0
+          ? { ok: true }
+          : { ok: false, error: stderr.trim() || `Quick Look helper stopped (${signal || `exit ${code}`}).` });
+      } else if (code !== 0) {
+        console.warn('Quick Look helper stopped after preview opened:', stderr.trim() || signal || code);
       }
     });
   });
@@ -1247,19 +1331,27 @@ ipcMain.handle('show-context-menu', async (event, { itemPath, itemName, item, ca
   const isDirectory = Boolean(stat?.isDirectory());
   const isArchive = Boolean(isFile && isArchiveFilePath(itemPath));
   const isPackage = Boolean((isDirectory && isPackageContainerName(path.basename(itemPath))) || isArchive);
-  const openWithApps = await listOpenWithApplications();
+  const openWithApps = await listOpenWithApplications(itemPath);
   const menu = Menu.buildFromTemplate([
     { label: `▣ ${itemName}`, enabled: false },
     { type: 'separator' },
     { label: '◉ Quick Look', enabled: isFile || isDirectory, click: () => { void quickLookPath(itemPath); } },
     { label: '◌ Ask Siri…', click: () => { void handleAskSiriFromMenu({ itemPath, itemName, item }); } },
     { label: '⌕ Reveal in Finder', click: () => shell.showItemInFolder(itemPath) },
-    { label: 'Get Info', click: () => { void openFinderGetInfo(itemPath); } },
+    { label: 'Get Info', click: () => {
+      void openFinderGetInfo(itemPath).then(result => {
+        if (!result?.ok) dialog.showErrorBox('Finder Get Info', result?.error || 'Finder could not open the information window.');
+      });
+    } },
     {
       label: 'Open with',
-      submenu: openWithApps.length
-        ? openWithApps.map(application => ({ label: application.label, click: () => openItemWithApplication(application.appPath, itemPath) }))
-        : [{ label: 'No applications found', enabled: false }]
+      submenu: [
+        ...(openWithApps.length
+          ? openWithApps.map(application => ({ label: application.label, click: () => openItemWithApplication(application.appPath, itemPath) }))
+          : [{ label: 'No compatible applications found', enabled: false }]),
+        { type: 'separator' },
+        { label: 'Other…', click: () => { void chooseOtherApplication(itemPath); } }
+      ]
     },
     {
       label: packageContentsShown ? '▤ Hide Package Contents' : '▤ Show Package Contents',
@@ -1516,7 +1608,7 @@ function parseArchiveListing(stdout, archivePath) {
 
 function listArchiveContents(archivePath) {
   return new Promise((resolve, reject) => {
-    execFile('/usr/bin/bsdtar', ['-tvf', '--', archivePath], { timeout: 20000, maxBuffer: 24 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile('/usr/bin/bsdtar', ['-tvf', archivePath], { timeout: 20000, maxBuffer: 24 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) return reject(new Error(String(stderr || error.message || 'Archive could not be listed').trim()));
       resolve(parseArchiveListing(stdout, archivePath));
     });

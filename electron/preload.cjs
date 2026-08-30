@@ -13,6 +13,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stopCurrentFolderWatcher: ()                     => ipcRenderer.invoke('watch-current-folder', { enabled: false }),
   deleteItems:           (items)                => ipcRenderer.invoke('delete-items', items),
   revealInFinder:        (itemPath)             => ipcRenderer.invoke('reveal-in-finder', itemPath),
+  finderGetInfo:         (itemPath)             => ipcRenderer.invoke('finder-get-info', itemPath),
+  getOpenWithApps:       (itemPath)             => ipcRenderer.invoke('get-open-with-apps', itemPath),
+  openWithApplication:   (appPath, itemPath)  => ipcRenderer.invoke('open-with-application', { appPath, itemPath }),
+  chooseOtherApplication:(itemPath)            => ipcRenderer.invoke('choose-other-application', itemPath),
   ejectDrive:            (mount)                => ipcRenderer.invoke('eject-drive', { mount }),
   showContextMenu:       (item)                 => ipcRenderer.invoke('show-context-menu', item),
   askSiri:               (item)                 => ipcRenderer.invoke('ask-siri', {

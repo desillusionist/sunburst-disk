@@ -11,8 +11,9 @@
     "build": "vite build",
     "build:fsevents": "swiftc electron/fsevents-watcher.swift -o electron/fsevents-watcher && chmod 755 electron/fsevents-watcher",
     "build:quicklook": "swiftc electron/quicklook-preview.swift -framework Cocoa -framework QuickLookUI -o electron/quicklook-preview && chmod 755 electron/quicklook-preview",
+    "build:openwith": "swiftc electron/openwith-applications.swift -framework AppKit -o electron/openwith-applications && chmod 755 electron/openwith-applications",
     "electron:dev": "concurrently \"VITE_DEV_SERVER_URL=http://localhost:3000 vite --port 3000\" \"wait-on http://localhost:3000 && electron .\"",
-    "electron:build": "vite build && npm run build:fsevents && npm run build:quicklook && electron-builder --mac",
+    "electron:build": "vite build && npm run build:fsevents && npm run build:quicklook && npm run build:openwith && electron-builder --mac",
     "lint": "oxlint",
     "preview": "vite preview"
   },
@@ -41,7 +42,8 @@
     ],
     "asarUnpack": [
       "electron/fsevents-watcher",
-      "electron/quicklook-preview"
+      "electron/quicklook-preview",
+      "electron/openwith-applications"
     ],
     "mac": {
       "icon": "assets/SunburstDisk.icns",

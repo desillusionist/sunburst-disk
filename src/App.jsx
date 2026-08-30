@@ -256,6 +256,32 @@ function replaceNodeWithDelta(tree, targetPath, updatedNode) {
     : tree;
 }
 const TYPE_ORDER = { directory: 0, file: 1, special: 2 };
+const TYPE_FILTER_EXTENSIONS = Object.freeze({
+  audio: new Set(['.aac', '.aiff', '.alac', '.caf', '.flac', '.m4a', '.m4b', '.mp3', '.oga', '.ogg', '.opus', '.wav', '.wma']),
+  video: new Set(['.3gp', '.avi', '.flv', '.m2ts', '.m4v', '.mkv', '.mov', '.mp4', '.mpeg', '.mpg', '.ts', '.webm', '.wmv']),
+  image: new Set(['.avif', '.bmp', '.gif', '.heic', '.heif', '.ico', '.jpeg', '.jpg', '.png', '.raw', '.svg', '.tif', '.tiff', '.webp']),
+  archive: new Set(['.7z', '.bz2', '.cpio', '.gz', '.iso', '.rar', '.tar', '.tbz', '.tbz2', '.tgz', '.txz', '.xz', '.zip']),
+  text: new Set(['.c', '.cc', '.cpp', '.css', '.csv', '.h', '.hpp', '.html', '.ini', '.js', '.json', '.jsx', '.log', '.md', '.py', '.rtf', '.sh', '.swift', '.toml', '.ts', '.tsx', '.txt', '.xml', '.yaml', '.yml']),
+  document: new Set(['.doc', '.docx', '.epub', '.key', '.numbers', '.pages', '.pdf', '.ppt', '.pptx', '.xls', '.xlsx']),
+  font: new Set(['.otf', '.ttf', '.woff', '.woff2']),
+  database: new Set(['.db', '.mdb', '.sqlite', '.sqlite3'])
+});
+
+function getNodeFileClass(node, metadataByPath) {
+  if (node?.type === 'directory') return 'folders';
+  if (node?.type === 'special') return 'special';
+  if (node?.type !== 'file') return 'other';
+  const classified = String(metadataByPath?.[node.path]?.classification || '').toLowerCase();
+  if (classified && classified !== 'file') return classified;
+  const value = String(node.name || node.path || '').toLowerCase();
+  const dot = value.lastIndexOf('.');
+  const extension = dot >= 0 ? value.slice(dot) : '';
+  for (const [category, extensions] of Object.entries(TYPE_FILTER_EXTENSIONS)) {
+    if (extensions.has(extension)) return category;
+  }
+  return 'other';
+}
+
 const DEFAULT_VIEW_OPTIONS = {
   sortBy: 'size',
   sortDirection: 'desc',
@@ -275,6 +301,7 @@ function matchesViewFilters(node, options, metadataByPath) {
   if (options.typeFilter === 'files' && node.type !== 'file') return false;
   if (options.typeFilter === 'folders' && node.type !== 'directory') return false;
   if (options.typeFilter === 'special' && node.type !== 'special') return false;
+  if (!['all', 'files', 'folders', 'special'].includes(options.typeFilter) && getNodeFileClass(node, metadataByPath) !== options.typeFilter) return false;
 
   const size = Number(node.size || 0);
   if (options.sizeFilter === '1mb' && size < 1e6) return false;
@@ -524,6 +551,7 @@ export default function App() {
   const [collectorExpanded, setCollectorExpanded] = useState(false);
   const [countdown, setCountdown]           = useState(null);
   const [contextMenu, setContextMenu]       = useState(null);
+  const [contextOpenWith, setContextOpenWith] = useState(null);
   const [viewOptions, setViewOptions]       = useState(DEFAULT_VIEW_OPTIONS);
   const [metadataByPath, setMetadataByPath] = useState({});
   const [breadcrumbsCompact, setBreadcrumbsCompact] = useState(false);
@@ -1049,6 +1077,7 @@ export default function App() {
   useEffect(() => {
     const handler = () => {
       setContextMenu(null);
+      setContextOpenWith(null);
       setDriveMenuKey(null);
       setBreadcrumbsMenuOpen(false);
       setViewOptionsOpen(false);
@@ -1856,8 +1885,8 @@ export default function App() {
   const handleContextMenu = (e, item) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!item || !item.path || item.path.startsWith('__')) return;
-    if (window.electronAPI) {
+    if (!item || !item.path || item.path.startsWith('__') || item.archiveVirtual) return;
+    if (window.electronAPI && !matrixTheme) {
       window.electronAPI.showContextMenu({
         itemPath: item.path,
         itemName: item.name,
@@ -1866,8 +1895,22 @@ export default function App() {
         packageContentsShown: Boolean(packageContentsShown[item.path])
       });
     } else {
+      setContextOpenWith(null);
       setContextMenu({ x: e.clientX, y: e.clientY, item });
     }
+  };
+
+  const handleContextGetInfo = async item => {
+    const result = await window.electronAPI?.finderGetInfo?.(item.path);
+    if (!result?.ok) alert(result?.error || 'Finder Get Info could not open. Check Finder Automation permission in System Settings.');
+    setContextMenu(null);
+    setContextOpenWith(null);
+  };
+
+  const handleContextOpenWith = async item => {
+    setContextOpenWith({ path: item.path, loading: true, apps: [] });
+    const result = await window.electronAPI?.getOpenWithApps?.(item.path);
+    setContextOpenWith({ path: item.path, loading: false, apps: result?.apps || [] });
   };
 
   const totalCollectorSize = collector.reduce((s, i) => s + (i.size || 0), 0);
@@ -2483,12 +2526,14 @@ export default function App() {
                   ))}
                 </div>
                 {terminalHelperHoverKey && (() => {
-                  const preset = TERMINAL_COMMAND_PRESETS.find(item => item.command === terminalHelperHoverKey)
-                    || TERMINAL_COMMAND_PRESETS.find(item => item.command === terminalHelpKey)
-                    || TERMINAL_COMMAND_PRESETS[0];
+                  const allTerminalPresets = [...TERMINAL_COMMAND_PRESETS, ...TERMINAL_ADMIN_COMMAND_PRESETS];
+                  const preset = allTerminalPresets.find(item => item.command === terminalHelperHoverKey)
+                    || allTerminalPresets.find(item => item.command === terminalHelpKey)
+                    || allTerminalPresets[0];
+                  const isAdminHelper = TERMINAL_ADMIN_COMMAND_PRESETS.some(item => item.command === preset.command);
                   return (
                     <div className="terminal-command-help" role="tooltip">
-                      <div className="terminal-help-title"><code>{preset.syntax}</code><span>Read-only helper</span></div>
+                      <div className="terminal-help-title"><code>{preset.syntax}</code><span>{isAdminHelper ? 'Read & write helper' : 'Read-only helper'}</span></div>
                       <div><strong>Purpose:</strong> {preset.purpose}</div>
                       <div><strong>Options:</strong> {preset.options}</div>
                       <div><strong>Examples:</strong><pre>{preset.examples}</pre></div>
@@ -2610,6 +2655,15 @@ export default function App() {
                       <option value="all">All types</option>
                       <option value="folders">Folders</option>
                       <option value="files">Files</option>
+                      <option value="audio">Audio</option>
+                      <option value="video">Video</option>
+                      <option value="image">Image</option>
+                      <option value="text">Text</option>
+                      <option value="document">Document</option>
+                      <option value="archive">Archive</option>
+                      <option value="font">Font</option>
+                      <option value="database">Database</option>
+                      <option value="other">Other files</option>
                       <option value="special">System accounting</option>
                     </select>
                   </label>
@@ -2734,18 +2788,18 @@ export default function App() {
         </div>
       )}
 
-      {/* ── Custom Fallback Context Menu (when no Electron) ─────────────────── */}
+      {/* ── Styled context menu: also used in Matrix because native menus cannot inherit CSS ── */}
       {contextMenu && (
         <div
-          className="ctx-menu"
+          className={`ctx-menu ${matrixTheme ? 'ctx-menu-matrix' : ''}`}
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={e => e.stopPropagation()}
         >
           <div className="ctx-item ctx-title">{contextMenu.item.name}</div>
           <div className="ctx-separator" />
-          <div className={`ctx-item ${contextMenu.item.type === 'file' ? '' : 'disabled'}`} onClick={() => {
-            if (contextMenu.item.type !== 'file') return;
-            handleQuickLook(contextMenu.item);
+          <div className={`ctx-item ${['file', 'directory', 'symlink'].includes(contextMenu.item.type) ? '' : 'disabled'}`} onClick={() => {
+            if (!['file', 'directory', 'symlink'].includes(contextMenu.item.type)) return;
+            void handleQuickLook(contextMenu.item);
             setContextMenu(null);
           }}>◉ Quick Look</div>
           <div
@@ -2756,12 +2810,32 @@ export default function App() {
             }}
           >◌ Ask Siri…</div>
           <div className="ctx-item" onClick={() => {
-            window.electronAPI?.revealInFinder(contextMenu.item.path);
+            if (window.electronAPI?.revealInFinder) void window.electronAPI.revealInFinder(contextMenu.item.path);
             setContextMenu(null);
           }}>⌕ Reveal in Finder</div>
+          <div className="ctx-item" onClick={() => { void handleContextGetInfo(contextMenu.item); }}>ⓘ Get Info</div>
+          <div className="ctx-item" onClick={() => { void handleContextOpenWith(contextMenu.item); }}>▸ Open with…</div>
+          {contextOpenWith?.path === contextMenu.item.path && (
+            <div className="ctx-submenu">
+              {contextOpenWith.loading && <div className="ctx-item disabled">Loading compatible apps…</div>}
+              {!contextOpenWith.loading && contextOpenWith.apps.length === 0 && <div className="ctx-item disabled">No compatible apps found</div>}
+              {!contextOpenWith.loading && contextOpenWith.apps.map(application => (
+                <div key={application.appPath} className="ctx-item ctx-subitem" onClick={() => {
+                  void window.electronAPI?.openWithApplication?.(application.appPath, contextMenu.item.path);
+                  setContextMenu(null);
+                  setContextOpenWith(null);
+                }}>{application.label}</div>
+              ))}
+              {!contextOpenWith.loading && <div className="ctx-item ctx-subitem" onClick={() => {
+                void window.electronAPI?.chooseOtherApplication?.(contextMenu.item.path);
+                setContextMenu(null);
+                setContextOpenWith(null);
+              }}>Other…</div>}
+            </div>
+          )}
           {isPackageContainerNode(contextMenu.item) && (
             <div className="ctx-item" onClick={() => {
-              togglePackageContents(contextMenu.item);
+              void togglePackageContents(contextMenu.item);
               setContextMenu(null);
             }}>
               {packageContentsShown[contextMenu.item.path] ? '▤ Hide Package Contents' : '▤ Show Package Contents'}
