@@ -2132,6 +2132,33 @@ export default function App() {
     : (archiveDisplayChildren || previewNode?.children || []).filter(item => !collectedPaths.has(item.path));
   const currentArchivePath = currentViewDisplayNode && isArchiveNode(currentViewDisplayNode) ? currentViewDisplayNode.path : null;
   const currentArchiveStatus = currentArchivePath ? packageContentsStatus[currentArchivePath] : null;
+  const visibleChildrenRef = useRef(visibleChildren);
+  visibleChildrenRef.current = visibleChildren;
+  const visibleChildrenKey = visibleChildren.map(item => item.path).join('\u0000');
+  useEffect(() => {
+    const onArrowKey = event => {
+      if (!['ArrowUp', 'ArrowDown'].includes(event.key) || event.repeat || viewState !== 'scan' || loading || nodeLoading) return;
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target?.isContentEditable) return;
+      if (target?.closest?.('.terminal-drawer, .view-options-panel, .context-menu, .assistant-drawer')) return;
+      const children = visibleChildrenRef.current;
+      if (!children.length) return;
+
+      const currentPath = pointerNode?.path || focusedLiveNode?.path || highlightedPath;
+      let currentIndex = children.findIndex(item => item.path === currentPath);
+      if (currentIndex < 0) currentIndex = event.key === 'ArrowDown' ? -1 : children.length;
+      const nextIndex = Math.max(0, Math.min(children.length - 1, currentIndex + (event.key === 'ArrowDown' ? 1 : -1)));
+      const nextNode = children[nextIndex];
+      if (!nextNode) return;
+      event.preventDefault();
+      handleHoverNode(nextNode);
+      setHighlightedPath(nextNode.path);
+      const row = document.querySelector(`[data-tree-path="${CSS.escape(nextNode.path)}"]`);
+      row?.scrollIntoView({ block: 'nearest' });
+    };
+    window.addEventListener('keydown', onArrowKey);
+    return () => window.removeEventListener('keydown', onArrowKey);
+  }, [visibleChildrenKey, pointerNode, focusedLiveNode, highlightedPath, handleHoverNode, viewState, loading, nodeLoading]);
   const visibleChildCount = visibleChildren.length;
   const visibleSizesKey = visibleChildren.slice(0, 20).map(child => Number(child.size) || 0).join(',');
   useEffect(() => {
@@ -2934,6 +2961,7 @@ export default function App() {
                   <div
                     key={idx}
                     className={`legend-row ${isHigh ? 'highlighted' : ''}`}
+                    data-tree-path={item.path || undefined}
                     title={item.path && !item.path.startsWith('__') ? `${item.name}\n${item.path}` : item.name}
                     draggable={item.path && !item.path.startsWith('__')}
                     onDragStart={e => {
@@ -2944,7 +2972,9 @@ export default function App() {
                     }}
                     onClick={() => {
                       setFocusedNode(item);
-                      if (item.type === 'directory' || item.type === 'special') navigateTo(item);
+                      const archiveIsOpen = isArchiveNode(item) && packageContentsShown[item.path]
+                        && Boolean(archiveContentsByPath[item.path]?.length || item.children?.length);
+                      if (item.type === 'directory' || item.type === 'special' || archiveIsOpen) navigateTo(item);
                     }}
                     onMouseEnter={() => {
                       setHighlightedPath(item.path);
