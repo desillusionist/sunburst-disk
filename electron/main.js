@@ -1564,7 +1564,12 @@ function isArchiveFilePath(value) {
   return ARCHIVE_SUFFIXES.some(suffix => name.endsWith(suffix));
 }
 
-function parseArchiveListing(stdout, archivePath) {
+const MAX_ARCHIVE_ENTRIES = 20000;
+const MAX_ARCHIVE_CENTRAL_BYTES = 24 * 1024 * 1024;
+const ZIP_END_SIGNATURE = 0x06054b50;
+const ZIP_CENTRAL_SIGNATURE = 0x02014b50;
+
+function buildArchiveTree(entries, archivePath) {
   const root = {
     name: path.basename(archivePath),
     path: archivePath,
@@ -1575,16 +1580,11 @@ function parseArchiveListing(stdout, archivePath) {
   };
   const nodes = new Map();
   const childrenByParent = new Map();
-  const entries = [];
-  for (const line of String(stdout || '').split(/\r?\n/)) {
-    const match = line.match(/^([dl-][rwxst-]{9})\s+\d+\s+\S+\s+\S+\s+(\d+)\s+\w{3}\s+\d{1,2}\s+\S+\s+(.+)$/);
-    if (!match) continue;
-    const entryName = match[3].replace(/\/$/, '').trim();
-    if (!entryName || entryName === '.' || entryName.startsWith('../') || entryName.includes('/../')) continue;
-    entries.push({ name: entryName, size: Number(match[2]) || 0, directory: match[1].startsWith('d') || line.trimEnd().endsWith('/') });
-  }
-  for (const entry of entries.slice(0, 20000)) {
-    const parts = entry.name.split('/').filter(Boolean);
+  for (const entry of entries.slice(0, MAX_ARCHIVE_ENTRIES)) {
+    const rawName = String(entry.name || '').replaceAll('\\', '/').replace(/^\/+/, '');
+    const directory = Boolean(entry.directory || rawName.endsWith('/'));
+    const parts = rawName.split('/').filter(Boolean);
+    if (!parts.length || parts.some(part => part === '.' || part === '..' || part === '__MACOSX' || part.startsWith('._'))) continue;
     let parentKey = '';
     for (let index = 0; index < parts.length; index += 1) {
       const relative = parts.slice(0, index + 1).join('/');
@@ -1593,16 +1593,16 @@ function parseArchiveListing(stdout, archivePath) {
         nodes.set(key, {
           name: parts[index],
           path: key,
-          size: index === parts.length - 1 ? entry.size : 0,
-          type: index === parts.length - 1 && !entry.directory ? 'file' : 'directory',
+          size: index === parts.length - 1 ? Math.max(0, Number(entry.size) || 0) : 0,
+          type: index === parts.length - 1 && !directory ? 'file' : 'directory',
           archiveVirtual: true,
           archivePath,
           archiveEntry: relative,
           children: []
         });
         childrenByParent.set(key, []);
-      } else if (index === parts.length - 1 && !entry.directory) {
-        nodes.get(key).size = entry.size;
+      } else if (index === parts.length - 1 && !directory) {
+        nodes.get(key).size = Math.max(0, Number(entry.size) || 0);
         nodes.get(key).type = 'file';
       }
       if (parentKey) childrenByParent.get(parentKey).push(nodes.get(key));
@@ -1612,23 +1612,106 @@ function parseArchiveListing(stdout, archivePath) {
   for (const [key, children] of childrenByParent) {
     const unique = [...new Map(children.map(child => [child.path, child])).values()];
     const node = nodes.get(key);
-    if (node) {
-      node.children = unique.sort((a, b) => (b.size || 0) - (a.size || 0) || a.name.localeCompare(b.name));
-      if (node.type === 'directory') node.size = node.children.reduce((sum, child) => sum + (child.size || 0), 0);
-      node.itemCount = node.children.reduce((sum, child) => sum + 1 + (child.itemCount || 0), 0);
-    }
+    if (!node) continue;
+    node.children = unique.sort((a, b) => (b.size || 0) - (a.size || 0) || a.name.localeCompare(b.name));
+    if (node.type === 'directory') node.size = node.children.reduce((sum, child) => sum + (child.size || 0), 0);
+    node.itemCount = node.children.reduce((sum, child) => sum + 1 + (child.itemCount || 0), 0);
   }
-  const roots = [];
-  for (const node of nodes.values()) {
-    const slash = node.archiveEntry.lastIndexOf('/');
-    if (slash < 0) roots.push(node);
-  }
+  const roots = [...nodes.values()].filter(node => !node.archiveEntry.includes('/'));
   root.children = roots.sort((a, b) => (b.size || 0) - (a.size || 0) || a.name.localeCompare(b.name));
   root.itemCount = root.children.reduce((sum, child) => sum + 1 + (child.itemCount || 0), 0);
+  root.size = root.children.reduce((sum, child) => sum + (child.size || 0), 0);
   return root;
 }
 
+function parseArchiveListing(stdout, archivePath) {
+  const entries = [];
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    const match = line.match(/^([dl-][rwxst-]{9})\s+\d+\s+\S+\s+\S+\s+(\d+)\s+\w{3}\s+\d{1,2}\s+\S+\s+(.+)$/);
+    if (!match) continue;
+    const entryName = match[3].replace(/\/$/, '').trim();
+    if (!entryName || entryName === '.' || entryName.startsWith('../') || entryName.includes('/../')) continue;
+    entries.push({ name: entryName, size: Number(match[2]) || 0, directory: match[1].startsWith('d') || line.trimEnd().endsWith('/') });
+  }
+  return buildArchiveTree(entries, archivePath);
+}
+
+function decodeZipEntryName(nameBytes, flags, extraBytes) {
+  let offset = 0;
+  while (offset + 4 <= extraBytes.length) {
+    const id = extraBytes.readUInt16LE(offset);
+    const length = extraBytes.readUInt16LE(offset + 2);
+    const payloadStart = offset + 4;
+    const payloadEnd = payloadStart + length;
+    if (payloadEnd > extraBytes.length) break;
+    // Info-ZIP Unicode Path Extra Field, version 1.
+    if (id === 0x7075 && length >= 5 && extraBytes[payloadStart] === 1) {
+      const unicodeName = extraBytes.subarray(payloadStart + 5, payloadEnd).toString('utf8');
+      if (unicodeName) return unicodeName;
+    }
+    offset = payloadEnd;
+  }
+  const utf8Name = nameBytes.toString('utf8');
+  if ((flags & 0x0800) !== 0 || !utf8Name.includes('�')) return utf8Name;
+  return nameBytes.toString('latin1');
+}
+
+async function listZipContents(archivePath) {
+  const handle = await fs.promises.open(archivePath, 'r');
+  try {
+    const stat = await handle.stat();
+    const archiveSize = Number(stat.size);
+    const tailSize = Math.min(archiveSize, 22 + 65535);
+    const tail = Buffer.alloc(tailSize);
+    await handle.read(tail, 0, tailSize, archiveSize - tailSize);
+    const endSignature = Buffer.allocUnsafe(4);
+    endSignature.writeUInt32LE(ZIP_END_SIGNATURE, 0);
+    const endOffset = tail.lastIndexOf(endSignature);
+    if (endOffset < 0 || endOffset + 22 > tail.length) throw new Error('ZIP central directory is missing.');
+    const totalEntries = tail.readUInt16LE(endOffset + 10);
+    const centralSize = tail.readUInt32LE(endOffset + 12);
+    const centralOffset = tail.readUInt32LE(endOffset + 16);
+    if (totalEntries === 0xffff || centralSize === 0xffffffff || centralOffset === 0xffffffff) {
+      throw new Error('ZIP64 archives are not supported by the read-only viewer yet.');
+    }
+    if (centralSize > MAX_ARCHIVE_CENTRAL_BYTES || centralOffset + centralSize > archiveSize) {
+      throw new Error('ZIP central directory is too large or invalid.');
+    }
+    const central = Buffer.alloc(centralSize);
+    await handle.read(central, 0, centralSize, centralOffset);
+    const entries = [];
+    let offset = 0;
+    while (offset + 46 <= central.length && entries.length < MAX_ARCHIVE_ENTRIES) {
+      if (central.readUInt32LE(offset) !== ZIP_CENTRAL_SIGNATURE) break;
+      const flags = central.readUInt16LE(offset + 8);
+      const uncompressedSize = central.readUInt32LE(offset + 24);
+      const nameLength = central.readUInt16LE(offset + 28);
+      const extraLength = central.readUInt16LE(offset + 30);
+      const commentLength = central.readUInt16LE(offset + 32);
+      const recordEnd = offset + 46 + nameLength + extraLength + commentLength;
+      if (recordEnd > central.length) break;
+      const nameBytes = central.subarray(offset + 46, offset + 46 + nameLength);
+      const extraBytes = central.subarray(offset + 46 + nameLength, offset + 46 + nameLength + extraLength);
+      const name = decodeZipEntryName(nameBytes, flags, extraBytes);
+      if (name) entries.push({ name, size: uncompressedSize, directory: name.endsWith('/') });
+      offset = recordEnd;
+    }
+    if (!entries.length && totalEntries > 0) throw new Error('ZIP central directory contains no readable entries.');
+    return buildArchiveTree(entries, archivePath);
+  } finally {
+    await handle.close();
+  }
+}
+
 function listArchiveContents(archivePath) {
+  const isZip = String(archivePath || '').toLowerCase().endsWith('.zip');
+  if (isZip) {
+    return listZipContents(archivePath).catch(() => listArchiveContentsWithBsdtar(archivePath));
+  }
+  return listArchiveContentsWithBsdtar(archivePath);
+}
+
+function listArchiveContentsWithBsdtar(archivePath) {
   return new Promise((resolve, reject) => {
     const fallbackByNames = () => execFile('/usr/bin/bsdtar', ['-tf', archivePath], { timeout: 20000, maxBuffer: 24 * 1024 * 1024 }, (fallbackError, names, fallbackStderr) => {
       if (fallbackError) return reject(new Error(String(fallbackStderr || fallbackError.message || 'Archive could not be listed').trim()));
