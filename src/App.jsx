@@ -392,6 +392,123 @@ function describeArrowElement(element) {
   };
 }
 
+function ThemedSelect({ value, options, onChange, ariaLabel }) {
+  const [open, setOpen] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const rootRef = useRef(null);
+  const triggerRef = useRef(null);
+  const menuRef = useRef(null);
+  const selectedIndex = Math.max(0, options.findIndex(option => option.value === value));
+  const selectedOption = options[selectedIndex] || options[0];
+
+  const close = (restoreFocus = false) => {
+    setOpen(false);
+    if (restoreFocus) window.requestAnimationFrame(() => triggerRef.current?.focus());
+  };
+  const choose = index => {
+    const option = options[index];
+    if (!option) return;
+    onChange(option.value);
+    setHighlightedIndex(index);
+    close(true);
+  };
+  const openMenu = () => {
+    setHighlightedIndex(selectedIndex);
+    setOpen(true);
+  };
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointerDown = event => {
+      if (!rootRef.current?.contains(event.target)) close();
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    window.requestAnimationFrame(() => menuRef.current?.focus());
+    return () => window.removeEventListener('pointerdown', onPointerDown);
+  }, [open]);
+
+  const handleTriggerKeyDown = event => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+      event.preventDefault();
+      if (!open) openMenu();
+      else setHighlightedIndex(index => Math.min(options.length - 1, index + 1));
+    } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+      event.preventDefault();
+      if (!open) openMenu();
+      else setHighlightedIndex(index => Math.max(0, index - 1));
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      if (open) choose(highlightedIndex);
+      else openMenu();
+    } else if (event.key === 'Escape' && open) {
+      event.preventDefault();
+      close(true);
+    }
+  };
+  const handleMenuKeyDown = event => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+      event.preventDefault();
+      setHighlightedIndex(index => Math.min(options.length - 1, index + 1));
+    } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setHighlightedIndex(index => Math.max(0, index - 1));
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setHighlightedIndex(0);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setHighlightedIndex(options.length - 1);
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      choose(highlightedIndex);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      close(true);
+    } else if (event.key === 'Tab') {
+      close();
+    }
+  };
+
+  return (
+    <div ref={rootRef} className="filter-select">
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`filter-select-trigger ${open ? 'open' : ''}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        onClick={event => {
+          event.stopPropagation();
+          if (open) close();
+          else openMenu();
+        }}
+        onKeyDown={handleTriggerKeyDown}
+      >
+        <span>{selectedOption?.label || ''}</span>
+        <ChevronDown size={10} />
+      </button>
+      {open && (
+        <div ref={menuRef} className="filter-select-menu" role="listbox" tabIndex={-1} aria-label={ariaLabel} onClick={event => event.stopPropagation()} onKeyDown={handleMenuKeyDown}>
+          {options.map((option, index) => (
+            <button
+              key={option.value}
+              type="button"
+              role="option"
+              aria-selected={option.value === value}
+              className={`filter-select-option ${index === highlightedIndex ? 'highlighted' : ''} ${option.value === value ? 'selected' : ''}`}
+              onMouseEnter={() => setHighlightedIndex(index)}
+              onClick={() => choose(index)}
+            >
+              <span>{option.label}</span>
+              {option.value === value && <span className="filter-select-check" aria-hidden="true">✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function buildShallowDisplayNode(
   node,
@@ -1319,6 +1436,8 @@ export default function App() {
       return;
     }
     setSmartCleanMenuOpen(false);
+    setViewOptionsOpen(false);
+    setThemesOpen(false);
     setSmartCleanScope(scope);
     setSmartCleanRiskFilter('all');
     setSmartCleanOpen(true);
@@ -2540,6 +2659,8 @@ export default function App() {
                 aria-expanded={smartCleanMenuOpen}
                 onClick={event => {
                   event.stopPropagation();
+                  setViewOptionsOpen(false);
+                  setThemesOpen(false);
                   setSmartCleanMenuOpen(open => !open);
                 }}
               >
@@ -2568,6 +2689,8 @@ export default function App() {
                 aria-expanded={themesOpen}
                 onClick={event => {
                   event.stopPropagation();
+                  setViewOptionsOpen(false);
+                  setSmartCleanMenuOpen(false);
                   setThemesOpen(open => !open);
                 }}
               >
@@ -3078,6 +3201,8 @@ export default function App() {
                   aria-expanded={viewOptionsOpen}
                   onClick={event => {
                     event.stopPropagation();
+                    setSmartCleanMenuOpen(false);
+                    setThemesOpen(false);
                     setViewOptionsOpen(open => !open);
                   }}
                 >
@@ -3092,12 +3217,17 @@ export default function App() {
                 <div className="view-options-heading">Display options</div>
                 <div className="view-options-grid">
                   <label>Sort by
-                    <select value={viewOptions.sortBy} onChange={event => setViewOptions(options => ({ ...options, sortBy: event.target.value }))}>
-                      <option value="size">Size</option>
-                      <option value="name">Name</option>
-                      <option value="type">Type</option>
-                      <option value="date">Date modified</option>
-                    </select>
+                    <ThemedSelect
+                      value={viewOptions.sortBy}
+                      ariaLabel="Sort by"
+                      options={[
+                        { value: 'size', label: 'Size' },
+                        { value: 'name', label: 'Name' },
+                        { value: 'type', label: 'Type' },
+                        { value: 'date', label: 'Date modified' }
+                      ]}
+                      onChange={value => setViewOptions(options => ({ ...options, sortBy: value }))}
+                    />
                   </label>
                   <button className="sort-direction-btn" onClick={() => setViewOptions(options => ({ ...options, sortDirection: options.sortDirection === 'asc' ? 'desc' : 'asc' }))}>
                     {viewOptions.sortDirection === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />}
@@ -3119,21 +3249,31 @@ export default function App() {
                     </div>
                   </div>
                   <label>Minimum size
-                    <select value={viewOptions.sizeFilter} onChange={event => setViewOptions(options => ({ ...options, sizeFilter: event.target.value }))}>
-                      <option value="all">Any size</option>
-                      <option value="1mb">1 MB+</option>
-                      <option value="100mb">100 MB+</option>
-                      <option value="1gb">1 GB+</option>
-                    </select>
+                    <ThemedSelect
+                      value={viewOptions.sizeFilter}
+                      ariaLabel="Minimum size"
+                      options={[
+                        { value: 'all', label: 'Any size' },
+                        { value: '1mb', label: '1 MB+' },
+                        { value: '100mb', label: '100 MB+' },
+                        { value: '1gb', label: '1 GB+' }
+                      ]}
+                      onChange={value => setViewOptions(options => ({ ...options, sizeFilter: value }))}
+                    />
                   </label>
                   <label>Modified
-                    <select value={viewOptions.dateFilter} onChange={event => setViewOptions(options => ({ ...options, dateFilter: event.target.value }))}>
-                      <option value="all">Any date</option>
-                      <option value="1">Last 24 hours</option>
-                      <option value="7">Last 7 days</option>
-                      <option value="30">Last 30 days</option>
-                      <option value="365">Last year</option>
-                    </select>
+                    <ThemedSelect
+                      value={viewOptions.dateFilter}
+                      ariaLabel="Modified"
+                      options={[
+                        { value: 'all', label: 'Any date' },
+                        { value: '1', label: 'Last 24 hours' },
+                        { value: '7', label: 'Last 7 days' },
+                        { value: '30', label: 'Last 30 days' },
+                        { value: '365', label: 'Last year' }
+                      ]}
+                      onChange={value => setViewOptions(options => ({ ...options, dateFilter: value }))}
+                    />
                   </label>
                   <label className="view-options-search">Name contains
                     <input value={viewOptions.nameQuery} onChange={event => setViewOptions(options => ({ ...options, nameQuery: event.target.value }))} placeholder="Search names" />
