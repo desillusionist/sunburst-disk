@@ -2492,7 +2492,6 @@ export default function App() {
             ) : currentViewNode ? (
               <>
                 <SunburstChart
-                  key={currentViewNode.path}
                   data={chartNode}
                   onSelectNode={node => navigateTo(resolveByPath(scannedTree, node.path) || node)}
                   onCenterClick={navigateUp}

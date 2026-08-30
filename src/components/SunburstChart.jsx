@@ -63,7 +63,10 @@ export default function SunburstChart({
   const sliceAnglesRef = useRef([]);
   const bulkPulseLookupRef = useRef(new Map());
   const requestedPathsRef = useRef(new Set()); // dirs already queued for lazy children
-  const animRef = useRef(null);                // { start, targetDepth, node }
+  const animRef = useRef(null);                // { start, renderData, transition }
+  const pendingTransitionRef = useRef(null);
+  const lastDataPathRef = useRef(null);
+  const lastDataRef = useRef(null);
   const rafRef = useRef(0);
   const pulseRafRef = useRef(0);
   const pulseValueRef = useRef(0);
@@ -120,9 +123,9 @@ export default function SunburstChart({
 
   /** Full redraw. sink = { depth, t } collapses rings deeper than `depth`
    *  toward the center by factor t ∈ [0,1]. */
-  const draw = useCallback((sink) => {
+  const draw = useCallback((sink, renderData = data, transition = null, captureSlices = true) => {
     const canvas = canvasRef.current;
-    if (!canvas || !data) return;
+    if (!canvas || !renderData) return;
     const startedAt = performance.now();
     const ctx = canvas.getContext('2d');
     const w = canvas.width, h = canvas.height;
@@ -208,7 +211,39 @@ export default function SunburstChart({
         r1 = r1 * (1 - f) + innerRadius * 0.35 * f;
         alphaBoost = f;
       }
-      const r2 = Math.max(r1 + 1, r1 + ringWidth - 1.2);
+      let r2 = Math.max(r1 + 1, r1 + ringWidth - 1.2);
+      let transitionOpacity = 1;
+      if (transition?.kind === 'enter-out') {
+        const isSelected = node.path === transition.selectedPath;
+        const isSelectedDescendant = !isSelected && node.path.startsWith(`${transition.selectedPath}/`);
+        transitionOpacity = isSelected
+          ? Math.max(0, 1 - transition.t * 0.95)
+          : isSelectedDescendant
+            ? Math.max(0, 1 - transition.t * 1.6)
+            : Math.max(0, 1 - transition.t * 1.35);
+        if (isSelected) {
+          const angleT = Math.min(1, transition.t * 1.8);
+          const mid = (startAngle + endAngle) / 2;
+          startAngle += (mid - Math.PI - startAngle) * angleT;
+          endAngle += (mid + Math.PI - endAngle) * angleT;
+          const sinkT = Math.min(1, transition.t * 0.9);
+          r1 += (innerRadius * 0.55 - r1) * sinkT;
+          r2 += (innerRadius * 0.85 - r2) * sinkT;
+        }
+      } else if (transition?.kind === 'up-out') {
+        transitionOpacity = Math.max(0, 1 - transition.t);
+        const sinkT = easeIn(transition.t);
+        r1 += (innerRadius * 0.42 - r1) * sinkT;
+        r2 += (innerRadius * 0.62 - r2) * sinkT;
+      } else if (transition?.kind === 'enter-in' || transition?.kind === 'up-in') {
+        const expand = transition.t <= 0 ? 0 : 1 - easeIn(1 - transition.t);
+        const mid = (startAngle + endAngle) / 2;
+        startAngle = mid + (startAngle - mid) * expand;
+        endAngle = mid + (endAngle - mid) * expand;
+        r1 = innerRadius + (r1 - innerRadius) * expand;
+        r2 = innerRadius + (r2 - innerRadius) * expand;
+        transitionOpacity = expand;
+      }
 
       const isCollected = collectedPaths.has(node.path);
       const angularGap = theme === 'matrix' ? Math.min(0.003, (endAngle - startAngle) * 0.25) : 0;
@@ -231,7 +266,7 @@ export default function SunburstChart({
         ? Math.max(0.19, 1 - (depth - 1) * 0.09) * (1 - alphaBoost)
         : isCollected ? 0.6 * (1 - alphaBoost)
           : Math.max(0.45, 1 - (depth - 1) * 0.06) * (1 - alphaBoost);
-      ctx.globalAlpha = baseAlpha;
+      ctx.globalAlpha = baseAlpha * transitionOpacity;
       ctx.fill();
       if (theme !== 'matrix') {
         ctx.strokeStyle = '#1d2127';
@@ -266,7 +301,7 @@ export default function SunburstChart({
     }
 
     // Root ring across the full circle
-    const top = (data.children || []).filter(c => (c.size || 0) > 0);
+    const top = (renderData.children || []).filter(c => (c.size || 0) > 0);
     const topSum = top.reduce((s, c) => s + (c.size || 0), 0);
     let a = 0;
     top.forEach((child, i) => {
@@ -284,10 +319,12 @@ export default function SunburstChart({
     ctx.fill();
     ctx.restore();
 
-    sliceAnglesRef.current = slices;
-    bulkPulseLookupRef.current.clear();
+    if (captureSlices) {
+      sliceAnglesRef.current = slices;
+      bulkPulseLookupRef.current.clear();
+    }
     recordPerfEvent('sunburst.draw', performance.now() - startedAt, {
-      path: data.path || null,
+      path: renderData.path || null,
       slices: slices.length,
       children: top.length,
       bulkSlices,
@@ -390,29 +427,79 @@ export default function SunburstChart({
     else stopPulse();
   }, [highlightedPath, startPulse, stopPulse]);
 
-  // Static render whenever inputs change
-  useEffect(() => {
-    if (!animRef.current) draw(null);
-  }, [draw, canvasSize]);
-
-  // Drill-down "sink" animation, then navigate
-  const startSink = useCallback((slice) => {
+  const runTransition = useCallback((renderData, transition, onComplete) => {
     cancelAnimationFrame(rafRef.current);
-    animRef.current = { start: performance.now(), targetDepth: slice.depth, node: slice.node };
-    const step = (now) => {
+    animRef.current = { start: performance.now(), renderData, transition };
+    const step = now => {
       const anim = animRef.current;
+      if (!anim) return;
       const t = Math.min(1, (now - anim.start) / SINK_MS);
-      draw({ depth: anim.targetDepth, t });
+      draw(null, anim.renderData, { ...anim.transition, t }, false);
       if (t < 1) {
         rafRef.current = requestAnimationFrame(step);
       } else {
         animRef.current = null;
-        draw(null);
-        if (anim.node.type === 'directory') onSelectNode(anim.node);
+        onComplete?.();
       }
     };
     rafRef.current = requestAnimationFrame(step);
-  }, [draw, onSelectNode]);
+  }, [draw]);
+
+  // A navigation callback changes the data path only after the old view has
+  // completed its exit. The new snapshot then expands from the center.
+  useEffect(() => {
+    const nextPath = data?.path || null;
+    if (lastDataPathRef.current === null) {
+      lastDataPathRef.current = nextPath;
+      lastDataRef.current = data;
+      if (!animRef.current) draw(null);
+      return;
+    }
+    if (nextPath !== lastDataPathRef.current) {
+      const previousData = lastDataRef.current;
+      lastDataPathRef.current = nextPath;
+      lastDataRef.current = data;
+      const pending = pendingTransitionRef.current;
+      pendingTransitionRef.current = null;
+      const inferredKind = pending?.kind || (
+        previousData?.path && nextPath && nextPath.startsWith(`${previousData.path}/`)
+          ? 'enter-in'
+          : previousData?.path && nextPath && previousData.path.startsWith(`${nextPath}/`)
+            ? 'up-in'
+            : null
+      );
+      if (inferredKind && data) {
+        runTransition(data, { kind: inferredKind }, () => draw(null));
+      } else if (!animRef.current) {
+        draw(null);
+      }
+    } else {
+      lastDataRef.current = data;
+      if (!animRef.current) draw(null);
+    }
+  }, [data, draw, runTransition]);
+
+  useEffect(() => {
+    if (!animRef.current) draw(null);
+  }, [draw, canvasSize]);
+
+  // Drill-down: siblings fade, the selected slice closes toward a full ring,
+  // then the renderer navigates and expands the new children fan-wise.
+  const startEnter = useCallback((slice) => {
+    if (!slice?.node || !data) return;
+    runTransition(data, { kind: 'enter-out', selectedPath: slice.node.path }, () => {
+      pendingTransitionRef.current = { kind: 'enter-in' };
+      if (slice.node.type === 'directory') onSelectNode(slice.node);
+    });
+  }, [data, onSelectNode, runTransition]);
+
+  const startUp = useCallback(() => {
+    if (!data) return;
+    runTransition(data, { kind: 'up-out' }, () => {
+      pendingTransitionRef.current = { kind: 'up-in' };
+      onCenterClick?.();
+    });
+  }, [data, onCenterClick, runTransition]);
 
   useEffect(() => () => {
     cancelAnimationFrame(rafRef.current);
@@ -510,14 +597,13 @@ export default function SunburstChart({
         const { slice } = hitTest(e);
         if (slice && !slice.node.isBulk) onContextMenu?.(e, slice.node);
       }}
-      onClick={e => {
+          onClick={e => {
         if (animRef.current) return;
         const { center, slice } = hitTest(e);
-        if (center) { onCenterClick?.(); return; }
+        if (center) { startUp(); return; }
         if (slice) {
-          // Any slice click: smaller rings sink into the center, then we descend
-          if (slice.node.type === 'directory') startSink(slice);
-          else onSelectNode(slice.node); // files aren't navigable
+          if (slice.node.type === 'directory') startEnter(slice);
+          else onSelectNode(slice.node); // files remain selection-only
         }
         }}
       />
