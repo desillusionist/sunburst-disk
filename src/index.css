@@ -800,13 +800,30 @@ body {
 .theme-matrix .view-type-option:hover,
 .theme-matrix .view-type-option:has(input[type="checkbox"]:checked) { background: rgba(57,255,102,.1); color: #b8ffc1 !important; }
 .theme-matrix .view-type-option input[type="checkbox"] {
-  accent-color: var(--matrix-line-bright);
+  appearance: none;
+  -webkit-appearance: none;
   color-scheme: dark;
   width: 12px;
   height: 12px;
   margin: 0;
   flex: 0 0 auto;
+  border: 1px solid var(--matrix-line);
+  border-radius: 3px;
+  background: var(--matrix-panel);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 9px 9px;
   filter: drop-shadow(0 0 2px rgba(57,255,102,.3));
+}
+.theme-matrix .view-type-option input[type="checkbox"]:checked {
+  border-color: var(--matrix-line-bright);
+  background-color: rgba(57,255,102,.12);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 6.2 4.6 9 10 3' fill='none' stroke='%2339ff66' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  box-shadow: 0 0 5px rgba(57,255,102,.35);
+}
+.theme-matrix .view-type-option input[type="checkbox"]:focus-visible {
+  outline: 1px solid var(--matrix-line-bright);
+  outline-offset: 1px;
 }
 .theme-matrix .view-options-grid select,
 .theme-matrix .view-options-grid input:not([type="checkbox"]) {
