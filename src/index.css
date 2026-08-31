@@ -2123,3 +2123,10 @@ body {
 .hidden-space-unlock-btn:hover { background: rgba(199,152,55,.2); }
 .theme-matrix .hidden-space-unlock-btn { border-color: #d8ff47; background: rgba(216,255,71,.08); color: #d8ff47; }
 .theme-matrix .hidden-space-unlock-btn:hover { background: rgba(216,255,71,.16); box-shadow: 0 0 8px rgba(216,255,71,.15); }
+
+.onboarding-guide-downloads { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 8px; color: #8e9bad; font-size: 10px; }
+.onboarding-guide-downloads a { color: #8fb5ec; text-decoration: none; }
+.onboarding-guide-downloads a:hover { color: #dbeafe; text-decoration: underline; }
+.theme-matrix .onboarding-guide-downloads { color: #70a878; }
+.theme-matrix .onboarding-guide-downloads a { color: #d8ff47; }
+.theme-matrix .onboarding-guide-downloads a:hover { color: #f0ffae; }

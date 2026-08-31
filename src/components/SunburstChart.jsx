@@ -255,17 +255,22 @@ export default function SunburstChart({
       ctx.arc(cx, cy, r1, visualStart, visualEnd, false);
       ctx.arc(cx, cy, r2, visualEnd, visualStart, true);
       ctx.closePath();
-      ctx.fillStyle = theme === 'matrix'
-        ? '#39ff66'
-        : isCollected
-          ? '#3a3d45'
-          : node.isBulk
-            ? COLOR_FAMILY['smaller objects...']
-            : color;
-      const baseAlpha = theme === 'matrix'
-        ? Math.max(0.19, 1 - (depth - 1) * 0.09) * (1 - alphaBoost)
-        : isCollected ? 0.6 * (1 - alphaBoost)
-          : Math.max(0.45, 1 - (depth - 1) * 0.06) * (1 - alphaBoost);
+      const isOtherProtectedSpace = node?.name === 'Other protected space' && node?.hiddenSpaceAdminUnlocked;
+      ctx.fillStyle = isOtherProtectedSpace
+        ? '#ff2a40'
+        : theme === 'matrix'
+          ? '#39ff66'
+          : isCollected
+            ? '#3a3d45'
+            : node.isBulk
+              ? COLOR_FAMILY['smaller objects...']
+              : color;
+      const baseAlpha = isOtherProtectedSpace
+        ? 0.9 * (1 - alphaBoost)
+        : theme === 'matrix'
+          ? Math.max(0.19, 1 - (depth - 1) * 0.09) * (1 - alphaBoost)
+          : isCollected ? 0.6 * (1 - alphaBoost)
+            : Math.max(0.45, 1 - (depth - 1) * 0.06) * (1 - alphaBoost);
       ctx.globalAlpha = baseAlpha * transitionOpacity;
       ctx.fill();
       if (theme !== 'matrix') {

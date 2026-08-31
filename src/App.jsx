@@ -29,6 +29,7 @@ const COLOR_MAP = {
 };
 const RING_COLORS = ['#eab308','#22c55e','#06b6d4','#3b82f6','#8b5cf6','#ec4899','#f97316','#14b8a6','#6366f1'];
 function getNodeColor(node, idx, matrixTheme = false) {
+  if (node?.name === 'Other protected space' && node?.hiddenSpaceAdminUnlocked) return 'rgba(255, 42, 64, 0.9)';
   if (matrixTheme) return '#39ff66';
   if (node?.name === 'smaller objects...') return COLOR_MAP['smaller objects...'];
   if (node?.name === 'hidden space...' || node?.type === 'special') return COLOR_MAP['hidden space...'];
@@ -731,7 +732,42 @@ function normalizeSmartCleanRiskValue(risk) {
   return 'review';
 }
 
-const APP_VERSION = '0.2.2';
+function buildSmartCleanTelemetry(candidates, riskFilter = 'all', categoryFilters = new Set()) {
+  const categoryIds = [...categoryFilters];
+  const normalized = (candidates || []).map(candidate => ({
+    ...candidate,
+    normalizedRisk: normalizeSmartCleanRiskValue(candidate.risk),
+    rawRisk: String(candidate.risk ?? '')
+  }));
+  const visible = normalized.filter(candidate => (
+    (riskFilter === 'all' || candidate.normalizedRisk === riskFilter)
+      && (categoryIds.length === 0 || categoryIds.includes(candidate.categoryId))
+  ));
+  const counts = values => values.reduce((result, value) => ({ ...result, [value || '(empty)']: (result[value || '(empty)'] || 0) + 1 }), {});
+  const sample = items => items.slice(0, 80).map(candidate => ({
+    path: candidate.path,
+    name: candidate.name,
+    category: candidate.category,
+    categoryId: candidate.categoryId,
+    rawRisk: candidate.rawRisk,
+    normalizedRisk: candidate.normalizedRisk,
+    size: Number(candidate.size) || 0
+  }));
+  return {
+    activeRiskFilter: riskFilter,
+    activeCategoryIds: categoryIds,
+    totalCandidates: normalized.length,
+    rawRiskCounts: counts(normalized.map(candidate => candidate.rawRisk)),
+    normalizedRiskCounts: counts(normalized.map(candidate => candidate.normalizedRisk)),
+    visibleRiskCounts: counts(visible.map(candidate => candidate.normalizedRisk)),
+    riskViolations: riskFilter === 'all' ? [] : sample(visible.filter(candidate => candidate.normalizedRisk !== riskFilter)),
+    visibleCandidateCount: visible.length,
+    visibleSample: sample(visible),
+    candidateSample: sample(normalized)
+  };
+}
+
+const APP_VERSION = '0.2.3';
 const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 
 const DEFAULT_DRIVES = [
@@ -1616,6 +1652,12 @@ export default function App() {
         ...candidate,
         risk: normalizeSmartCleanRiskValue(candidate.risk)
       }));
+      recordPerfInstant('smart-clean.preview-response', {
+        scope,
+        scopePath: result.scopePath || null,
+        rawCandidateCount: (result.candidates || []).length,
+        ...buildSmartCleanTelemetry(result.candidates || [], 'all', new Set())
+      });
       setSmartCleanData({ ...result, candidates: normalizedCandidates });
     } catch (error) {
       setSmartCleanData({ ok: false, error: error.message, candidates: [], roots: [] });
@@ -1642,18 +1684,23 @@ export default function App() {
     setCollectorExpanded(true);
   };
 
-  const smartCleanCandidates = smartCleanData?.candidates || [];
+  const smartCleanCandidates = useMemo(() => smartCleanData?.candidates || [], [smartCleanData]);
   const smartCleanRiskCounts = smartCleanCandidates.reduce((counts, candidate) => {
     const risk = normalizeSmartCleanRiskValue(candidate.risk);
     return { ...counts, [risk]: (counts[risk] || 0) + 1 };
   }, { safe: 0, review: 0, high: 0 });
   const smartCleanVisibleCandidates = smartCleanCandidates.filter(candidate => {
     const riskMatches = smartCleanRiskFilter === 'all' || normalizeSmartCleanRiskValue(candidate.risk) === smartCleanRiskFilter;
-    const categoryMatches = smartCleanCategoryFilters.size === 0 || smartCleanCategoryFilters.has(candidate.category);
+    const categoryMatches = smartCleanCategoryFilters.size === 0 || smartCleanCategoryFilters.has(candidate.categoryId);
     return riskMatches && categoryMatches;
   });
   const smartCleanSelectedItems = smartCleanCandidates.filter(candidate => smartCleanSelected.has(candidate.path));
   const smartCleanSelectedSize = smartCleanSelectedItems.reduce((sum, candidate) => sum + (Number(candidate.size) || 0), 0);
+
+  useEffect(() => {
+    if (!smartCleanOpen || smartCleanLoading || !smartCleanData) return;
+    recordPerfInstant('smart-clean.render-snapshot', buildSmartCleanTelemetry(smartCleanCandidates, smartCleanRiskFilter, smartCleanCategoryFilters));
+  }, [smartCleanCategoryFilters, smartCleanCandidates, smartCleanData, smartCleanLoading, smartCleanOpen, smartCleanRiskFilter, smartCleanVisibleCandidates.length]);
 
   const handleScanFolder = async () => {
     if (!window.electronAPI?.chooseFolder) {
@@ -2966,9 +3013,11 @@ export default function App() {
               </button>
               {smartCleanMenuOpen && (
                 <div className="smart-clean-menu" onClick={event => event.stopPropagation()}>
-                  <button className="smart-clean-menu-item" onClick={() => { void openSmartClean('storage'); }}>
-                    <span>Current Storage</span><span className="smart-clean-menu-hint">approved user-level locations</span>
-                  </button>
+                  {!currentDrive?.isCustomFolder && (
+                    <button className="smart-clean-menu-item" onClick={() => { void openSmartClean('storage'); }}>
+                      <span>Current Storage</span><span className="smart-clean-menu-hint">approved user-level locations</span>
+                    </button>
+                  )}
                   <button
                     className="smart-clean-menu-item"
                     disabled={!currentViewNode || currentViewNode.type !== 'directory' || currentViewNode.path?.startsWith('__')}
@@ -3090,6 +3139,11 @@ export default function App() {
                   <pre>Receive Text → AI action → Get Text from Input (if needed) → Stop and Output</pre>
                   <p>Before using the app, temporarily make the final output the plain text <code>SUNBURST_DEBUG_OUTPUT_OK</code>. If Terminal can read that marker, reconnect the AI result to <strong>Stop and Output</strong>. Then right-click an object in Sunburst Disk and choose <strong>Ask Siri…</strong>.</p>
                 </details>
+                <div className="onboarding-guide-downloads" aria-label="Download Ask Siri Shortcut guide">
+                  <span>Prefer a file?</span>
+                  <a href="./Sunburst-Disk-Ask-Siri-Shortcut-Guide.md" download>Download MD</a>
+                  <a href="./Sunburst-Disk-Ask-Siri-Shortcut-Guide.txt" download>Download TXT</a>
+                </div>
                 <div className="onboarding-note">
 The status is checked against a protected filesystem path, not just a saved preference. Replacing an ad-hoc signed app can make macOS revoke its previous TCC grant; if that happens, use the Off → On → relaunch procedure above for the exact installed Sunburst Disk.app. Permission access never unlocks deletion.</div>
               </div>
@@ -3225,23 +3279,30 @@ The status is checked against a protected filesystem path, not just a saved pref
                     ['high', 'High risk', smartCleanRiskCounts.high],
                     ['all', 'Everything', smartCleanCandidates.length]
                   ].map(([key, label, count]) => (
-                    <button key={key} className={smartCleanRiskFilter === key ? 'active' : ''} role="tab" aria-selected={smartCleanRiskFilter === key} onClick={() => setSmartCleanRiskFilter(key)}>{label} <span>{count}</span></button>
+                    <button key={key} className={smartCleanRiskFilter === key ? 'active' : ''} role="tab" aria-selected={smartCleanRiskFilter === key} onClick={() => {
+                      recordPerfInstant('smart-clean.filter-change', { filterKind: 'risk', ...buildSmartCleanTelemetry(smartCleanCandidates, key, smartCleanCategoryFilters) });
+                      setSmartCleanRiskFilter(key);
+                    }}>{label} <span>{count}</span></button>
                   ))}
                 </div>
                 <div className="smart-clean-safety-note">Safe = regenerable caches, logs and developer data. Moderate = saved state, incomplete downloads, old installers, Trash and screenshot-like personal files. High risk = duplicate fingerprints requiring manual verification. Mail attachments, Messages, Photos, Containers, Group Containers and Application Support remain excluded.</div>
                 <div className="smart-clean-root-summary" aria-label="Filter Smart Clean locations">
-                  <button type="button" className={smartCleanCategoryFilters.size === 0 ? 'active' : ''} onClick={() => setSmartCleanCategoryFilters(new Set())}>All locations</button>
+                  <button type="button" className={smartCleanCategoryFilters.size === 0 ? 'active' : ''} onClick={() => {
+                    recordPerfInstant('smart-clean.filter-change', { filterKind: 'category-reset', ...buildSmartCleanTelemetry(smartCleanCandidates, smartCleanRiskFilter, new Set()) });
+                    setSmartCleanCategoryFilters(new Set());
+                  }}>All locations</button>
                   {(smartCleanData?.roots || []).map(root => (
                     <button
                       type="button"
                       key={root.id}
-                      className={smartCleanCategoryFilters.has(root.label) ? 'active' : ''}
-                      aria-pressed={smartCleanCategoryFilters.has(root.label)}
+                      className={smartCleanCategoryFilters.has(root.id) ? 'active' : ''}
+                      aria-pressed={smartCleanCategoryFilters.has(root.id)}
                       title={root.path || root.label}
                       onClick={() => setSmartCleanCategoryFilters(previous => {
                         const next = new Set(previous);
-                        if (next.has(root.label)) next.delete(root.label);
-                        else next.add(root.label);
+                        if (next.has(root.id)) next.delete(root.id);
+                        else next.add(root.id);
+                        recordPerfInstant('smart-clean.filter-change', { filterKind: 'category', changedCategoryId: root.id, changedCategoryLabel: root.label, ...buildSmartCleanTelemetry(smartCleanCandidates, smartCleanRiskFilter, next) });
                         return next;
                       })}
                     >{root.label}: {root.unavailable ? 'unavailable' : root.candidates}</button>

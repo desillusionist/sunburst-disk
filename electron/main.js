@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, Menu, dialog, Notification } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, Menu, dialog, Notification, nativeTheme, nativeImage } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
@@ -27,6 +27,21 @@ let mainWindow;
 
 app.setName('Sunburst Disk');
 app.setAppUserModelId('com.sunburstdisk.app');
+
+function getDockIconPath() {
+  const filename = nativeTheme.shouldUseDarkColors
+    ? 'Sunburst Disk-macOS-Dark-1024@1x.png'
+    : 'Sunburst Disk-macOS-ClearLight-1024@1x.png';
+  return path.join(__dirname, '../assets/iconset', filename);
+}
+
+function updateDockIcon() {
+  if (process.platform !== 'darwin' || !app.dock) return;
+  const image = nativeImage.createFromPath(getDockIconPath());
+  if (!image.isEmpty()) app.dock.setIcon(image);
+}
+
+nativeTheme.on('updated', updateDockIcon);
 
 function isFilesystemPath(value) {
   return typeof value === 'string' && path.isAbsolute(value) && !value.startsWith('__');
@@ -91,6 +106,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  updateDockIcon();
   installApplicationMenu();
   createWindow();
   app.on('activate', () => {
@@ -418,6 +434,7 @@ function markHiddenSpaceTree(node, permissionStatus, depth = 1) {
   node.hiddenSpaceDiagnostic = true;
   node.hiddenSpaceDepth = depth;
   node.hiddenSpacePermissionStatus = permissionStatus;
+  node.hiddenSpaceAdminUnlocked = true;
   for (const child of node.children || []) markHiddenSpaceTree(child, permissionStatus, depth + 1);
 }
 
@@ -517,7 +534,8 @@ ipcMain.handle('scan-hidden-space',
       size: 0,
       type: 'special',
       children: [],
-      isHiddenSpaceRemainder: true
+      isHiddenSpaceRemainder: true,
+      hiddenSpaceAdminUnlocked: true
     });
   }
 
@@ -532,7 +550,8 @@ ipcMain.handle('scan-hidden-space',
     hiddenSpaceDepth: 1,
     isHiddenSpaceRemainder: true,
     hiddenSpaceUnavailable: purgeableSize === null,
-    hiddenSpacePermissionStatus: permission.status
+    hiddenSpacePermissionStatus: permission.status,
+    hiddenSpaceAdminUnlocked: true
   });
 
   // The initial hidden-space slice is a reconciliation of df vs visible du,
@@ -547,7 +566,10 @@ ipcMain.handle('scan-hidden-space',
       size: remainder,
       type: 'special',
       children: [],
-      isHiddenSpaceRemainder: true
+      isHiddenSpaceRemainder: true,
+      hiddenSpaceDiagnostic: true,
+      hiddenSpaceDepth: 1,
+      hiddenSpaceAdminUnlocked: true
     });
   }
   const totalSize = Math.max(aggregateSize, measuredSize);
@@ -563,7 +585,8 @@ ipcMain.handle('scan-hidden-space',
       hiddenSpaceAggregateSize: totalSize,
       hiddenSpaceMeasuredSize: measuredSize,
       hiddenSpaceNeedsFullDiskAccess: permission.status !== 'granted',
-      hiddenSpacePermissionStatus: permission.status
+      hiddenSpacePermissionStatus: permission.status,
+      hiddenSpaceAdminUnlocked: true
     }
   };
 });
@@ -656,6 +679,7 @@ function makeSmartCleanCandidate(root, itemPath, stat, size, verification, reaso
     type: stat.isDirectory() ? 'directory' : 'file',
     size,
     category: root.label,
+    categoryId: root.id,
     reason,
     risk,
     modifiedAt: stat.mtimeMs ? new Date(stat.mtimeMs).toISOString() : null,
