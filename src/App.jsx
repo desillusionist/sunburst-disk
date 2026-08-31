@@ -719,7 +719,7 @@ const TERMINAL_ADMIN_COMMAND_PRESETS = [
   }
 ];
 
-const APP_VERSION = '0.1.9';
+const APP_VERSION = '0.2.0';
 const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 
 const DEFAULT_DRIVES = [
@@ -808,6 +808,7 @@ export default function App() {
       return Boolean(previousVersion) && previousVersion !== APP_VERSION;
     } catch { return false; }
   });
+  const [permissionStatus, setPermissionStatus] = useState({ fullDiskAccess: 'unknown', notifications: 'optional' });
 
   const contextOpenWithRequestRef = useRef(0);
   const quickLookPathRef = useRef(null);
@@ -1404,6 +1405,18 @@ export default function App() {
     try { window.localStorage.setItem(ONBOARDING_STORAGE_KEY, APP_VERSION); } catch {}
   };
 
+  const refreshPermissionStatus = useCallback(async () => {
+    if (!window.electronAPI?.getPermissionStatus) return;
+    try {
+      const status = await window.electronAPI.getPermissionStatus();
+      setPermissionStatus(previous => ({ ...previous, ...status }));
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (onboardingOpen) void refreshPermissionStatus();
+  }, [onboardingOpen, refreshPermissionStatus]);
+
   const fetchDrives = async () => {
     try {
       if (window.electronAPI) {
@@ -1454,10 +1467,15 @@ export default function App() {
         const data = await window.electronAPI.scanDirectory(scanPath, 10, requestId);
         if (activeScanRequestRef.current !== requestId) return;
         recordPerfEvent('ipc.scan-directory', performance.now() - scanStartedAt, { path: scanPath, requestId });
-        if (data?.canceled) return;
+        if (data?.canceled) {
+          setLoading(false);
+          setViewState('drives');
+          return;
+        }
         if (data?.tree) {
           data.tree.name = drive.name;
           if (drive.isCustomFolder) {
+            setScanCache(current => ({ ...current, [getDriveKey(drive)]: { tree: data.tree, scannedAt: Date.now() } }));
             setDrives(current => {
               const nextDrive = { ...drive, filesystem: scanPath, mount: scanPath, scanPath, isCustomFolder: true, scannedAt: Date.now() };
               const existingIndex = current.findIndex(item => getDriveKey(item) === getDriveKey(nextDrive));
@@ -2349,6 +2367,73 @@ export default function App() {
     setContextOpenWith({ path: item.path, loading: false, apps: result?.apps || [] });
   };
 
+  useEffect(() => {
+    const onEscape = event => {
+      if (event.key !== 'Escape') return;
+      const closeAndStop = () => {
+        event.preventDefault();
+        event.stopPropagation();
+      };
+
+      if (onboardingOpen) {
+        completeOnboarding();
+        closeAndStop();
+        return;
+      }
+      if (loading && activeScanRequestRef.current) {
+        void cancelActiveScan();
+        closeAndStop();
+        return;
+      }
+      if (terminalAdminPromptOpen) {
+        setTerminalAdminPromptOpen(false);
+        setTerminalAdminPassword('');
+        setTerminalAdminError(null);
+        closeAndStop();
+        return;
+      }
+      if (contextMenu) {
+        setContextMenu(null);
+        setContextOpenWith(null);
+        closeAndStop();
+        return;
+      }
+      if (smartCleanOpen) {
+        setSmartCleanOpen(false);
+        closeAndStop();
+        return;
+      }
+      if (assistantOpen) {
+        setAssistantOpen(false);
+        closeAndStop();
+        return;
+      }
+      if (quickLookPathRef.current) {
+        void window.electronAPI?.quickLookClose?.();
+        quickLookPathRef.current = null;
+        closeAndStop();
+        return;
+      }
+      if (terminalOpen) {
+        void revokeTerminalAdmin();
+        setTerminalHelperHoverKey(null);
+        setTerminalOpen(false);
+        closeAndStop();
+        return;
+      }
+      if (viewOptionsOpen || themesOpen || smartCleanMenuOpen || breadcrumbsMenuOpen || driveMenuKey) {
+        setViewOptionsOpen(false);
+        setThemesOpen(false);
+        setSmartCleanMenuOpen(false);
+        setBreadcrumbsMenuOpen(false);
+        setDriveMenuKey(null);
+        closeAndStop();
+      }
+    };
+    window.addEventListener('keydown', onEscape, true);
+    return () => window.removeEventListener('keydown', onEscape, true);
+  }, [assistantOpen, breadcrumbsMenuOpen, contextMenu, driveMenuKey, loading, onboardingOpen, revokeTerminalAdmin, smartCleanMenuOpen, smartCleanOpen, terminalAdminPromptOpen, terminalOpen, themesOpen, viewOptionsOpen]);
+
   const totalCollectorSize = collector.reduce((s, i) => s + (i.size || 0), 0);
   const selectedTypeFilters = Array.isArray(viewOptions.typeFilter)
     ? viewOptions.typeFilter
@@ -2854,36 +2939,47 @@ export default function App() {
           <section className="onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
             <div className="onboarding-kicker">SUNBURST DISK · {onboardingIsUpdate ? `UPDATED ${APP_VERSION}` : 'WELCOME'}</div>
             <h1 id="onboarding-title">{onboardingIsUpdate ? `What’s new in Sunburst Disk ${APP_VERSION}` : 'Understand your storage at a glance'}</h1>
-            <p className="onboarding-intro">Sunburst Disk maps folders and files as an interactive sunburst, keeps the content tree synchronized with the current folder, and provides review-first cleanup tools. Nothing is removed automatically.</p>
+            <p className="onboarding-intro">Sunburst Disk lets you understand storage before you act: scan a disk or one folder, move through the same hierarchy in the sunburst and content tree, inspect real file details, follow live Finder changes and send reviewed candidates to Collector. Nothing is removed automatically.</p>
 
             <div className="onboarding-columns">
               <div className="onboarding-section">
                 <div className="onboarding-section-title">{onboardingIsUpdate ? 'Recent improvements' : 'Core features'}</div>
                 <ul className="onboarding-list">
-                  <li>Visual sunburst and stable content-tree selection with ArrowUp/ArrowDown.</li>
-                  <li>Live folder updates through the macOS FSEvents watcher.</li>
-                  <li>Safe review workflow with Collector, Smart Clean preview and protected system roots.</li>
-                  <li>Archive/package inspection, Quick Look, Finder reveal and Matrix theme.</li>
-                  {onboardingIsUpdate && <li>New: saved folder scans, scan cancellation, Hidden Space diagnostics, Matrix filter controls and Unicode filename handling.</li>}
+                  <li>Interactive sunburst and stable content-tree selection, including held ArrowUp/ArrowDown movement.</li>
+                  <li>Live Finder change reconciliation through the macOS FSEvents watcher and explicit Refresh.</li>
+                  <li>Review-first Collector and System Smart Clean preview with Safe, Moderate and High-risk tiers; protected roots remain blocked.</li>
+                  <li>Archive/package contents, Quick Look, Finder Reveal, Get Info, Open With, Terminal helpers and Classic/Matrix themes.</li>
+                  {onboardingIsUpdate && <li>New in this build: saved folder scans, scan cancellation, one-level Hidden Space diagnostics, permission checklist and Unicode filename handling.</li>}
                 </ul>
               </div>
               <div className="onboarding-section">
                 <div className="onboarding-section-title">Before first scan</div>
                 <div className="onboarding-permission">
                   <div>
-                    <strong>Full Disk Access</strong>
-                    <span>Needed only for Hidden Space and protected system locations. Ordinary user-folder scans do not require an administrator password.</span>
+                    <strong>Full Disk Access <em className={`onboarding-permission-status ${permissionStatus.fullDiskAccess === 'granted' ? 'granted' : 'not-granted'}`}>{permissionStatus.fullDiskAccess === 'granted' ? 'Granted' : permissionStatus.fullDiskAccess === 'not-granted' ? 'Not granted' : 'Checking…'}</em></strong>
+                    <span>Needed for Hidden Space and some protected system locations. Ordinary user-folder scans do not require an administrator password.</span>
                   </div>
-                  <button type="button" className="onboarding-settings-btn" onClick={() => { void window.electronAPI?.openFullDiskAccessSettings?.(); }}>Open Settings</button>
+                  <div className="onboarding-permission-actions">
+                    <button type="button" className="onboarding-settings-btn" onClick={() => { void window.electronAPI?.openFullDiskAccessSettings?.(); }}>Open Settings</button>
+                    <button type="button" className="onboarding-check-btn" onClick={() => { void refreshPermissionStatus(); }}>Check again</button>
+                  </div>
                 </div>
-                <div className="onboarding-permission">
+                                <div className="onboarding-permission">
                   <div>
-                    <strong>Notifications</strong>
-                    <span>Optional. Allows a native notification and sound when a long disk scan finishes.</span>
+                    <strong>Notifications <em className="onboarding-permission-status optional">Optional</em></strong>
+                    <span>Allows a native notification and sound when a long disk scan finishes.</span>
                   </div>
                   <button type="button" className="onboarding-settings-btn" onClick={() => { void window.electronAPI?.openSystemSettings?.('notifications'); }}>Open Settings</button>
                 </div>
-                <div className="onboarding-note">Folder access is granted by the native folder picker when you choose a folder. Sunburst Disk keeps destructive actions protected; permission access does not unlock deletion.</div>
+                <div className="onboarding-permission">
+                  <div>
+                    <strong>Ask Siri Shortcut <em className="onboarding-permission-status optional">Optional</em></strong>
+                    <span>One-time setup in Apple Shortcuts enables in-app object explanations. The shortcut receives text and returns plain text.</span>
+                  </div>
+                  <button type="button" className="onboarding-settings-btn" onClick={() => { void window.electronAPI?.setupAskSiri?.(); }}>Set up</button>
+                </div>
+                <div className="onboarding-note">
+The status is checked against a protected filesystem path, not just a saved preference. Replacing an ad-hoc signed app can make macOS revoke its previous TCC grant; if that happens, grant access again to the exact installed Sunburst Disk.app. Permission access never unlocks deletion.</div>
               </div>
             </div>
             <div className="onboarding-footer">
@@ -2926,7 +3022,7 @@ export default function App() {
                       background: drive.isCustomFolder ? 'linear-gradient(90deg,#60a5fa,#93c5fd)' : drive.isStartup ? 'linear-gradient(90deg,#ff7e5f,#feb47b)' : '#2bd980'
                     }} />
                   </div>
-                  <div className="drive-free-text">{drive.isCustomFolder ? 'saved scan' : formatBytes(drive.free)}</div>
+                  <div className="drive-free-text">{drive.isCustomFolder ? formatBytes(scannedFolderSize) : formatBytes(drive.free)}</div>
                 </div>
                 <div className="drive-scan-control">
                   <button
@@ -3019,7 +3115,10 @@ export default function App() {
                     <button key={key} className={smartCleanRiskFilter === key ? 'active' : ''} role="tab" aria-selected={smartCleanRiskFilter === key} onClick={() => setSmartCleanRiskFilter(key)}>{label} <span>{count}</span></button>
                   ))}
                 </div>
-                <div className="smart-clean-safety-note">Safe = regenerable caches, logs and developer data. Moderate = saved state, incomplete downloads, old installers and screenshot-like personal files. High risk = duplicate fingerprints requiring manual verification. Mail attachments, Messages, Photos, Containers, Group Containers and Application Support remain excluded.</div>
+                <div className="smart-clean-safety-note">Safe = regenerable caches, logs and developer data. Moderate = saved state, incomplete downloads, old installers, Trash and screenshot-like personal files. High risk = duplicate fingerprints requiring manual verification. Mail attachments, Messages, Photos, Containers, Group Containers and Application Support remain excluded.</div>
+                <div className="smart-clean-root-summary" aria-label="Inspected Smart Clean locations">
+                  {(smartCleanData?.roots || []).map(root => <span key={root.id}>{root.label}: {root.unavailable ? 'unavailable' : root.candidates}</span>)}
+                </div>
                 <div className="smart-clean-list">
                   {smartCleanVisibleCandidates.map(candidate => (
                     <label key={candidate.path} className="smart-clean-row">
@@ -3038,7 +3137,7 @@ export default function App() {
                       <span className="smart-clean-candidate-size">{formatBytes(candidate.size)}</span>
                     </label>
                   ))}
-                  {!smartCleanVisibleCandidates.length && <div className="smart-clean-empty">No candidates in this safety tier.</div>}
+                  {!smartCleanVisibleCandidates.length && <div className="smart-clean-empty">No candidates in this safety tier. Inspected {smartCleanData?.roots?.length || 0} approved location{smartCleanData?.roots?.length === 1 ? '' : 's'}; a root with no matching items is not a deletion error.</div>}
                 </div>
                 <div className="smart-clean-footer">
                   <span>{smartCleanData?.excludedCount ? `${smartCleanData.excludedCount} excluded by safety policy` : ''}{smartCleanData?.generatedAt ? ` · Updated ${new Date(smartCleanData.generatedAt).toLocaleTimeString()}` : ''}</span>

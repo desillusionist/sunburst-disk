@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   chooseOtherApplication:(itemPath)            => ipcRenderer.invoke('choose-other-application', itemPath),
   ejectDrive:            (mount)                => ipcRenderer.invoke('eject-drive', { mount }),
   showContextMenu:       (item)                 => ipcRenderer.invoke('show-context-menu', item),
+  setupAskSiri:          ()                    => ipcRenderer.invoke('setup-ask-siri'),
   askSiri:               (item)                 => ipcRenderer.invoke('ask-siri', {
     itemPath: item?.path,
     itemName: item?.name,
@@ -37,6 +38,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   scanHiddenSpace:        (knownSize = 0)        => ipcRenderer.invoke('scan-hidden-space', { knownSize }),
   openFullDiskAccessSettings: () => ipcRenderer.invoke('open-full-disk-access-settings'),
   openSystemSettings:       (section) => ipcRenderer.invoke('open-system-settings', { section }),
+  getPermissionStatus:      () => ipcRenderer.invoke('get-permission-status'),
   onScanProgress:        (cb)                   => ipcRenderer.on('scan-progress', (_, data) => cb(data)),
   onFolderWatchChange:   (cb)                   => {
     const listener = (_e, data) => cb(data);

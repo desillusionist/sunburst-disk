@@ -149,6 +149,7 @@ export default function DetailsSidebar({ node, metadata, loading, risk, category
           {isHiddenSpace && (
             <div className="hidden-space-panel">
               <div className="hidden-space-summary"><strong>Hidden Space</strong><span>{formatBytes(node.size)} total diagnostic space</span></div>
+              <div className="hidden-space-access"><span>Full Disk Access</span><strong className={node.hiddenSpacePermissionStatus === 'granted' ? 'granted' : 'required'}>{node.hiddenSpacePermissionStatus === 'granted' ? 'Granted' : 'Required for deeper diagnostics'}</strong></div>
               <div className="hidden-space-note">Some system-managed space cannot be represented as an ordinary Finder folder. The entries below are read-only diagnostics; they are not deletion candidates.</div>
               <div className="hidden-space-breakdown">
                 {(node.children || []).map(child => (

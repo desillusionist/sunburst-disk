@@ -413,14 +413,28 @@ const HIDDEN_SPACE_CANDIDATES = [
   { name: 'Installer data', path: '/System/Volumes/Data/.PKInstallSandboxManager' }
 ];
 
-async function hasFullDiskAccess() {
-  try {
-    await fs.promises.access('/Library/Application Support/com.apple.TCC/TCC.db', fs.constants.R_OK);
-    return true;
-  } catch {
-    return false;
+async function getFullDiskAccessStatus() {
+  const probes = [
+    '/System/Volumes/Data/private/var/vm',
+    '/System/Volumes/Data/private/var/folders',
+    '/System/Volumes/Data/.Spotlight-V100'
+  ];
+  let permissionDenied = false;
+  for (const probe of probes) {
+    try {
+      await fs.promises.readdir(probe);
+      return { status: 'granted', probe };
+    } catch (error) {
+      if (error?.code === 'EACCES' || error?.code === 'EPERM') permissionDenied = true;
+    }
   }
+  return { status: permissionDenied ? 'not-granted' : 'unavailable', probe: null };
 }
+
+ipcMain.handle('get-permission-status', async () => ({
+  fullDiskAccess: (await getFullDiskAccessStatus()).status,
+  notifications: 'optional'
+}));
 
 async function confirmHiddenSpaceAccess() {
   const choice = await dialog.showMessageBox(mainWindow, {
@@ -462,8 +476,7 @@ ipcMain.handle('open-system-settings', async (_event, { section = '' } = {}) => 
 ipcMain.handle('scan-hidden-space',
  async (event, { knownSize = 0 } = {}) => {
   if (!(await confirmHiddenSpaceAccess())) return { ok: false, cancelled: true };
-  if (!(await hasFullDiskAccess())) return openFullDiskAccessSettings();
-
+  const permission = await getFullDiskAccessStatus();
   const visibleChildren = [];
   const aggregateSize = Number.isFinite(Number(knownSize)) ? Math.max(0, Number(knownSize)) : 0;
   for (const candidate of HIDDEN_SPACE_CANDIDATES) {
@@ -486,7 +499,16 @@ ipcMain.handle('scan-hidden-space',
   }
 
   const measuredSize = visibleChildren.reduce((sum, child) => sum + child.size, 0);
-  if (!visibleChildren.length && aggregateSize <= 0) return openFullDiskAccessSettings();
+  if (!visibleChildren.length && aggregateSize <= 0) {
+    visibleChildren.push({
+      name: permission.status === 'granted' ? 'No visible protected data' : 'Still hidden (Full Disk Access required)',
+      path: permission.status === 'granted' ? '__hidden__:empty' : '__hidden__:full-disk-access',
+      size: 0,
+      type: 'special',
+      children: [],
+      isHiddenSpaceRemainder: true
+    });
+  }
 
   // The initial hidden-space slice is a reconciliation of df vs visible du,
   // so the diagnostic candidates are only a subset of that aggregate. Keep
@@ -514,7 +536,9 @@ ipcMain.handle('scan-hidden-space',
       type: 'directory',
       children: visibleChildren,
       hiddenSpaceAggregateSize: totalSize,
-      hiddenSpaceMeasuredSize: measuredSize
+      hiddenSpaceMeasuredSize: measuredSize,
+      hiddenSpaceNeedsFullDiskAccess: permission.status !== 'granted',
+      hiddenSpacePermissionStatus: permission.status
     }
   };
 });
@@ -526,6 +550,7 @@ const SMART_CLEAN_MEASURE_CONCURRENCY = 4;
 const SMART_CLEAN_MAX_DUPLICATE_FILES = 400;
 const SMART_CLEAN_OLD_ARTIFACT_MS = 30 * 24 * 60 * 60 * 1000;
 const SMART_CLEAN_STALE_DOWNLOAD_MS = 7 * 24 * 60 * 60 * 1000;
+const SMART_CLEAN_LARGE_DOWNLOAD_BYTES = 50 * 1000 * 1000;
 const SMART_CLEAN_SENSITIVE_SEGMENTS = new Set([
   'Mail', 'Messages', 'Photos Library.photoslibrary', 'Containers', 'Group Containers', 'Application Support', 'CloudStorage'
 ]);
@@ -538,8 +563,10 @@ const SMART_CLEAN_ROOT_DEFS = [
   { id: 'developer-simulator-caches', label: 'Simulator caches', relative: ['Library', 'Developer', 'CoreSimulator', 'Caches'], reason: 'Regenerable simulator cache data.', risk: 'safe', mode: 'all' },
   { id: 'incomplete-downloads', label: 'Incomplete downloads', relative: ['Downloads'], reason: 'Stale partial downloads that appear interrupted; verify before removing.', risk: 'review', mode: 'incomplete' },
   { id: 'installer-artifacts', label: 'Old installer artifacts', relative: ['Downloads'], reason: 'Older DMG, PKG or archive installers that may be re-downloadable.', risk: 'review', mode: 'installers' },
+  { id: 'large-downloads', label: 'Large Downloads', relative: ['Downloads'], reason: 'Large personal download; review whether it is still needed before freeing space.', risk: 'review', mode: 'large-downloads' },
   { id: 'screenshots', label: 'Old screenshots', relative: ['Desktop'], reason: 'Screenshot-like files older than 30 days; these are personal files and require review.', risk: 'review', mode: 'screenshots' },
-  { id: 'picture-screenshots', label: 'Old screenshots', relative: ['Pictures', 'Screenshots'], reason: 'Screenshot files older than 30 days; these are personal files and require review.', risk: 'review', mode: 'screenshots' }
+  { id: 'picture-screenshots', label: 'Old screenshots', relative: ['Pictures', 'Screenshots'], reason: 'Screenshot files older than 30 days; these are personal files and require review.', risk: 'review', mode: 'screenshots' },
+  { id: 'trash', label: 'Trash', relative: ['.Trash'], reason: 'Items already placed in the user Trash; review before emptying because they may still be recoverable.', risk: 'review', mode: 'trash' }
 ];
 
 function isWithinRoot(candidatePath, rootPath) {
@@ -567,10 +594,12 @@ function buildSmartCleanRoots(scope, scopePath) {
       risk: 'review', mode: 'folder'
     }];
   }
-  return SMART_CLEAN_ROOT_DEFS.map(definition => ({
-    ...definition,
-    path: path.join(base, ...definition.relative)
-  }));
+  return SMART_CLEAN_ROOT_DEFS
+    .filter(definition => definition.id !== 'trash' || base === path.resolve(os.homedir()))
+    .map(definition => ({
+      ...definition,
+      path: path.join(base, ...definition.relative)
+    }));
 }
 
 function matchesSmartCleanEntry(root, entry, stat) {
@@ -580,7 +609,9 @@ function matchesSmartCleanEntry(root, entry, stat) {
   if (root.mode === 'all') return true;
   if (root.mode === 'incomplete') return age >= SMART_CLEAN_STALE_DOWNLOAD_MS && /(?:\.crdownload|\.part|\.download|\.tmp)$/i.test(lower);
   if (root.mode === 'installers') return age >= SMART_CLEAN_OLD_ARTIFACT_MS && /(?:\.dmg|\.pkg|\.zip|\.tar|\.gz|\.tgz)$/i.test(lower);
+  if (root.mode === 'large-downloads') return !stat.isDirectory() && stat.size >= SMART_CLEAN_LARGE_DOWNLOAD_BYTES;
   if (root.mode === 'screenshots') return age >= SMART_CLEAN_OLD_ARTIFACT_MS && /(?:screenshot|screen[ _-]?shot|capture)/i.test(lower);
+  if (root.mode === 'trash') return true;
   if (root.mode === 'folder') {
     const folderName = path.basename(root.path).toLowerCase();
     const cacheLike = /(?:cache|caches|logs|deriveddata|simulator)/i.test(folderName);
@@ -773,13 +804,16 @@ ipcMain.handle('smart-clean-preview', async (_event, { scope = 'storage', folder
       candidates.push(...valid);
       roots.push({ id: root.id, label: root.label, path: canonicalRoot, candidates: valid.length, truncated: allEntries.length > entries.length });
     } catch {
-      // An absent or inaccessible allowlist root is omitted, not treated as a scan failure.
+      // Keep unavailable roots visible in the preview so a zero result is diagnosable.
+      roots.push({ id: root.id, label: root.label, path: root.path, candidates: 0, unavailable: true, truncated: false });
     }
   }
 
-  if (scope === 'folder' && canonicalScopePath && !isSensitiveSmartPath(canonicalScopePath)) {
-    const duplicates = await findDuplicateCandidates(canonicalScopePath).catch(() => []);
+  const duplicateRootPath = scope === 'folder' ? canonicalScopePath : homePath;
+  if (duplicateRootPath && !isSensitiveSmartPath(duplicateRootPath)) {
+    const duplicates = await findDuplicateCandidates(duplicateRootPath).catch(() => []);
     candidates.push(...duplicates);
+    if (duplicates.length) roots.push({ id: 'duplicates', label: 'Duplicates', path: duplicateRootPath, candidates: duplicates.length, truncated: false });
   }
 
   candidates.sort((a, b) => b.size - a.size);
@@ -795,7 +829,7 @@ ipcMain.handle('smart-clean-preview', async (_event, { scope = 'storage', folder
     notes: [
       'Preview only; no files are changed.',
       'Safe tier covers regenerable caches/logs; Review covers user files and restorable state; High covers duplicate candidates.',
-      'Mail attachments, Messages, Photos, Containers, Group Containers and Application Support are intentionally excluded as personal or dependency-sensitive data.',
+      'Trash, duplicates, old installers, screenshot-like files, caches and logs are inspected conservatively; personal or dependency-sensitive areas remain excluded.',
       'Candidates must be explicitly selected before export to Collector.'
     ],
     truncated
@@ -1313,6 +1347,14 @@ async function reformatAskSiriResult({ mode, text, itemName } = {}) {
   const result = await runAskSiriShortcut(prompt);
   return { ...result, mode, shortcutName: ASK_SIRI_SHORTCUT_NAME };
 }
+async function setupAskSiriShortcut() {
+  if (process.platform !== 'darwin') return { ok: false, error: 'Ask Siri integration is available on macOS only' };
+  const shortcutNames = await listMacShortcuts();
+  if (shortcutNames.includes(ASK_SIRI_SHORTCUT_NAME)) return { ok: true, exists: true, shortcutName: ASK_SIRI_SHORTCUT_NAME };
+  await shell.openExternal('shortcuts://create-shortcut');
+  return { ok: true, opened: true, setupRequired: true, shortcutName: ASK_SIRI_SHORTCUT_NAME };
+}
+
 async function askSiriForItem({ itemPath, itemName, item } = {}) {
   if (process.platform !== 'darwin') {
     return { ok: false, error: 'Ask Siri integration is available on macOS only' };
@@ -1365,6 +1407,7 @@ async function handleAskSiriFromMenu(payload) {
   // event above; no secondary native dialog is shown.
   return result;
 }
+ipcMain.handle('setup-ask-siri', async () => setupAskSiriShortcut());
 ipcMain.handle('ask-siri', async (event, payload = {}) => handleAskSiriFromMenu(payload));
 ipcMain.handle('ask-siri-transform', async (event, payload = {}) => reformatAskSiriResult(payload));
 ipcMain.handle('show-context-menu', async (event, { itemPath, itemName, item, canDelete = true, packageContentsShown = false, x = 0, y = 0 } = {}) => {

@@ -2051,3 +2051,29 @@ body {
 .theme-matrix .hidden-space-row i { color: #39ff66; }
 .theme-matrix .hidden-space-settings-btn { border-color: #39ff66; background: rgba(57,255,102,.08); color: #8dff9e; }
 .theme-matrix .hidden-space-settings-btn:hover { background: rgba(57,255,102,.18); }
+
+.onboarding-permission-status { display: inline-block !important; margin-left: 7px; padding: 2px 5px; border-radius: 3px; font: 600 9px SFMono-Regular, Menlo, monospace; letter-spacing: .04em; text-transform: uppercase; }
+.onboarding-permission-status.granted { color: #166534; background: #86efac; }
+.onboarding-permission-status.not-granted { color: #7f1d1d; background: #fecaca; }
+.onboarding-permission-status.optional { color: #854d0e; background: #fde68a; }
+.theme-matrix .onboarding-permission-status.granted { color: #001f08; background: #39ff66; }
+.theme-matrix .onboarding-permission-status.not-granted { color: #210008; background: #ff7b8a; }
+.theme-matrix .onboarding-permission-status.optional { color: #211600; background: #ffce5c; }
+
+.smart-clean-root-summary { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+.smart-clean-root-summary span { padding: 3px 5px; border: 1px solid rgba(255,255,255,.09); border-radius: 3px; color: #8f99a8; background: rgba(255,255,255,.025); font: 10px SFMono-Regular, Menlo, monospace; }
+.theme-matrix .smart-clean-root-summary span { border-color: rgba(57,255,102,.22); color: #7dcc87; background: rgba(57,255,102,.035); }
+
+.hidden-space-access { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; color: #a8a0b2; font-size: 10px; }
+.hidden-space-access strong { padding: 2px 5px; border-radius: 3px; font: 600 9px SFMono-Regular, Menlo, monospace; text-transform: uppercase; }
+.hidden-space-access strong.granted { color: #166534; background: #86efac; }
+.hidden-space-access strong.required { color: #7f1d1d; background: #fecaca; }
+.theme-matrix .hidden-space-access { color: #79bd83; }
+.theme-matrix .hidden-space-access strong.granted { color: #001f08; background: #39ff66; }
+.theme-matrix .hidden-space-access strong.required { color: #210008; background: #ff7b8a; }
+
+.onboarding-permission-actions { display: flex; flex-shrink: 0; flex-direction: column; align-items: stretch; gap: 4px; }
+.onboarding-check-btn { border: 0; background: transparent; color: #8fa6c1; font: 10px inherit; cursor: pointer; }
+.onboarding-check-btn:hover { color: #dbeafe; text-decoration: underline; }
+.theme-matrix .onboarding-check-btn { color: #79bd83; }
+.theme-matrix .onboarding-check-btn:hover { color: #b7ffc0; }
