@@ -510,6 +510,40 @@ function ThemedSelect({ value, options, onChange, ariaLabel }) {
   );
 }
 
+function CrawlLabel({ name, className = '', active = false }) {
+  const labelRef = useRef(null);
+  const [hovered, setHovered] = useState(false);
+  const [crawling, setCrawling] = useState(false);
+  const [crawlDistance, setCrawlDistance] = useState(0);
+
+  useEffect(() => {
+    setCrawling(false);
+    setCrawlDistance(0);
+    if (!active && !hovered) return undefined;
+    const timer = window.setTimeout(() => {
+      const label = labelRef.current;
+      const distance = label ? label.scrollWidth - label.clientWidth : 0;
+      if (distance > 1) {
+        setCrawlDistance(distance);
+        setCrawling(true);
+      }
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [active, hovered, name]);
+
+  return (
+    <span
+      ref={labelRef}
+      className={`legend-label ${className} ${crawling ? 'is-crawling' : ''}`}
+      style={crawling ? { '--crawl-distance': `${crawlDistance}px` } : undefined}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <span className="legend-label-text">{name}</span>
+    </span>
+  );
+}
+
 function buildShallowDisplayNode(
   node,
   options,
@@ -3328,9 +3362,11 @@ export default function App() {
                       {item.type === 'directory'
                         ? <Folder size={13} color={color} style={{ opacity: 0.8 }} />
                         : <FileText size={13} color={matrixTheme ? color : '#71717a'} style={{ opacity: 0.7 }} />}
-                      <span className={`legend-label ${item.name === 'hidden space...' ? 'special' : item.type === 'file' ? 'dim' : ''}`}>
-                        {item.name}
-                      </span>
+                      <CrawlLabel
+                        name={item.name}
+                        active={isHigh}
+                        className={item.name === 'hidden space...' ? 'special' : item.type === 'file' ? 'dim' : ''}
+                      />
                     </div>
                     <div className="legend-right">
                       <span className="legend-val">{formatBytes(item.size)}</span>

@@ -938,11 +938,27 @@ body {
 .legend-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .legend-label {
+  display: block;
   color: #c2c7d0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 160px;
+  min-width: 0;
+  flex: 0 1 160px;
+}
+.legend-label-text { display: inline-block; white-space: nowrap; }
+.legend-label.is-crawling { text-overflow: clip; }
+.legend-label.is-crawling .legend-label-text {
+  animation: legend-label-crawl 8s ease-in-out infinite alternate;
+  will-change: transform;
+}
+@keyframes legend-label-crawl {
+  0%, 16% { transform: translateX(0); }
+  84%, 100% { transform: translateX(calc(-1 * var(--crawl-distance))); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .legend-label.is-crawling .legend-label-text { animation: none; transform: none; }
 }
 .legend-label.dim { color: #5d6370; }
 .legend-label.special { color: #b04bf5; }
@@ -1911,4 +1927,29 @@ body {
 .theme-matrix .folder-watch-badge.updating {
   border-color: rgba(188, 220, 90, .62);
   color: #d1ee79;
+}
+
+/* Keep the active-filter signal last so the open-panel state cannot override it. */
+.view-options-trigger.filters-active {
+  border-color: #806b31;
+  background: #2a2922;
+  color: #f1d98b;
+}
+.view-options-trigger.filters-active:hover,
+.view-options-trigger.filters-active.active {
+  border-color: #b9973e;
+  background: #3b3626;
+  color: #fff1bd;
+}
+.theme-matrix .view-options-trigger.filters-active {
+  border-color: #b9973e;
+  background: rgba(185,151,62,.12);
+  color: #f1d98b;
+}
+.theme-matrix .view-options-trigger.filters-active:hover,
+.theme-matrix .view-options-trigger.filters-active.active {
+  border-color: #e8ce7e;
+  background: rgba(185,151,62,.2);
+  color: #ffe9a6;
+  box-shadow: 0 0 8px rgba(232,206,126,.2);
 }
