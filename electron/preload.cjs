@@ -5,7 +5,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setWindowLayout:       (layout, driveCount = 0) => ipcRenderer.invoke('set-window-layout', { layout, driveCount }),
   chooseFolder:          ()                     => ipcRenderer.invoke('choose-folder'),
   smartCleanPreview:     (scope, paths = {})    => ipcRenderer.invoke('smart-clean-preview', { scope, ...paths }),
-  scanDirectory:         (targetPath, detailDepth) => ipcRenderer.invoke('scan-directory', { targetPath, detailDepth }),
+  scanDirectory:         (targetPath, detailDepth, requestId = null) => ipcRenderer.invoke('scan-directory', { targetPath, detailDepth, requestId }),
+  cancelScan:            (requestId = null) => ipcRenderer.invoke('cancel-scan', { requestId }),
   notifyScanComplete:     (scanPath, itemCount = 0) => ipcRenderer.invoke('notify-scan-complete', { scanPath, itemCount }),
   scanSubdir:            (targetPath, includePackageContents = false) => ipcRenderer.invoke('scan-subdir', { targetPath, includePackageContents }),
   scanArchive:           (archivePath) => ipcRenderer.invoke('scan-archive', archivePath),
@@ -34,6 +35,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   quickLook:              (itemPath)             => ipcRenderer.invoke('quick-look', itemPath),
   quickLookClose:         ()                     => ipcRenderer.invoke('quick-look-close'),
   scanHiddenSpace:        (knownSize = 0)        => ipcRenderer.invoke('scan-hidden-space', { knownSize }),
+  openFullDiskAccessSettings: () => ipcRenderer.invoke('open-full-disk-access-settings'),
+  openSystemSettings:       (section) => ipcRenderer.invoke('open-system-settings', { section }),
   onScanProgress:        (cb)                   => ipcRenderer.on('scan-progress', (_, data) => cb(data)),
   onFolderWatchChange:   (cb)                   => {
     const listener = (_e, data) => cb(data);

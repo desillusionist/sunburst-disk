@@ -54,7 +54,7 @@ function getAccessState(metadata, risk) {
   return 'Restricted';
 }
 
-export default function DetailsSidebar({ node, metadata, loading, risk, categoryDescription, onAddToCollector, onQuickLook, onRevealInFinder, onTogglePackageContents, packageContentsShown, packageContentsStatus }) {
+export default function DetailsSidebar({ node, metadata, loading, risk, categoryDescription, onAddToCollector, onQuickLook, onRevealInFinder, onTogglePackageContents, packageContentsShown, packageContentsStatus, onOpenFullDiskAccessSettings }) {
   const RiskIcon = risk?.Icon || AlertTriangle;
   const NodeIcon = node?.type === 'directory' ? Folder : node?.type === 'bulk' ? PackageOpen : FileText;
   const canDelete = Boolean(node && !node.archiveVirtual && risk?.canDelete && node.path && !node.path.startsWith('__'));
@@ -145,6 +145,25 @@ export default function DetailsSidebar({ node, metadata, loading, risk, category
             <div className="details-section-title">Category description</div>
             <p className="details-description">{categoryDescription}</p>
           </div>
+
+          {isHiddenSpace && (
+            <div className="hidden-space-panel">
+              <div className="hidden-space-summary"><strong>Hidden Space</strong><span>{formatBytes(node.size)} total diagnostic space</span></div>
+              <div className="hidden-space-note">Some system-managed space cannot be represented as an ordinary Finder folder. The entries below are read-only diagnostics; they are not deletion candidates.</div>
+              <div className="hidden-space-breakdown">
+                {(node.children || []).map(child => (
+                  <div className="hidden-space-row" key={child.path || child.name}>
+                    <span><i aria-hidden="true">•</i>{child.name}</span>
+                    <span>{formatBytes(child.size)}</span>
+                  </div>
+                ))}
+                {!node.children?.length && <div className="hidden-space-row"><span><i aria-hidden="true">•</i>Still hidden</span><span>{formatBytes(node.size)}</span></div>}
+              </div>
+              <button className="hidden-space-settings-btn" type="button" onClick={() => onOpenFullDiskAccessSettings?.()}>
+                Open “Full Disk Access”
+              </button>
+            </div>
+          )}
 
           {isPackageContainer && (
             <>

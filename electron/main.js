@@ -10,6 +10,9 @@ import { StringDecoder } from 'node:string_decoder';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FULL_DISK_ACCESS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles';
+const SYSTEM_SETTINGS_URLS = Object.freeze({
+  notifications: 'x-apple.systempreferences:com.apple.Notifications-Settings.extension'
+});
 // macOS GUI-launched Electron processes may not inherit a UTF-8 locale. BSD
 // command-line tools then render non-ASCII filenames as `?`, which would corrupt
 // the path before it reaches the renderer, Inspector, or Finder reveal.
@@ -301,6 +304,7 @@ function startFolderWatcher(rootPath) {
 
 app.on('before-quit', () => {
   stopFolderWatcher();
+  for (const job of activeScanJobs.values()) abortScanJob(job);
   if (quickLookChild && !quickLookChild.killed) quickLookChild.kill('SIGTERM');
   quickLookChild = null;
   quickLookItemPath = null;
@@ -447,7 +451,16 @@ async function openFullDiskAccessSettings() {
   return { ok: false, settingsOpened: true, error: 'Grant Full Disk Access to Sunburst Disk, then try again.' };
 }
 
-ipcMain.handle('scan-hidden-space', async (event, { knownSize = 0 } = {}) => {
+ipcMain.handle('open-full-disk-access-settings', async () => openFullDiskAccessSettings());
+ipcMain.handle('open-system-settings', async (_event, { section = '' } = {}) => {
+  const url = SYSTEM_SETTINGS_URLS[section];
+  if (!url) return { ok: false, error: 'Unknown System Settings section' };
+  await shell.openExternal(url);
+  return { ok: true, section };
+});
+
+ipcMain.handle('scan-hidden-space',
+ async (event, { knownSize = 0 } = {}) => {
   if (!(await confirmHiddenSpaceAccess())) return { ok: false, cancelled: true };
   if (!(await hasFullDiskAccess())) return openFullDiskAccessSettings();
 
@@ -464,6 +477,7 @@ ipcMain.handle('scan-hidden-space', async (event, { knownSize = 0 } = {}) => {
       if (childTree.size > 0) {
         childTree.name = candidate.name;
         childTree.path = candidate.path;
+        childTree.isHiddenSpaceChild = true;
         visibleChildren.push(childTree);
       }
     } catch (error) {
@@ -1876,16 +1890,80 @@ ipcMain.handle('notify-scan-complete', async (_event, { scanPath, itemCount = 0 
   notifyScanComplete({ itemCount: count }, scanPath);
   return { ok: true };
 });
-function runDu(targetPath) {
+class ScanCancelledError extends Error {
+  constructor() {
+    super('Scan cancelled');
+    this.code = 'SCAN_CANCELLED';
+  }
+}
+
+const activeScanJobs = new Map();
+let scanJobSequence = 0;
+
+function isChildRunning(child) {
+  return Boolean(child && child.exitCode === null && child.signalCode === null);
+}
+
+function abortScanJob(job) {
+  if (!job || job.cancelled) return;
+  job.cancelled = true;
+  for (const child of job.children) {
+    try { if (isChildRunning(child)) child.kill('SIGTERM'); } catch {}
+    const killTimer = setTimeout(() => {
+      try { if (isChildRunning(child)) child.kill('SIGKILL'); } catch {}
+    }, 2000);
+    killTimer.unref?.();
+  }
+}
+
+function beginScanJob(sender, requestId) {
+  const senderId = sender?.id;
+  const previous = senderId === undefined ? null : activeScanJobs.get(senderId);
+  if (previous) abortScanJob(previous);
+  const job = {
+    id: String(requestId || `scan-${Date.now()}-${++scanJobSequence}`),
+    senderId,
+    children: new Set(),
+    cancelled: false
+  };
+  if (senderId !== undefined) activeScanJobs.set(senderId, job);
+  return job;
+}
+
+function finishScanJob(job) {
+  if (!job) return;
+  if (job.senderId !== undefined && activeScanJobs.get(job.senderId) === job) activeScanJobs.delete(job.senderId);
+  job.children.clear();
+}
+
+ipcMain.handle('cancel-scan', async (event, { requestId = null } = {}) => {
+  const job = activeScanJobs.get(event.sender.id);
+  if (!job || (requestId !== null && String(requestId) !== job.id)) {
+    return { ok: false, cancelled: false, error: 'No matching scan is running' };
+  }
+  abortScanJob(job);
+  return { ok: true, cancelled: true, requestId: job.id };
+});
+
+function runDu(targetPath, job = null) {
   return new Promise((resolve, reject) => {
+    let child;
+    let settled = false;
+    const finish = (error, stdout = '') => {
+      if (settled) return;
+      settled = true;
+      job?.children.delete(child);
+      if (job?.cancelled) return reject(new ScanCancelledError());
+      // du exits non-zero on permission errors — partial output is still useful.
+      if (!stdout && error) return reject(error);
+      resolve(stdout.split('\n'));
+    };
+
     // -a all entries, -k kilobyte blocks, -x one filesystem
-    const child = exec(`du -ak -x ${JSON.stringify(targetPath)} 2>/dev/null`,
+    child = exec(`du -ak -x ${JSON.stringify(targetPath)} 2>/dev/null`,
       { env: UTF8_COMMAND_ENV, maxBuffer: 512 * 1024 * 1024 },
-      (error, stdout) => {
-        // du exits non-zero on permission errors — partial output is still useful.
-        if (!stdout && error) return reject(error);
-        resolve(stdout.split('\n'));
-      });
+      finish);
+    if (job) job.children.add(child);
 
     // Directory rows from du are cumulative. The largest parsed row is the
     // best monotonic estimate of visible usage without summing ancestors twice.
@@ -1901,6 +1979,7 @@ function runDu(targetPath) {
     const decoder = new StringDecoder('utf8');
     let lastSent = 0;
     child.stdout.on('data', chunk => {
+      if (job?.cancelled) return;
       carry += decoder.write(chunk);
       const parts = carry.split('\n');
       carry = parts.pop(); // incomplete line waits for the next chunk
@@ -1931,15 +2010,16 @@ function runDu(targetPath) {
 // these exact paths from the du lines before building the tree. This means
 // nothing seen "through" a symlink is ever counted (du itself never follows
 // links when recursing; this also removes the tiny link-entry rows).
-function collectSymlinks(targetPath) {
-  return new Promise(resolve => {
+function collectSymlinks(targetPath, job = null) {
+  return new Promise((resolve, reject) => {
     const links = new Set();
     // -x: stay on one filesystem — without it find descends into
     // /System/Volumes/Data/Volumes (other mounted drives!) and through the
     // /System firmlink, causing effectively infinite scans.
     const child = exec(`find -x ${JSON.stringify(targetPath)} -type l 2>/dev/null`,
       { env: UTF8_COMMAND_ENV, maxBuffer: 64 * 1024 * 1024 },
-      () => resolve(links));
+      () => {});
+    if (job) job.children.add(child);
     let carry = '';
     const decoder = new StringDecoder('utf8');
     const consume = text => {
@@ -1948,20 +2028,29 @@ function collectSymlinks(targetPath) {
       carry = parts.pop();
       for (const p of parts) if (p) links.add(p);
     };
-    child.stdout.on('data', chunk => consume(decoder.write(chunk)));
+    child.stdout.on('data', chunk => {
+      if (!job?.cancelled) consume(decoder.write(chunk));
+    });
     child.once('close', () => {
+      job?.children.delete(child);
+      if (job?.cancelled) return reject(new ScanCancelledError());
       consume(decoder.end());
       if (carry) links.add(carry);
       resolve(links);
     });
-    child.on('error', () => resolve(links));
+    child.on('error', () => {
+      job?.children.delete(child);
+      if (job?.cancelled) reject(new ScanCancelledError());
+      else resolve(links);
+    });
   });
 }
 
-ipcMain.handle('scan-directory', async (event, { targetPath, detailDepth = 10 } = {}) => {
+ipcMain.handle('scan-directory', async (event, { targetPath, detailDepth = 10, requestId = null } = {}) => {
   if (!isFilesystemPath(targetPath)) return { error: 'Invalid filesystem path' };
   const realPath = targetPath === '/' ? '/System/Volumes/Data' : targetPath;
   const isStartup = targetPath === '/' || targetPath === '/System/Volumes/Data';
+  const job = beginScanJob(event.sender, requestId);
   try {
     let tree;
     if (isStartup) {
@@ -1974,7 +2063,7 @@ ipcMain.handle('scan-directory', async (event, { targetPath, detailDepth = 10 } 
       // tiny link inodes — but BSD find traverses the firmlink, making it a
       // full second walk of the disk (~83s measured). Not worth it.
       const [sysLinesRaw] = await Promise.all([
-        runDu('/System')
+        runDu('/System', job)
       ]);
       const sysLines = sysLinesRaw;
 
@@ -2019,8 +2108,8 @@ ipcMain.handle('scan-directory', async (event, { targetPath, detailDepth = 10 } 
       } catch {}
     } else {
       const [rawLines, links] = await Promise.all([
-        runDu(realPath),
-        collectSymlinks(realPath)
+        runDu(realPath, job),
+        collectSymlinks(realPath, job)
       ]);
       tree = buildTreeFromDu(realPath, filterDuLines(rawLines, links), detailDepth);
     }
@@ -2036,12 +2125,16 @@ ipcMain.handle('scan-directory', async (event, { targetPath, detailDepth = 10 } 
       });
     }
     return { tree };
-  } catch (error) {
+    } catch (error) {
+    if (error?.code === 'SCAN_CANCELLED' || job.cancelled) return { canceled: true, requestId: job.id };
     return { error: error.message };
+  } finally {
+    finishScanJob(job);
   }
 });
 
-ipcMain.handle('scan-subdir', async (event, { targetPath, includePackageContents = false } = {}) => {
+ipcMain.handle('scan-subdir',
+ async (event, { targetPath, includePackageContents = false } = {}) => {
   if (!isFilesystemPath(targetPath)) return { error: 'Invalid filesystem path' };
   try {
     const [rawLines, links] = await Promise.all([

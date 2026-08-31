@@ -719,6 +719,9 @@ const TERMINAL_ADMIN_COMMAND_PRESETS = [
   }
 ];
 
+const APP_VERSION = '0.1.9';
+const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
+
 const DEFAULT_DRIVES = [
   { filesystem: '/dev/disk3s5', name: 'iDāsOS', total: 245.1e9, used: 231.3e9, free: 22.7e9, usePercent: '89%', mount: '/', scanPath: '/System/Volumes/Data', isStartup: true },
   { filesystem: '/dev/disk7s1', name: 'exAPFS', total: 2e12, used: 216.1e9, free: 1783.9e9, usePercent: '11%', mount: '/Volumes/exAPFS', scanPath: '/Volumes/exAPFS', isStartup: false },
@@ -752,6 +755,8 @@ export default function App() {
 
   const [scanProgress, setScanProgress]     = useState({ percent: 0, currentDir: '', itemsScanned: 0 });
   const pendingScanCompletionRef = useRef(null);
+  const activeScanRequestRef = useRef(null);
+  const scanRequestSequenceRef = useRef(0);
   const [collector, setCollector]           = useState([]);
   const [isDragOver, setIsDragOver]         = useState(false);
   const [collectorExpanded, setCollectorExpanded] = useState(false);
@@ -794,6 +799,15 @@ export default function App() {
   const [assistantTransformMode, setAssistantTransformMode] = useState(null);
   const [assistantTransformError, setAssistantTransformError] = useState(null);
   const [folderWatchState, setFolderWatchState] = useState({ active: false, rootPath: null, updating: false, error: null, lastChangedAt: null });
+  const [onboardingOpen, setOnboardingOpen] = useState(() => {
+    try { return window.localStorage.getItem(ONBOARDING_STORAGE_KEY) !== APP_VERSION; } catch { return true; }
+  });
+  const [onboardingIsUpdate] = useState(() => {
+    try {
+      const previousVersion = window.localStorage.getItem(ONBOARDING_STORAGE_KEY);
+      return Boolean(previousVersion) && previousVersion !== APP_VERSION;
+    } catch { return false; }
+  });
 
   const contextOpenWithRequestRef = useRef(0);
   const quickLookPathRef = useRef(null);
@@ -1385,16 +1399,29 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [loading, scannedTree]);
 
+  const completeOnboarding = () => {
+    setOnboardingOpen(false);
+    try { window.localStorage.setItem(ONBOARDING_STORAGE_KEY, APP_VERSION); } catch {}
+  };
+
   const fetchDrives = async () => {
     try {
       if (window.electronAPI) {
         const data = await window.electronAPI.getDrives();
-        if (data?.drives?.length > 0) setDrives(data.drives);
+        if (data?.drives?.length > 0) {
+          setDrives(current => {
+            const nativeKeys = new Set(data.drives.map(item => getDriveKey(item)));
+            const savedFolders = current.filter(item => item.isCustomFolder && !nativeKeys.has(getDriveKey(item)));
+            return [...data.drives, ...savedFolders];
+          });
+        }
       }
     } catch (e) { console.error('Drive fetch error:', e); }
   };
 
   const handleScanDrive = async (drive) => {
+    const requestId = `scan-${Date.now()}-${++scanRequestSequenceRef.current}`;
+    activeScanRequestRef.current = requestId;
     setDriveMenuKey(null);
     setScanError(null);
     setScanNotice(null);
@@ -1424,10 +1451,22 @@ export default function App() {
         // process; detail (children) is returned for the first 10 levels and
         // lazy-loaded beyond that. No timeout, no mock fallback.
         const scanStartedAt = performance.now();
-        const data = await window.electronAPI.scanDirectory(scanPath, 10);
-        recordPerfEvent('ipc.scan-directory', performance.now() - scanStartedAt, { path: scanPath });
+        const data = await window.electronAPI.scanDirectory(scanPath, 10, requestId);
+        if (activeScanRequestRef.current !== requestId) return;
+        recordPerfEvent('ipc.scan-directory', performance.now() - scanStartedAt, { path: scanPath, requestId });
+        if (data?.canceled) return;
         if (data?.tree) {
           data.tree.name = drive.name;
+          if (drive.isCustomFolder) {
+            setDrives(current => {
+              const nextDrive = { ...drive, filesystem: scanPath, mount: scanPath, scanPath, isCustomFolder: true, scannedAt: Date.now() };
+              const existingIndex = current.findIndex(item => getDriveKey(item) === getDriveKey(nextDrive));
+              if (existingIndex < 0) return [...current, nextDrive];
+              const next = [...current];
+              next[existingIndex] = { ...next[existingIndex], ...nextDrive };
+              return next;
+            });
+          }
           setScannedTree(data.tree);
           setNavStack([data.tree]);
           setFocusedNode(data.tree);
@@ -1450,10 +1489,50 @@ export default function App() {
       setLoading(false);
       setViewState('drives');
     } catch (e) {
+      if (activeScanRequestRef.current !== requestId) return;
       console.error('Scan error:', e);
       setLoading(false);
       setScanError(e.message || 'The scan could not be completed');
+    } finally {
+      if (activeScanRequestRef.current === requestId) activeScanRequestRef.current = null;
     }
+  };
+
+  const cancelActiveScan = async () => {
+    const requestId = activeScanRequestRef.current;
+    if (!requestId) return;
+    activeScanRequestRef.current = null;
+    pendingScanCompletionRef.current = null;
+    try {
+      await window.electronAPI?.cancelScan?.(requestId);
+    } catch {}
+    setLoading(false);
+    setNodeLoading(false);
+    setScanError(null);
+    setScanNotice(null);
+    setScannedTree(null);
+    setNavStack([]);
+    setCurrentDrive(null);
+    setFocusedNode(null);
+    setTreeSelectionPath(null);
+    setItemDetails(null);
+    setMetadataByPath({});
+    setHoveredNode(null);
+    setPointerNode(null);
+    setHighlightedPath(null);
+    setViewState('drives');
+  };
+
+  const closeSavedFolder = drive => {
+    if (!drive?.isCustomFolder) return;
+    const driveKey = getDriveKey(drive);
+    setDriveMenuKey(null);
+    setDrives(current => current.filter(item => getDriveKey(item) !== driveKey));
+    setScanCache(current => {
+      const next = { ...current };
+      delete next[driveKey];
+      return next;
+    });
   };
 
   const openSmartClean = async (scope = 'storage') => {
@@ -1787,8 +1866,9 @@ export default function App() {
     }
 
     if (!node) return;
-    if (node.isHiddenSpaceRemainder) {
+    if (node.isHiddenSpaceRemainder || node.isHiddenSpaceChild) {
       setFocusedNode(node);
+      setTreeSelectionPath(node.path);
       return;
     }
     if (node.type === 'special' || node.path === '__hidden__') {
@@ -2769,33 +2849,84 @@ export default function App() {
         )}
       </header>
 
+      {onboardingOpen && (
+        <div className="onboarding-backdrop" role="presentation">
+          <section className="onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+            <div className="onboarding-kicker">SUNBURST DISK · {onboardingIsUpdate ? `UPDATED ${APP_VERSION}` : 'WELCOME'}</div>
+            <h1 id="onboarding-title">{onboardingIsUpdate ? `What’s new in Sunburst Disk ${APP_VERSION}` : 'Understand your storage at a glance'}</h1>
+            <p className="onboarding-intro">Sunburst Disk maps folders and files as an interactive sunburst, keeps the content tree synchronized with the current folder, and provides review-first cleanup tools. Nothing is removed automatically.</p>
+
+            <div className="onboarding-columns">
+              <div className="onboarding-section">
+                <div className="onboarding-section-title">{onboardingIsUpdate ? 'Recent improvements' : 'Core features'}</div>
+                <ul className="onboarding-list">
+                  <li>Visual sunburst and stable content-tree selection with ArrowUp/ArrowDown.</li>
+                  <li>Live folder updates through the macOS FSEvents watcher.</li>
+                  <li>Safe review workflow with Collector, Smart Clean preview and protected system roots.</li>
+                  <li>Archive/package inspection, Quick Look, Finder reveal and Matrix theme.</li>
+                  {onboardingIsUpdate && <li>New: saved folder scans, scan cancellation, Hidden Space diagnostics, Matrix filter controls and Unicode filename handling.</li>}
+                </ul>
+              </div>
+              <div className="onboarding-section">
+                <div className="onboarding-section-title">Before first scan</div>
+                <div className="onboarding-permission">
+                  <div>
+                    <strong>Full Disk Access</strong>
+                    <span>Needed only for Hidden Space and protected system locations. Ordinary user-folder scans do not require an administrator password.</span>
+                  </div>
+                  <button type="button" className="onboarding-settings-btn" onClick={() => { void window.electronAPI?.openFullDiskAccessSettings?.(); }}>Open Settings</button>
+                </div>
+                <div className="onboarding-permission">
+                  <div>
+                    <strong>Notifications</strong>
+                    <span>Optional. Allows a native notification and sound when a long disk scan finishes.</span>
+                  </div>
+                  <button type="button" className="onboarding-settings-btn" onClick={() => { void window.electronAPI?.openSystemSettings?.('notifications'); }}>Open Settings</button>
+                </div>
+                <div className="onboarding-note">Folder access is granted by the native folder picker when you choose a folder. Sunburst Disk keeps destructive actions protected; permission access does not unlock deletion.</div>
+              </div>
+            </div>
+            <div className="onboarding-footer">
+              <span>This guide appears once on first launch and once after an app update.</span>
+              <button type="button" className="onboarding-continue" onClick={completeOnboarding}>Continue to Sunburst Disk</button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {/* ── Screen 1: Drives ────────────────────────────────────────────────── */}
       {viewState === 'drives' && (
         <div className="drives-screen">
           <div className="drives-list">
             {drives.map((drive, idx) => {
               const driveKey = getDriveKey(drive);
-              const hasCachedScan = Boolean(scanCache[driveKey]?.tree);
+              const cachedTree = scanCache[driveKey]?.tree;
+              const hasCachedScan = Boolean(cachedTree);
+              const scannedFolderSize = Number(cachedTree?.size || drive.used || 0);
               return (
-              <div key={driveKey || idx} className="drive-row">
+              <div key={driveKey || idx} className={`drive-row ${drive.isCustomFolder ? 'custom-folder-row' : ''}`}>
                 <div className="drive-icon-meta">
-                  <svg className="drive-icon" viewBox="0 0 40 40">
-                    <rect x="4" y="6" width="32" height="28" rx="4" fill={drive.isStartup ? '#b5b5b5' : '#e5a100'} />
-                    <circle cx="20" cy="20" r="4" fill="#333" />
-                  </svg>
+                  {drive.isCustomFolder ? (
+                    <Folder className="drive-folder-icon" size={34} strokeWidth={1.35} aria-hidden="true" />
+                  ) : (
+                    <svg className="drive-icon" viewBox="0 0 40 40">
+                      <rect x="4" y="6" width="32" height="28" rx="4" fill={drive.isStartup ? '#b5b5b5' : '#e5a100'} />
+                      <circle cx="20" cy="20" r="4" fill="#333" />
+                    </svg>
+                  )}
                   <div>
                     <div className="drive-name">{drive.name}</div>
-                    <div className="drive-desc">{formatBytes(drive.total)} {drive.isStartup ? 'startup disk' : 'external disk'}</div>
+                    <div className="drive-desc">{drive.isCustomFolder ? `${formatBytes(scannedFolderSize)} scanned folder` : `${formatBytes(drive.total)} ${drive.isStartup ? 'startup disk' : 'external disk'}`}</div>
                   </div>
                 </div>
                 <div className="drive-bar-section">
                   <div className="drive-progress-bg">
                     <div className="drive-progress-fill" style={{
-                      width: drive.usePercent,
-                      background: drive.isStartup ? 'linear-gradient(90deg,#ff7e5f,#feb47b)' : '#2bd980'
+                      width: drive.isCustomFolder ? '100%' : drive.usePercent,
+                      background: drive.isCustomFolder ? 'linear-gradient(90deg,#60a5fa,#93c5fd)' : drive.isStartup ? 'linear-gradient(90deg,#ff7e5f,#feb47b)' : '#2bd980'
                     }} />
                   </div>
-                  <div className="drive-free-text">{formatBytes(drive.free)}</div>
+                  <div className="drive-free-text">{drive.isCustomFolder ? 'saved scan' : formatBytes(drive.free)}</div>
                 </div>
                 <div className="drive-scan-control">
                   <button
@@ -2830,6 +2961,11 @@ export default function App() {
                           disabled={ejectingDriveKey === driveKey}
                         >
                           {ejectingDriveKey === driveKey ? 'Ejecting…' : `Eject “${drive.name}”`}
+                        </button>
+                      )}
+                      {drive.isCustomFolder && (
+                        <button className="drive-menu-item drive-close-item" onClick={() => closeSavedFolder(drive)}>
+                          Close
                         </button>
                       )}
                     </div>
@@ -2928,7 +3064,12 @@ export default function App() {
           <div className="chart-area">
             {loading ? (
               <div className="scan-loading-status" role="status" aria-live="polite">
-                <div className="scan-loading-text">Scanning disk…</div>
+                <div className="scan-loading-header">
+                  <div className="scan-loading-text">Scanning disk…</div>
+                  <button className="scan-cancel-btn" type="button" title="Cancel scan and return Home" aria-label="Cancel scan and return Home" onClick={() => { void cancelActiveScan(); }}>
+                    <X size={15} />
+                  </button>
+                </div>
                 <div className="scan-progress-bar-bg">
                   <div
                     className="scan-progress-bar-fill"
@@ -3416,6 +3557,7 @@ export default function App() {
               onTogglePackageContents={togglePackageContents}
               packageContentsShown={Boolean(packageContentsShown[focusedLiveNode?.path])}
               packageContentsStatus={packageContentsStatus[focusedLiveNode?.path]}
+              onOpenFullDiskAccessSettings={() => { void window.electronAPI?.openFullDiskAccessSettings?.(); }}
             />
           )}
           <DebugDownbar
