@@ -436,20 +436,6 @@ ipcMain.handle('get-permission-status', async () => ({
   notifications: 'optional'
 }));
 
-async function confirmHiddenSpaceAccess() {
-  const choice = await dialog.showMessageBox(mainWindow, {
-    type: 'warning',
-    title: 'Open Hidden Space?',
-    message: 'Hidden Space contains protected system data.',
-    detail: 'Sunburst Disk will inspect system-managed locations such as virtual memory, caches and indexes. Continue only if you understand that these are not ordinary user files.',
-    buttons: ['Continue', 'Cancel'],
-    defaultId: 1,
-    cancelId: 1,
-    noLink: true
-  });
-  return choice.response === 0;
-}
-
 async function openFullDiskAccessSettings() {
   const choice = await dialog.showMessageBox(mainWindow, {
     type: 'info',
@@ -475,7 +461,8 @@ ipcMain.handle('open-system-settings', async (_event, { section = '' } = {}) => 
 
 ipcMain.handle('scan-hidden-space',
  async (event, { knownSize = 0 } = {}) => {
-  if (!(await confirmHiddenSpaceAccess())) return { ok: false, cancelled: true };
+  // Do not show a permission modal on every open. Always return the safe
+  // one-level diagnostic node; its Inspector action opens Settings explicitly.
   const permission = await getFullDiskAccessStatus();
   const visibleChildren = [];
   const aggregateSize = Number.isFinite(Number(knownSize)) ? Math.max(0, Number(knownSize)) : 0;
@@ -1893,15 +1880,33 @@ function buildTreeFromDu(rootPath, duLines, detailDepth, rootSizeOverride = null
     root.size = root.children.reduce((sum, child) => sum + (child.size || 0), 0);
   }
 
+  // Count the complete flat du result before pruning children at detailDepth.
+  // The UI only renders a bounded hierarchy, but the completion toast and
+  // Inspector object count must represent the whole scan, not just visible rows.
+  const descendantCounts = new Map();
+  for (const p of entries.keys()) {
+    let ancestor = p === rootNorm ? null : parentOf(p);
+    while (ancestor) {
+      descendantCounts.set(ancestor, (descendantCounts.get(ancestor) || 0) + 1);
+      if (ancestor === rootNorm) break;
+      const nextAncestor = parentOf(ancestor);
+      if (nextAncestor === ancestor) break;
+      ancestor = nextAncestor;
+    }
+  }
+  for (const [nodePath, node] of nodesByPath) node.itemCount = descendantCounts.get(nodePath) || 0;
   finalizeTree(root, 0, detailDepth);
   return root;
 }
 
 function finalizeTree(node, depth, detailDepth) {
-  node.itemCount = node.children.reduce((s, c) => s + 1 + (c.itemCount || 0), 0);
-  node.children.sort((a, b) => (b.size || 0) - (a.size || 0));
-  if (depth >= detailDepth) node.children = []; // details lazy-loaded on navigate
-  for (const c of node.children) finalizeTree(c, depth + 1, detailDepth);
+  const children = node.children || [];
+  children.sort((a, b) => (b.size || 0) - (a.size || 0));
+  if (depth >= detailDepth) {
+    node.children = []; // details lazy-loaded on navigate
+    return;
+  }
+  for (const child of children) finalizeTree(child, depth + 1, detailDepth);
 }
 
 function notifyScanComplete(tree, scanPath) {

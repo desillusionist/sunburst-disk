@@ -972,18 +972,19 @@ body {
   min-width: 0;
   flex: 0 1 160px;
 }
-.legend-label-text { display: inline-block; white-space: nowrap; }
+.legend-label-text { display: inline-block; flex: 0 0 auto; white-space: nowrap; }
+.legend-label-track { display: inline-flex; align-items: center; gap: 28px; min-width: max-content; }
 .legend-label.is-crawling { text-overflow: clip; }
-.legend-label.is-crawling .legend-label-text {
-  animation: legend-label-crawl 8s ease-in-out infinite alternate;
+.legend-label.is-crawling .legend-label-track {
+  animation: legend-label-crawl 8s linear infinite;
   will-change: transform;
 }
 @keyframes legend-label-crawl {
-  0%, 16% { transform: translateX(0); }
-  84%, 100% { transform: translateX(calc(-1 * var(--crawl-distance))); }
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(-1 * var(--crawl-distance))); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .legend-label.is-crawling .legend-label-text { animation: none; transform: none; }
+  .legend-label.is-crawling .legend-label-track { animation: none; transform: none; }
 }
 .legend-label.dim { color: #5d6370; }
 .legend-label.special { color: #b04bf5; }
@@ -2077,3 +2078,14 @@ body {
 .onboarding-check-btn:hover { color: #dbeafe; text-decoration: underline; }
 .theme-matrix .onboarding-check-btn { color: #79bd83; }
 .theme-matrix .onboarding-check-btn:hover { color: #b7ffc0; }
+
+.smart-clean-category-tabs { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+.smart-clean-category-tabs button { padding: 4px 7px; border: 1px solid rgba(255,255,255,.14); border-radius: 4px; background: rgba(255,255,255,.035); color: #8f99a8; font: 10px SFMono-Regular, Menlo, monospace; cursor: pointer; }
+.smart-clean-category-tabs button:hover { border-color: #a8b4c6; color: #e7edf5; }
+.smart-clean-category-tabs button.active { border-color: #d4a72c; background: rgba(212,167,44,.18); color: #ffe08a; }
+.theme-matrix .smart-clean-category-tabs button { border-color: rgba(57,255,102,.22); background: rgba(57,255,102,.025); color: #6dad76; }
+.theme-matrix .smart-clean-category-tabs button:hover { border-color: var(--matrix-line-bright); color: var(--matrix-text); }
+.theme-matrix .smart-clean-category-tabs button.active { border-color: #d8ff47; background: rgba(216,255,71,.14); color: #d8ff47; box-shadow: 0 0 7px rgba(216,255,71,.16); }
+
+.onboarding-setup-status { display: block; max-width: 190px; margin-top: 4px; color: #75839a; font-size: 9px; line-height: 1.25; }
+.theme-matrix .onboarding-setup-status { color: #79bd83; }

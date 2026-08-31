@@ -442,7 +442,7 @@ function ThemedSelect({ value, options, onChange, ariaLabel }) {
       else openMenu();
     } else if (event.key === 'Escape' && open) {
       event.preventDefault();
-      close(true);
+      close();
     }
   };
   const handleMenuKeyDown = event => {
@@ -463,7 +463,7 @@ function ThemedSelect({ value, options, onChange, ariaLabel }) {
       choose(highlightedIndex);
     } else if (event.key === 'Escape') {
       event.preventDefault();
-      close(true);
+      close();
     } else if (event.key === 'Tab') {
       close();
     }
@@ -512,6 +512,7 @@ function ThemedSelect({ value, options, onChange, ariaLabel }) {
 
 function CrawlLabel({ name, className = '', active = false }) {
   const labelRef = useRef(null);
+  const textRef = useRef(null);
   const [hovered, setHovered] = useState(false);
   const [crawling, setCrawling] = useState(false);
   const [crawlDistance, setCrawlDistance] = useState(0);
@@ -522,12 +523,13 @@ function CrawlLabel({ name, className = '', active = false }) {
     if (!active && !hovered) return undefined;
     const timer = window.setTimeout(() => {
       const label = labelRef.current;
-      const distance = label ? label.scrollWidth - label.clientWidth : 0;
-      if (distance > 1) {
-        setCrawlDistance(distance);
+      const text = textRef.current;
+      const overflow = label && text ? text.scrollWidth - label.clientWidth : 0;
+      if (overflow > 1 && text) {
+        setCrawlDistance(text.scrollWidth + 28);
         setCrawling(true);
       }
-    }, 1000);
+    }, 100);
     return () => window.clearTimeout(timer);
   }, [active, hovered, name]);
 
@@ -539,7 +541,10 @@ function CrawlLabel({ name, className = '', active = false }) {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <span className="legend-label-text">{name}</span>
+      <span className="legend-label-track">
+        <span ref={textRef} className="legend-label-text">{name}</span>
+        {crawling && <span className="legend-label-text legend-label-copy" aria-hidden="true">{name}</span>}
+      </span>
     </span>
   );
 }
@@ -719,7 +724,7 @@ const TERMINAL_ADMIN_COMMAND_PRESETS = [
   }
 ];
 
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.2.1';
 const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 
 const DEFAULT_DRIVES = [
@@ -791,6 +796,7 @@ export default function App() {
   const [smartCleanMenuOpen, setSmartCleanMenuOpen] = useState(false);
   const [smartCleanScope, setSmartCleanScope] = useState('storage');
   const [smartCleanRiskFilter, setSmartCleanRiskFilter] = useState('all');
+  const [smartCleanCategoryFilters, setSmartCleanCategoryFilters] = useState(() => new Set());
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantLoading, setAssistantLoading] = useState(false);
   const [assistantItem, setAssistantItem] = useState(null);
@@ -809,6 +815,7 @@ export default function App() {
     } catch { return false; }
   });
   const [permissionStatus, setPermissionStatus] = useState({ fullDiskAccess: 'unknown', notifications: 'optional' });
+  const [askSiriSetupStatus, setAskSiriSetupStatus] = useState(null);
 
   const contextOpenWithRequestRef = useRef(0);
   const quickLookPathRef = useRef(null);
@@ -1417,6 +1424,17 @@ export default function App() {
     if (onboardingOpen) void refreshPermissionStatus();
   }, [onboardingOpen, refreshPermissionStatus]);
 
+  const handleSetupAskSiri = useCallback(async () => {
+    try {
+      const result = await window.electronAPI?.setupAskSiri?.();
+      if (result?.exists) setAskSiriSetupStatus('Already set up — “Sunburst Disk — Ask Siri” is available.');
+      else if (result?.opened) setAskSiriSetupStatus('Shortcuts opened — create or import “Sunburst Disk — Ask Siri”, then return here.');
+      else setAskSiriSetupStatus(result?.error || 'Ask Siri setup could not be opened.');
+    } catch (error) {
+      setAskSiriSetupStatus(error?.message || 'Ask Siri setup could not be opened.');
+    }
+  }, []);
+
   const fetchDrives = async () => {
     try {
       if (window.electronAPI) {
@@ -1571,6 +1589,7 @@ export default function App() {
     setThemesOpen(false);
     setSmartCleanScope(scope);
     setSmartCleanRiskFilter('all');
+    setSmartCleanCategoryFilters(new Set());
     setSmartCleanOpen(true);
     setSmartCleanLoading(true);
     setSmartCleanData(null);
@@ -1608,13 +1627,22 @@ export default function App() {
   };
 
   const smartCleanCandidates = smartCleanData?.candidates || [];
-  const smartCleanRiskCounts = smartCleanCandidates.reduce((counts, candidate) => ({
-    ...counts,
-    [candidate.risk || 'review']: (counts[candidate.risk || 'review'] || 0) + 1
-  }), { safe: 0, review: 0, high: 0 });
-  const smartCleanVisibleCandidates = smartCleanRiskFilter === 'all'
-    ? smartCleanCandidates
-    : smartCleanCandidates.filter(candidate => (candidate.risk || 'review') === smartCleanRiskFilter);
+  const normalizeSmartCleanRisk = risk => {
+    const value = String(risk || '').toLowerCase();
+    if (value === 'safe') return 'safe';
+    if (value === 'high' || value === 'high-risk' || value === 'high risk') return 'high';
+    return 'review';
+  };
+  const smartCleanRiskCounts = smartCleanCandidates.reduce((counts, candidate) => {
+    const risk = normalizeSmartCleanRisk(candidate.risk);
+    return { ...counts, [risk]: (counts[risk] || 0) + 1 };
+  }, { safe: 0, review: 0, high: 0 });
+  const smartCleanCategoryOptions = [...new Set(smartCleanCandidates.map(candidate => candidate.category).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const smartCleanVisibleCandidates = smartCleanCandidates.filter(candidate => {
+    const riskMatches = smartCleanRiskFilter === 'all' || normalizeSmartCleanRisk(candidate.risk) === smartCleanRiskFilter;
+    const categoryMatches = smartCleanCategoryFilters.size === 0 || smartCleanCategoryFilters.has(candidate.category);
+    return riskMatches && categoryMatches;
+  });
   const smartCleanSelectedItems = smartCleanCandidates.filter(candidate => smartCleanSelected.has(candidate.path));
   const smartCleanSelectedSize = smartCleanSelectedItems.reduce((sum, candidate) => sum + (Number(candidate.size) || 0), 0);
 
@@ -2370,9 +2398,14 @@ export default function App() {
   useEffect(() => {
     const onEscape = event => {
       if (event.key !== 'Escape') return;
+      const resetFocus = () => window.requestAnimationFrame(() => {
+        const active = document.activeElement;
+        if (active instanceof HTMLElement) active.blur();
+      });
       const closeAndStop = () => {
         event.preventDefault();
         event.stopPropagation();
+        resetFocus();
       };
 
       if (onboardingOpen) {
@@ -2428,7 +2461,9 @@ export default function App() {
         setBreadcrumbsMenuOpen(false);
         setDriveMenuKey(null);
         closeAndStop();
+        return;
       }
+      resetFocus();
     };
     window.addEventListener('keydown', onEscape, true);
     return () => window.removeEventListener('keydown', onEscape, true);
@@ -2956,8 +2991,8 @@ export default function App() {
                 <div className="onboarding-section-title">Before first scan</div>
                 <div className="onboarding-permission">
                   <div>
-                    <strong>Full Disk Access <em className={`onboarding-permission-status ${permissionStatus.fullDiskAccess === 'granted' ? 'granted' : 'not-granted'}`}>{permissionStatus.fullDiskAccess === 'granted' ? 'Granted' : permissionStatus.fullDiskAccess === 'not-granted' ? 'Not granted' : 'Checking…'}</em></strong>
-                    <span>Needed for Hidden Space and some protected system locations. Ordinary user-folder scans do not require an administrator password.</span>
+                    <strong>Full Disk Access <em className={`onboarding-permission-status ${permissionStatus.fullDiskAccess === 'granted' ? 'granted' : 'not-granted'}`}>{permissionStatus.fullDiskAccess === 'granted' ? 'Available now' : permissionStatus.fullDiskAccess === 'not-granted' ? 'Needs verification' : 'Check in Settings'}</em></strong>
+                    <span>Needed for Hidden Space and some protected system locations. Sunburst Disk does not claim this grant is permanent after an app update; verify the exact installed app in Settings before using Hidden Space.</span>
                   </div>
                   <div className="onboarding-permission-actions">
                     <button type="button" className="onboarding-settings-btn" onClick={() => { void window.electronAPI?.openFullDiskAccessSettings?.(); }}>Open Settings</button>
@@ -2976,7 +3011,10 @@ export default function App() {
                     <strong>Ask Siri Shortcut <em className="onboarding-permission-status optional">Optional</em></strong>
                     <span>One-time setup in Apple Shortcuts enables in-app object explanations. The shortcut receives text and returns plain text.</span>
                   </div>
-                  <button type="button" className="onboarding-settings-btn" onClick={() => { void window.electronAPI?.setupAskSiri?.(); }}>Set up</button>
+                  <div className="onboarding-permission-actions">
+                    <button type="button" className="onboarding-settings-btn" onClick={() => { void handleSetupAskSiri(); }}>Set up</button>
+                    {askSiriSetupStatus && <span className="onboarding-setup-status" role="status">{askSiriSetupStatus}</span>}
+                  </div>
                 </div>
                 <div className="onboarding-note">
 The status is checked against a protected filesystem path, not just a saved preference. Replacing an ad-hoc signed app can make macOS revoke its previous TCC grant; if that happens, grant access again to the exact installed Sunburst Disk.app. Permission access never unlocks deletion.</div>
@@ -3101,7 +3139,8 @@ The status is checked against a protected filesystem path, not just a saved pref
                   <div><strong>{smartCleanCandidates.length}</strong><span>candidates</span></div>
                   <div><strong>{formatBytes(smartCleanSelectedSize)}</strong><span>selected</span></div>
                   <div className="smart-clean-summary-actions">
-                    <button onClick={() => setSmartCleanSelected(new Set(smartCleanVisibleCandidates.map(candidate => candidate.path)))} disabled={!smartCleanVisibleCandidates.length}>Select visible</button>
+                    <button onClick={() =>     setSmartCleanSelected(new Set(smartCleanVisibleCandidates.map(candidate => candidate.path)))
+} disabled={!smartCleanVisibleCandidates.length}>Select visible</button>
                     <button onClick={() => setSmartCleanSelected(new Set())} disabled={!smartCleanSelected.size}>Clear</button>
                   </div>
                 </div>
@@ -3115,6 +3154,25 @@ The status is checked against a protected filesystem path, not just a saved pref
                     <button key={key} className={smartCleanRiskFilter === key ? 'active' : ''} role="tab" aria-selected={smartCleanRiskFilter === key} onClick={() => setSmartCleanRiskFilter(key)}>{label} <span>{count}</span></button>
                   ))}
                 </div>
+                {smartCleanCategoryOptions.length > 0 && (
+                  <div className="smart-clean-category-tabs" aria-label="Filter Smart Clean candidates by category">
+                    <button type="button" className={smartCleanCategoryFilters.size === 0 ? 'active' : ''} onClick={() => setSmartCleanCategoryFilters(new Set())}>All tags</button>
+                    {smartCleanCategoryOptions.map(category => (
+                      <button
+                        type="button"
+                        key={category}
+                        className={smartCleanCategoryFilters.has(category) ? 'active' : ''}
+                        aria-pressed={smartCleanCategoryFilters.has(category)}
+                        onClick={() => setSmartCleanCategoryFilters(previous => {
+                          const next = new Set(previous);
+                          if (next.has(category)) next.delete(category);
+                          else next.add(category);
+                          return next;
+                        })}
+                      >{category}</button>
+                    ))}
+                  </div>
+                )}
                 <div className="smart-clean-safety-note">Safe = regenerable caches, logs and developer data. Moderate = saved state, incomplete downloads, old installers, Trash and screenshot-like personal files. High risk = duplicate fingerprints requiring manual verification. Mail attachments, Messages, Photos, Containers, Group Containers and Application Support remain excluded.</div>
                 <div className="smart-clean-root-summary" aria-label="Inspected Smart Clean locations">
                   {(smartCleanData?.roots || []).map(root => <span key={root.id}>{root.label}: {root.unavailable ? 'unavailable' : root.candidates}</span>)}
@@ -3133,7 +3191,7 @@ The status is checked against a protected filesystem path, not just a saved pref
                         <span className="smart-clean-candidate-path" title={candidate.path}>{candidate.path}</span>
                         {candidate.verification && <span className="smart-clean-candidate-verification">Verification: {candidate.verification}</span>}
                       </span>
-                      <span className={`smart-clean-risk risk-${candidate.risk || 'review'}`}>{candidate.risk === 'safe' ? 'Safe' : candidate.risk === 'high' ? 'High' : 'Moderate'}</span>
+                      <span className={`smart-clean-risk risk-${normalizeSmartCleanRisk(candidate.risk)}`}>{normalizeSmartCleanRisk(candidate.risk) === 'safe' ? 'Safe' : normalizeSmartCleanRisk(candidate.risk) === 'high' ? 'High' : 'Moderate'}</span>
                       <span className="smart-clean-candidate-size">{formatBytes(candidate.size)}</span>
                     </label>
                   ))}
