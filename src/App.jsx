@@ -724,7 +724,14 @@ const TERMINAL_ADMIN_COMMAND_PRESETS = [
   }
 ];
 
-const APP_VERSION = '0.2.1';
+function normalizeSmartCleanRiskValue(risk) {
+  const value = String(risk || '').trim().toLowerCase().replaceAll('_', '-');
+  if (value === 'safe') return 'safe';
+  if (value === 'high' || value === 'high-risk' || value === 'high risk') return 'high';
+  return 'review';
+}
+
+const APP_VERSION = '0.2.2';
 const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 
 const DEFAULT_DRIVES = [
@@ -797,6 +804,10 @@ export default function App() {
   const [smartCleanScope, setSmartCleanScope] = useState('storage');
   const [smartCleanRiskFilter, setSmartCleanRiskFilter] = useState('all');
   const [smartCleanCategoryFilters, setSmartCleanCategoryFilters] = useState(() => new Set());
+  const [hiddenSpaceAdminPromptOpen, setHiddenSpaceAdminPromptOpen] = useState(false);
+  const [hiddenSpaceAdminPassword, setHiddenSpaceAdminPassword] = useState('');
+  const [hiddenSpaceAdminError, setHiddenSpaceAdminError] = useState(null);
+  const [hiddenSpaceAdminAuthorized, setHiddenSpaceAdminAuthorized] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantLoading, setAssistantLoading] = useState(false);
   const [assistantItem, setAssistantItem] = useState(null);
@@ -822,6 +833,7 @@ export default function App() {
   const quickLookFollowRequestRef = useRef(0);
   const terminalDragRef = useRef(null);
   const terminalDrawerRef = useRef(null);
+  const hiddenSpacePendingNodeRef = useRef(null);
   const terminalHelperPreviousHeightRef = useRef(null);
   const folderWatchTreeRef = useRef(null);
   const folderWatchTargetRef = useRef(null);
@@ -1600,7 +1612,11 @@ export default function App() {
         scope === 'folder' ? { folderPath } : { storagePath }
       );
       if (!result?.ok) throw new Error(result?.error || 'Smart Clean preview could not be created');
-      setSmartCleanData(result);
+      const normalizedCandidates = (result.candidates || []).map(candidate => ({
+        ...candidate,
+        risk: normalizeSmartCleanRiskValue(candidate.risk)
+      }));
+      setSmartCleanData({ ...result, candidates: normalizedCandidates });
     } catch (error) {
       setSmartCleanData({ ok: false, error: error.message, candidates: [], roots: [] });
     } finally {
@@ -1627,19 +1643,12 @@ export default function App() {
   };
 
   const smartCleanCandidates = smartCleanData?.candidates || [];
-  const normalizeSmartCleanRisk = risk => {
-    const value = String(risk || '').toLowerCase();
-    if (value === 'safe') return 'safe';
-    if (value === 'high' || value === 'high-risk' || value === 'high risk') return 'high';
-    return 'review';
-  };
   const smartCleanRiskCounts = smartCleanCandidates.reduce((counts, candidate) => {
-    const risk = normalizeSmartCleanRisk(candidate.risk);
+    const risk = normalizeSmartCleanRiskValue(candidate.risk);
     return { ...counts, [risk]: (counts[risk] || 0) + 1 };
   }, { safe: 0, review: 0, high: 0 });
-  const smartCleanCategoryOptions = [...new Set(smartCleanCandidates.map(candidate => candidate.category).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   const smartCleanVisibleCandidates = smartCleanCandidates.filter(candidate => {
-    const riskMatches = smartCleanRiskFilter === 'all' || normalizeSmartCleanRisk(candidate.risk) === smartCleanRiskFilter;
+    const riskMatches = smartCleanRiskFilter === 'all' || normalizeSmartCleanRiskValue(candidate.risk) === smartCleanRiskFilter;
     const categoryMatches = smartCleanCategoryFilters.size === 0 || smartCleanCategoryFilters.has(candidate.category);
     return riskMatches && categoryMatches;
   });
@@ -1765,9 +1774,16 @@ export default function App() {
     commitNavigation(targetStack, { recordHistory: false });
   };
 
-  const openHiddenSpace = useCallback(async (node) => {
+  const openHiddenSpace = useCallback(async (node, { bypassAuth = false } = {}) => {
     if (!window.electronAPI?.scanHiddenSpace) {
       alert('Hidden Space access is available in the Electron app only.');
+      return;
+    }
+    if (!hiddenSpaceAdminAuthorized && !bypassAuth) {
+      hiddenSpacePendingNodeRef.current = node;
+      setHiddenSpaceAdminError(null);
+      setHiddenSpaceAdminPassword('');
+      setHiddenSpaceAdminPromptOpen(true);
       return;
     }
     setNodeLoading(true);
@@ -1782,13 +1798,40 @@ export default function App() {
         });
         setFocusedNode(result.tree);
         setTreeSelectionPath(null);
+      } else if (result?.needsAdmin) {
+        setHiddenSpaceAdminAuthorized(false);
+        hiddenSpacePendingNodeRef.current = node;
+        setHiddenSpaceAdminError(result.error || 'Administrator authorization is required.');
+        setHiddenSpaceAdminPassword('');
+        setHiddenSpaceAdminPromptOpen(true);
       } else if (result?.error && !result.settingsOpened) {
         alert(result.error);
       }
     } finally {
       setNodeLoading(false);
     }
-  }, []);
+  }, [hiddenSpaceAdminAuthorized]);
+
+  const authorizeHiddenSpace = useCallback(async () => {
+    if (!window.electronAPI?.authorizeHiddenSpace || !hiddenSpaceAdminPassword) return;
+    setHiddenSpaceAdminError(null);
+    try {
+      const result = await window.electronAPI.authorizeHiddenSpace(hiddenSpaceAdminPassword);
+      setHiddenSpaceAdminPassword('');
+      if (!result?.ok) {
+        setHiddenSpaceAdminError(result?.error || 'Administrator authentication failed.');
+        return;
+      }
+      setHiddenSpaceAdminAuthorized(true);
+      setHiddenSpaceAdminPromptOpen(false);
+      const pendingNode = hiddenSpacePendingNodeRef.current;
+      hiddenSpacePendingNodeRef.current = null;
+      if (pendingNode) await openHiddenSpace(pendingNode, { bypassAuth: true });
+    } catch (error) {
+      setHiddenSpaceAdminPassword('');
+      setHiddenSpaceAdminError(error?.message || 'Administrator authentication failed.');
+    }
+  }, [hiddenSpaceAdminPassword, openHiddenSpace]);
 
   const showPackageContents = useCallback(async (node) => {
     if (!isPackageContainerNode(node)) return;
@@ -1912,9 +1955,18 @@ export default function App() {
     }
 
     if (!node) return;
-    if (node.isHiddenSpaceRemainder || node.isHiddenSpaceChild) {
+    if (node.isHiddenSpaceRemainder) {
       setFocusedNode(node);
       setTreeSelectionPath(node.path);
+      return;
+    }
+    if (node.isHiddenSpaceChild) {
+      if (node.hiddenSpaceDepth === 1 && navStack.some(current => current.path === '__hidden__')) {
+        commitNavigation([...navStack, node]);
+      } else {
+        setFocusedNode(node);
+        setTreeSelectionPath(node.path);
+      }
       return;
     }
     if (node.type === 'special' || node.path === '__hidden__') {
@@ -2425,6 +2477,14 @@ export default function App() {
         closeAndStop();
         return;
       }
+      if (hiddenSpaceAdminPromptOpen) {
+        setHiddenSpaceAdminPromptOpen(false);
+        setHiddenSpaceAdminPassword('');
+        setHiddenSpaceAdminError(null);
+        hiddenSpacePendingNodeRef.current = null;
+        closeAndStop();
+        return;
+      }
       if (contextMenu) {
         setContextMenu(null);
         setContextOpenWith(null);
@@ -2467,7 +2527,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onEscape, true);
     return () => window.removeEventListener('keydown', onEscape, true);
-  }, [assistantOpen, breadcrumbsMenuOpen, contextMenu, driveMenuKey, loading, onboardingOpen, revokeTerminalAdmin, smartCleanMenuOpen, smartCleanOpen, terminalAdminPromptOpen, terminalOpen, themesOpen, viewOptionsOpen]);
+  }, [assistantOpen, breadcrumbsMenuOpen, contextMenu, driveMenuKey, hiddenSpaceAdminPromptOpen, loading, onboardingOpen, revokeTerminalAdmin, smartCleanMenuOpen, smartCleanOpen, terminalAdminPromptOpen, terminalOpen, themesOpen, viewOptionsOpen]);
 
   const totalCollectorSize = collector.reduce((s, i) => s + (i.size || 0), 0);
   const selectedTypeFilters = Array.isArray(viewOptions.typeFilter)
@@ -2991,8 +3051,8 @@ export default function App() {
                 <div className="onboarding-section-title">Before first scan</div>
                 <div className="onboarding-permission">
                   <div>
-                    <strong>Full Disk Access <em className={`onboarding-permission-status ${permissionStatus.fullDiskAccess === 'granted' ? 'granted' : 'not-granted'}`}>{permissionStatus.fullDiskAccess === 'granted' ? 'Available now' : permissionStatus.fullDiskAccess === 'not-granted' ? 'Needs verification' : 'Check in Settings'}</em></strong>
-                    <span>Needed for Hidden Space and some protected system locations. Sunburst Disk does not claim this grant is permanent after an app update; verify the exact installed app in Settings before using Hidden Space.</span>
+                    <strong>Full Disk Access <em className={`onboarding-permission-status ${permissionStatus.fullDiskAccess === 'granted' ? 'granted' : 'not-granted'}`}>{permissionStatus.fullDiskAccess === 'granted' ? 'Detected for this run' : permissionStatus.fullDiskAccess === 'not-granted' ? 'Needs verification' : 'Check in Settings'}</em></strong>
+                    <span>Needed for Hidden Space and some protected system locations. For a new ad-hoc build, quit Sunburst Disk, turn its old Full Disk Access entry Off, turn it On again for the current app, accept the macOS relaunch request, and reopen the app. The status below is only a probe for this run, not a permanent grant.</span>
                   </div>
                   <div className="onboarding-permission-actions">
                     <button type="button" className="onboarding-settings-btn" onClick={() => { void window.electronAPI?.openFullDiskAccessSettings?.(); }}>Open Settings</button>
@@ -3016,8 +3076,22 @@ export default function App() {
                     {askSiriSetupStatus && <span className="onboarding-setup-status" role="status">{askSiriSetupStatus}</span>}
                   </div>
                 </div>
+                <details className="onboarding-shortcut-guide">
+                  <summary>How to create the Shortcut — beginner guide</summary>
+                  <ol>
+                    <li>Open Apple <strong>Shortcuts</strong>, choose <strong>New Shortcut</strong>, and name it exactly <code>Sunburst Disk — Ask Siri</code>.</li>
+                    <li>Open the shortcut details and allow input from other apps. Keep <strong>Text</strong> enabled.</li>
+                    <li>Add the input action first: <strong>Receive Text from Shortcut Input</strong>.</li>
+                    <li>Add one available AI action: <strong>Use Cloud Model</strong>, <strong>Ask ChatGPT</strong>, or <strong>Apple Intelligence</strong>. Tell it to use the received text, explain the object, cite useful sources, and never change or delete files.</li>
+                    <li>Make the returned value plain text. If the AI result is rich or structured, insert <strong>Get Text from Input</strong>.</li>
+                    <li>Finish with <strong>Stop and Output</strong>. Its blue content field must be the AI text, or the output of <strong>Get Text from Input</strong>.</li>
+                    <li>Remove <strong>Show Response</strong>, <strong>Show Result</strong>, <strong>Show Alert</strong>, <strong>Ask for Input</strong>, <strong>Choose from Menu</strong> and <strong>Quick Look</strong> from the normal input path. They interrupt background execution.</li>
+                  </ol>
+                  <pre>Receive Text → AI action → Get Text from Input (if needed) → Stop and Output</pre>
+                  <p>Before using the app, temporarily make the final output the plain text <code>SUNBURST_DEBUG_OUTPUT_OK</code>. If Terminal can read that marker, reconnect the AI result to <strong>Stop and Output</strong>. Then right-click an object in Sunburst Disk and choose <strong>Ask Siri…</strong>.</p>
+                </details>
                 <div className="onboarding-note">
-The status is checked against a protected filesystem path, not just a saved preference. Replacing an ad-hoc signed app can make macOS revoke its previous TCC grant; if that happens, grant access again to the exact installed Sunburst Disk.app. Permission access never unlocks deletion.</div>
+The status is checked against a protected filesystem path, not just a saved preference. Replacing an ad-hoc signed app can make macOS revoke its previous TCC grant; if that happens, use the Off → On → relaunch procedure above for the exact installed Sunburst Disk.app. Permission access never unlocks deletion.</div>
               </div>
             </div>
             <div className="onboarding-footer">
@@ -3154,28 +3228,24 @@ The status is checked against a protected filesystem path, not just a saved pref
                     <button key={key} className={smartCleanRiskFilter === key ? 'active' : ''} role="tab" aria-selected={smartCleanRiskFilter === key} onClick={() => setSmartCleanRiskFilter(key)}>{label} <span>{count}</span></button>
                   ))}
                 </div>
-                {smartCleanCategoryOptions.length > 0 && (
-                  <div className="smart-clean-category-tabs" aria-label="Filter Smart Clean candidates by category">
-                    <button type="button" className={smartCleanCategoryFilters.size === 0 ? 'active' : ''} onClick={() => setSmartCleanCategoryFilters(new Set())}>All tags</button>
-                    {smartCleanCategoryOptions.map(category => (
-                      <button
-                        type="button"
-                        key={category}
-                        className={smartCleanCategoryFilters.has(category) ? 'active' : ''}
-                        aria-pressed={smartCleanCategoryFilters.has(category)}
-                        onClick={() => setSmartCleanCategoryFilters(previous => {
-                          const next = new Set(previous);
-                          if (next.has(category)) next.delete(category);
-                          else next.add(category);
-                          return next;
-                        })}
-                      >{category}</button>
-                    ))}
-                  </div>
-                )}
                 <div className="smart-clean-safety-note">Safe = regenerable caches, logs and developer data. Moderate = saved state, incomplete downloads, old installers, Trash and screenshot-like personal files. High risk = duplicate fingerprints requiring manual verification. Mail attachments, Messages, Photos, Containers, Group Containers and Application Support remain excluded.</div>
-                <div className="smart-clean-root-summary" aria-label="Inspected Smart Clean locations">
-                  {(smartCleanData?.roots || []).map(root => <span key={root.id}>{root.label}: {root.unavailable ? 'unavailable' : root.candidates}</span>)}
+                <div className="smart-clean-root-summary" aria-label="Filter Smart Clean locations">
+                  <button type="button" className={smartCleanCategoryFilters.size === 0 ? 'active' : ''} onClick={() => setSmartCleanCategoryFilters(new Set())}>All locations</button>
+                  {(smartCleanData?.roots || []).map(root => (
+                    <button
+                      type="button"
+                      key={root.id}
+                      className={smartCleanCategoryFilters.has(root.label) ? 'active' : ''}
+                      aria-pressed={smartCleanCategoryFilters.has(root.label)}
+                      title={root.path || root.label}
+                      onClick={() => setSmartCleanCategoryFilters(previous => {
+                        const next = new Set(previous);
+                        if (next.has(root.label)) next.delete(root.label);
+                        else next.add(root.label);
+                        return next;
+                      })}
+                    >{root.label}: {root.unavailable ? 'unavailable' : root.candidates}</button>
+                  ))}
                 </div>
                 <div className="smart-clean-list">
                   {smartCleanVisibleCandidates.map(candidate => (
@@ -3191,7 +3261,7 @@ The status is checked against a protected filesystem path, not just a saved pref
                         <span className="smart-clean-candidate-path" title={candidate.path}>{candidate.path}</span>
                         {candidate.verification && <span className="smart-clean-candidate-verification">Verification: {candidate.verification}</span>}
                       </span>
-                      <span className={`smart-clean-risk risk-${normalizeSmartCleanRisk(candidate.risk)}`}>{normalizeSmartCleanRisk(candidate.risk) === 'safe' ? 'Safe' : normalizeSmartCleanRisk(candidate.risk) === 'high' ? 'High' : 'Moderate'}</span>
+                      <span className={`smart-clean-risk risk-${normalizeSmartCleanRiskValue(candidate.risk)}`}>{normalizeSmartCleanRiskValue(candidate.risk) === 'safe' ? 'Safe' : normalizeSmartCleanRiskValue(candidate.risk) === 'high' ? 'High' : 'Moderate'}</span>
                       <span className="smart-clean-candidate-size">{formatBytes(candidate.size)}</span>
                     </label>
                   ))}
@@ -3715,12 +3785,39 @@ The status is checked against a protected filesystem path, not just a saved pref
               packageContentsShown={Boolean(packageContentsShown[focusedLiveNode?.path])}
               packageContentsStatus={packageContentsStatus[focusedLiveNode?.path]}
               onOpenFullDiskAccessSettings={() => { void window.electronAPI?.openFullDiskAccessSettings?.(); }}
+              onRequestHiddenSpaceAccess={node => openHiddenSpace(node)}
             />
           )}
           <DebugDownbar
             terminalOpen={terminalOpen}
             onToggleTerminal={() => setTerminalOpen(open => !open)}
           />
+        </div>
+      )}
+
+      {hiddenSpaceAdminPromptOpen && (
+        <div className="hidden-space-admin-backdrop" role="presentation" onClick={event => event.stopPropagation()}>
+          <section className="hidden-space-admin-dialog" role="dialog" aria-modal="true" aria-labelledby="hidden-space-admin-title">
+            <div className="onboarding-kicker">PROTECTED SYSTEM DATA</div>
+            <h2 id="hidden-space-admin-title">Unlock Hidden Space</h2>
+            <p>Administrator authorization is required to inspect one level of system-managed hidden space. This does not unlock deletion or Terminal write commands.</p>
+            <form onSubmit={event => { event.preventDefault(); void authorizeHiddenSpace(); }}>
+              <label htmlFor="hidden-space-admin-password">Administrator password</label>
+              <input
+                id="hidden-space-admin-password"
+                type="password"
+                value={hiddenSpaceAdminPassword}
+                onChange={event => setHiddenSpaceAdminPassword(event.target.value)}
+                autoComplete="current-password"
+                autoFocus
+              />
+              <div className="hidden-space-admin-actions">
+                <button type="submit" disabled={!hiddenSpaceAdminPassword}>Unlock</button>
+                <button type="button" onClick={() => { setHiddenSpaceAdminPromptOpen(false); setHiddenSpaceAdminPassword(''); setHiddenSpaceAdminError(null); hiddenSpacePendingNodeRef.current = null; }}>Cancel</button>
+              </div>
+              {hiddenSpaceAdminError && <div className="terminal-admin-error" role="alert">{hiddenSpaceAdminError}</div>}
+            </form>
+          </section>
         </div>
       )}
 

@@ -413,6 +413,26 @@ const HIDDEN_SPACE_CANDIDATES = [
   { name: 'Installer data', path: '/System/Volumes/Data/.PKInstallSandboxManager' }
 ];
 
+function markHiddenSpaceTree(node, permissionStatus, depth = 1) {
+  if (!node) return;
+  node.hiddenSpaceDiagnostic = true;
+  node.hiddenSpaceDepth = depth;
+  node.hiddenSpacePermissionStatus = permissionStatus;
+  for (const child of node.children || []) markHiddenSpaceTree(child, permissionStatus, depth + 1);
+}
+
+function getPurgeableSpaceBytes(volumePath) {
+  return new Promise(resolve => {
+    execFile('/usr/sbin/diskutil', ['info', volumePath], { timeout: 8000, maxBuffer: 512 * 1024 }, (_error, stdout) => {
+      const text = String(stdout || '');
+      const match = text.match(/Purgeable(?: Space| Capacity)?\s*:\s*([0-9][0-9,]*)\s*Bytes?/i);
+      if (!match) return resolve(null);
+      const bytes = Number(match[1].replaceAll(',', ''));
+      resolve(Number.isFinite(bytes) ? bytes : null);
+    });
+  });
+}
+
 async function getFullDiskAccessStatus() {
   const probes = [
     '/System/Volumes/Data/private/var/vm',
@@ -461,6 +481,9 @@ ipcMain.handle('open-system-settings', async (_event, { section = '' } = {}) => 
 
 ipcMain.handle('scan-hidden-space',
  async (event, { knownSize = 0 } = {}) => {
+  if (!hiddenSpaceAuthorizedSenders.has(event.sender.id)) {
+    return { ok: false, needsAdmin: true, error: 'Administrator authorization is required to inspect Hidden Space.' };
+  }
   // Do not show a permission modal on every open. Always return the safe
   // one-level diagnostic node; its Inspector action opens Settings explicitly.
   const permission = await getFullDiskAccessStatus();
@@ -478,6 +501,7 @@ ipcMain.handle('scan-hidden-space',
         childTree.name = candidate.name;
         childTree.path = candidate.path;
         childTree.isHiddenSpaceChild = true;
+        markHiddenSpaceTree(childTree, permission.status);
         visibleChildren.push(childTree);
       }
     } catch (error) {
@@ -496,6 +520,20 @@ ipcMain.handle('scan-hidden-space',
       isHiddenSpaceRemainder: true
     });
   }
+
+  const purgeableSize = await getPurgeableSpaceBytes('/System/Volumes/Data');
+  visibleChildren.push({
+    name: 'Purgeable space',
+    path: '__hidden__:purgeable-space',
+    size: purgeableSize || 0,
+    type: 'special',
+    children: [],
+    hiddenSpaceDiagnostic: true,
+    hiddenSpaceDepth: 1,
+    isHiddenSpaceRemainder: true,
+    hiddenSpaceUnavailable: purgeableSize === null,
+    hiddenSpacePermissionStatus: permission.status
+  });
 
   // The initial hidden-space slice is a reconciliation of df vs visible du,
   // so the diagnostic candidates are only a subset of that aggregate. Keep
@@ -1087,6 +1125,7 @@ const SAFE_TERMINAL_COMMANDS = new RegExp(`^(?:pwd|df -h|ls(?: -la|-lah)?(?: ${S
 const SAFE_ADMIN_ARGUMENT = "[A-Za-z0-9_./~'() -]+";
 const SAFE_ADMIN_COMMANDS = new RegExp(`^(?:touch|mkdir -p|rm(?: -i)? --|mv --|cp -R --) ${SAFE_ADMIN_ARGUMENT}(?: ${SAFE_ADMIN_ARGUMENT})?$`);
 let terminalAdminAuthorized = false;
+const hiddenSpaceAuthorizedSenders = new Set();
 
 function validateAdminPassword(password) {
   return new Promise(resolve => {
@@ -1162,6 +1201,21 @@ ipcMain.handle('terminal-authorize-admin', async (_event, { password = '' } = {}
   return valid
     ? { ok: true }
     : { ok: false, error: 'Administrator authentication failed.' };
+});
+
+ipcMain.handle('hidden-space-authorize', async (event, { password = '' } = {}) => {
+  if (!String(password)) return { ok: false, error: 'An administrator password is required.' };
+  const valid = await validateAdminPassword(password);
+  if (valid) hiddenSpaceAuthorizedSenders.add(event.sender.id);
+  else hiddenSpaceAuthorizedSenders.delete(event.sender.id);
+  return valid
+    ? { ok: true }
+    : { ok: false, error: 'Administrator authentication failed.' };
+});
+
+ipcMain.handle('hidden-space-revoke', async event => {
+  hiddenSpaceAuthorizedSenders.delete(event.sender.id);
+  return { ok: true };
 });
 
 ipcMain.handle('terminal-revoke-admin', async () => {
@@ -1338,7 +1392,8 @@ async function setupAskSiriShortcut() {
   if (process.platform !== 'darwin') return { ok: false, error: 'Ask Siri integration is available on macOS only' };
   const shortcutNames = await listMacShortcuts();
   if (shortcutNames.includes(ASK_SIRI_SHORTCUT_NAME)) return { ok: true, exists: true, shortcutName: ASK_SIRI_SHORTCUT_NAME };
-  await shell.openExternal('shortcuts://create-shortcut');
+  const opened = await shell.openExternal('shortcuts://create-shortcut');
+  if (!opened) return { ok: false, error: 'macOS could not open Apple Shortcuts. Open Shortcuts manually and create the named shortcut.', shortcutName: ASK_SIRI_SHORTCUT_NAME };
   return { ok: true, opened: true, setupRequired: true, shortcutName: ASK_SIRI_SHORTCUT_NAME };
 }
 

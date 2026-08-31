@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   inspectAppRelated:      (appPath)             => ipcRenderer.invoke('inspect-app-related', appPath),
   terminalAuthorizeAdmin: (password)          => ipcRenderer.invoke('terminal-authorize-admin', { password }),
   terminalRevokeAdmin:   ()                     => ipcRenderer.invoke('terminal-revoke-admin'),
+  authorizeHiddenSpace:  (password)            => ipcRenderer.invoke('hidden-space-authorize', { password }),
+  revokeHiddenSpace:     ()                     => ipcRenderer.invoke('hidden-space-revoke'),
   terminalRunSafe:        (command, cwd, adminMode = false) => ipcRenderer.invoke('terminal-run-safe', { command, cwd, adminMode }),
   quickLook:              (itemPath)             => ipcRenderer.invoke('quick-look', itemPath),
   quickLookClose:         ()                     => ipcRenderer.invoke('quick-look-close'),

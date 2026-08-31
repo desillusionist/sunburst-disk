@@ -2062,8 +2062,12 @@ body {
 .theme-matrix .onboarding-permission-status.optional { color: #211600; background: #ffce5c; }
 
 .smart-clean-root-summary { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
-.smart-clean-root-summary span { padding: 3px 5px; border: 1px solid rgba(255,255,255,.09); border-radius: 3px; color: #8f99a8; background: rgba(255,255,255,.025); font: 10px SFMono-Regular, Menlo, monospace; }
-.theme-matrix .smart-clean-root-summary span { border-color: rgba(57,255,102,.22); color: #7dcc87; background: rgba(57,255,102,.035); }
+.smart-clean-root-summary button { padding: 3px 5px; border: 1px solid rgba(255,255,255,.09); border-radius: 3px; color: #8f99a8; background: rgba(255,255,255,.025); font: 10px SFMono-Regular, Menlo, monospace; cursor: pointer; }
+.smart-clean-root-summary button:hover { border-color: #d4a72c; color: #f4d77b; }
+.smart-clean-root-summary button.active { border-color: #d4a72c; color: #ffe08a; background: rgba(212,167,44,.16); }
+.theme-matrix .smart-clean-root-summary button { border-color: rgba(57,255,102,.22); color: #7dcc87; background: rgba(57,255,102,.035); }
+.theme-matrix .smart-clean-root-summary button:hover { border-color: #d8ff47; color: #d8ff47; }
+.theme-matrix .smart-clean-root-summary button.active { border-color: #d8ff47; color: #d8ff47; background: rgba(216,255,71,.12); box-shadow: 0 0 7px rgba(216,255,71,.12); }
 
 .hidden-space-access { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; color: #a8a0b2; font-size: 10px; }
 .hidden-space-access strong { padding: 2px 5px; border-radius: 3px; font: 600 9px SFMono-Regular, Menlo, monospace; text-transform: uppercase; }
@@ -2079,13 +2083,43 @@ body {
 .theme-matrix .onboarding-check-btn { color: #79bd83; }
 .theme-matrix .onboarding-check-btn:hover { color: #b7ffc0; }
 
-.smart-clean-category-tabs { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
-.smart-clean-category-tabs button { padding: 4px 7px; border: 1px solid rgba(255,255,255,.14); border-radius: 4px; background: rgba(255,255,255,.035); color: #8f99a8; font: 10px SFMono-Regular, Menlo, monospace; cursor: pointer; }
-.smart-clean-category-tabs button:hover { border-color: #a8b4c6; color: #e7edf5; }
-.smart-clean-category-tabs button.active { border-color: #d4a72c; background: rgba(212,167,44,.18); color: #ffe08a; }
-.theme-matrix .smart-clean-category-tabs button { border-color: rgba(57,255,102,.22); background: rgba(57,255,102,.025); color: #6dad76; }
-.theme-matrix .smart-clean-category-tabs button:hover { border-color: var(--matrix-line-bright); color: var(--matrix-text); }
-.theme-matrix .smart-clean-category-tabs button.active { border-color: #d8ff47; background: rgba(216,255,71,.14); color: #d8ff47; box-shadow: 0 0 7px rgba(216,255,71,.16); }
 
 .onboarding-setup-status { display: block; max-width: 190px; margin-top: 4px; color: #75839a; font-size: 9px; line-height: 1.25; }
 .theme-matrix .onboarding-setup-status { color: #79bd83; }
+
+.onboarding-shortcut-guide { margin-top: 10px; border: 1px solid rgba(128,142,164,.28); border-radius: 6px; background: rgba(255,255,255,.025); color: #aeb8c7; font-size: 10px; line-height: 1.38; }
+.onboarding-shortcut-guide summary { padding: 8px 10px; cursor: pointer; color: #d8e0ec; font-weight: 600; }
+.onboarding-shortcut-guide ol { max-height: 190px; overflow: auto; margin: 0; padding: 0 24px 4px 28px; }
+.onboarding-shortcut-guide li { margin: 5px 0; }
+.onboarding-shortcut-guide code, .onboarding-shortcut-guide pre { font-family: SFMono-Regular, Menlo, monospace; color: #e5c85c; }
+.onboarding-shortcut-guide pre { margin: 7px 10px; padding: 6px 8px; overflow-x: auto; border: 1px solid rgba(128,142,164,.2); border-radius: 4px; background: rgba(0,0,0,.22); font-size: 9px; }
+.onboarding-shortcut-guide p { margin: 6px 10px 10px; color: #8e9bad; }
+.theme-matrix .onboarding-shortcut-guide { border-color: rgba(57,255,102,.24); background: rgba(0,12,4,.55); color: #7ebd87; }
+.theme-matrix .onboarding-shortcut-guide summary { color: #b4ffbd; }
+.theme-matrix .onboarding-shortcut-guide code, .theme-matrix .onboarding-shortcut-guide pre { color: #d8ff47; }
+.theme-matrix .onboarding-shortcut-guide pre { border-color: rgba(57,255,102,.22); background: rgba(0,20,6,.7); }
+.theme-matrix .onboarding-shortcut-guide p { color: #70a878; }
+
+.hidden-space-admin-backdrop { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; background: rgba(0,0,0,.58); }
+.hidden-space-admin-dialog { width: min(390px, calc(100vw - 32px)); padding: 18px; border: 1px solid rgba(128,142,164,.42); border-radius: 10px; background: #171b22; color: #dce3ed; box-shadow: 0 18px 60px rgba(0,0,0,.5); }
+.hidden-space-admin-dialog h2 { margin: 4px 0 8px; font-size: 18px; }
+.hidden-space-admin-dialog p { margin: 0 0 14px; color: #a2adbc; font-size: 11px; line-height: 1.45; }
+.hidden-space-admin-dialog form { display: grid; gap: 7px; }
+.hidden-space-admin-dialog label { color: #aeb9c8; font-size: 10px; }
+.hidden-space-admin-dialog input { width: 100%; box-sizing: border-box; padding: 8px 9px; border: 1px solid rgba(128,142,164,.42); border-radius: 5px; background: #0d1117; color: #f4f7fb; font: 12px SFMono-Regular, Menlo, monospace; }
+.hidden-space-admin-dialog input:focus { outline: 1px solid #79aaf7; outline-offset: 1px; }
+.hidden-space-admin-actions { display: flex; gap: 7px; margin-top: 5px; }
+.hidden-space-admin-actions button { padding: 7px 11px; border: 1px solid rgba(128,142,164,.42); border-radius: 5px; background: rgba(255,255,255,.06); color: #dce3ed; font: 11px SFMono-Regular, Menlo, monospace; cursor: pointer; }
+.hidden-space-admin-actions button[type="submit"] { border-color: #6b9df1; color: #dceaff; }
+.hidden-space-admin-actions button:disabled { opacity: .45; cursor: default; }
+.theme-matrix .hidden-space-admin-dialog { border-color: rgba(57,255,102,.42); background: #000c03; color: #baffc2; box-shadow: 0 0 30px rgba(57,255,102,.14); }
+.theme-matrix .hidden-space-admin-dialog p, .theme-matrix .hidden-space-admin-dialog label { color: #72a979; }
+.theme-matrix .hidden-space-admin-dialog input { border-color: rgba(57,255,102,.4); background: #000903; color: #baffc2; }
+.theme-matrix .hidden-space-admin-dialog input:focus { outline-color: #d8ff47; }
+.theme-matrix .hidden-space-admin-actions button { border-color: rgba(57,255,102,.35); background: rgba(57,255,102,.04); color: #9ef5a7; }
+.theme-matrix .hidden-space-admin-actions button[type="submit"] { border-color: #d8ff47; color: #d8ff47; }
+
+.hidden-space-unlock-btn { width: 100%; margin-top: 8px; padding: 7px 8px; border: 1px solid #c79837; border-radius: 5px; background: rgba(199,152,55,.12); color: #f0ce78; font: 10px SFMono-Regular, Menlo, monospace; cursor: pointer; }
+.hidden-space-unlock-btn:hover { background: rgba(199,152,55,.2); }
+.theme-matrix .hidden-space-unlock-btn { border-color: #d8ff47; background: rgba(216,255,71,.08); color: #d8ff47; }
+.theme-matrix .hidden-space-unlock-btn:hover { background: rgba(216,255,71,.16); box-shadow: 0 0 8px rgba(216,255,71,.15); }
