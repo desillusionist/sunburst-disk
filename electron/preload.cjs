@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   scanHiddenSpace:        (knownSize = 0)        => ipcRenderer.invoke('scan-hidden-space', { knownSize }),
   openFullDiskAccessSettings: () => ipcRenderer.invoke('open-full-disk-access-settings'),
   openSystemSettings:       (section) => ipcRenderer.invoke('open-system-settings', { section }),
+  saveTextFile:             (defaultName, content) => ipcRenderer.invoke('save-text-file', { defaultName, content }),
   getPermissionStatus:      () => ipcRenderer.invoke('get-permission-status'),
   onScanProgress:        (cb)                   => ipcRenderer.on('scan-progress', (_, data) => cb(data)),
   onFolderWatchChange:   (cb)                   => {

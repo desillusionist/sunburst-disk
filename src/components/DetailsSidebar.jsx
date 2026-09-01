@@ -54,11 +54,12 @@ function getAccessState(metadata, risk) {
   return 'Restricted';
 }
 
-export default function DetailsSidebar({ node, metadata, loading, risk, categoryDescription, onAddToCollector, onQuickLook, onRevealInFinder, onTogglePackageContents, packageContentsShown, packageContentsStatus, onOpenFullDiskAccessSettings, onRequestHiddenSpaceAccess }) {
+export default function DetailsSidebar({ node, metadata, loading, risk, categoryDescription, onAddToCollector, onQuickLook, onRevealInFinder, onTogglePackageContents, packageContentsShown, packageContentsStatus, onOpenFullDiskAccessSettings, onRequestHiddenSpaceAccess, hiddenSpaceUnlocked = false }) {
   const RiskIcon = risk?.Icon || AlertTriangle;
   const NodeIcon = node?.type === 'directory' ? Folder : node?.type === 'bulk' ? PackageOpen : FileText;
   const canDelete = Boolean(node && !node.archiveVirtual && risk?.canDelete && node.path && !node.path.startsWith('__'));
   const isHiddenSpace = node?.path === '__hidden__' || Boolean(node?.hiddenSpaceDiagnostic) || (node?.type === 'special' && !node?.isHiddenSpaceRemainder);
+  const isHiddenSpaceUnlocked = Boolean(hiddenSpaceUnlocked || node?.hiddenSpaceAdminUnlocked || node?.hiddenSpaceUnlocked);
   const canQuickLook = Boolean(node && !node.archiveVirtual && !node.hiddenSpaceDiagnostic && (isHiddenSpace || metadata?.type === 'file' || metadata?.type === 'directory' || metadata?.type === 'symlink' || ['file', 'directory'].includes(node.type)) && (isHiddenSpace || !node.path.startsWith('__')));
   const canReveal = Boolean(node?.path && !node.archiveVirtual && !node.hiddenSpaceDiagnostic && !node.path.startsWith('__'));
   const packageName = String(node?.name || '').trim().toLowerCase();
@@ -149,8 +150,8 @@ export default function DetailsSidebar({ node, metadata, loading, risk, category
           {isHiddenSpace && (
             <div className="hidden-space-panel">
               <div className="hidden-space-summary"><strong>{node.path === '__hidden__' ? 'Hidden Space' : node.name}</strong><span>{formatBytes(node.size)} diagnostic size</span></div>
-              <div className="hidden-space-access"><span>Full Disk Access</span><strong className="required">Verify in Settings</strong></div>
-              <div className="hidden-space-note">Some system-managed space cannot be represented as an ordinary Finder folder. A previous grant may be reset when the app identity changes, so this panel never treats the saved state as proof of continued access. Entries below are read-only diagnostics and are not deletion candidates.</div>
+              <div className="hidden-space-access"><span>Access session</span><strong className={isHiddenSpaceUnlocked ? 'granted' : 'required'}>{isHiddenSpaceUnlocked ? 'Unlocked for review' : 'Administrator unlock required'}</strong></div>
+              <div className="hidden-space-note">Some system-managed space cannot be represented as an ordinary Finder folder. Entries below are read-only diagnostics and are not deletion candidates. Administrator unlock applies only to this Hidden Space review session; it does not unlock Terminal write commands or deletion.</div>
               <div className="hidden-space-breakdown">
                 {(node.children || []).map(child => (
                   <div className="hidden-space-row" key={child.path || child.name}>
@@ -158,14 +159,14 @@ export default function DetailsSidebar({ node, metadata, loading, risk, category
                     <span>{child.hiddenSpaceUnavailable ? 'Not reported by macOS' : formatBytes(child.size)}</span>
                   </div>
                 ))}
-                {!node.children?.length && <div className="hidden-space-row"><span><i aria-hidden="true">•</i>{node.hiddenSpaceUnavailable ? 'Purgeable space' : 'Still hidden'}</span><span>{node.hiddenSpaceUnavailable ? 'Not reported by macOS' : formatBytes(node.size)}</span></div>}
+                {!node.children?.length && <div className="hidden-space-row"><span><i aria-hidden="true">•</i>{node.hiddenSpaceUnavailable ? 'Purgeable space' : node.name === 'Other protected space' ? 'Protected diagnostic remainder' : 'Diagnostic remainder'}</span><span>{node.hiddenSpaceUnavailable ? 'Not reported by macOS' : formatBytes(node.size)}</span></div>}
               </div>
-              {node.path === '__hidden__' && <button className="hidden-space-unlock-btn" type="button" onClick={() => onRequestHiddenSpaceAccess?.(node)}>
-                Unlock Hidden Space with administrator password
+              {(node.path === '__hidden__' || isHiddenSpaceUnlocked) && <button className="hidden-space-unlock-btn" type="button" onClick={() => onRequestHiddenSpaceAccess?.(node)}>
+                {isHiddenSpaceUnlocked ? 'Lock Hidden Space' : 'Unlock Hidden Space with administrator password'}
               </button>}
-              <button className="hidden-space-settings-btn" type="button" onClick={() => onOpenFullDiskAccessSettings?.()}>
+              {!isHiddenSpaceUnlocked && <button className="hidden-space-settings-btn" type="button" onClick={() => onOpenFullDiskAccessSettings?.()}>
                 Verify “Full Disk Access” in Settings
-              </button>
+              </button>}
             </div>
           )}
 

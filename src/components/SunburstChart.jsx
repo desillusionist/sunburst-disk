@@ -257,7 +257,7 @@ export default function SunburstChart({
       ctx.closePath();
       const isOtherProtectedSpace = node?.name === 'Other protected space' && node?.hiddenSpaceAdminUnlocked;
       ctx.fillStyle = isOtherProtectedSpace
-        ? '#ff2a40'
+        ? '#ff7b8a'
         : theme === 'matrix'
           ? '#39ff66'
           : isCollected

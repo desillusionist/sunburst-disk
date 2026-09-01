@@ -4,6 +4,7 @@ import SunburstChart from './components/SunburstChart';
 import DetailsSidebar from './components/DetailsSidebar';
 import DebugDownbar from './components/DebugDownbar';
 import { recordPerfEvent, recordPerfInstant } from './debug/perfTelemetry';
+import shortcutGuideText from './Sunburst-Disk-Ask-Siri-Shortcut-Guide.txt?raw';
 
 // macOS Finder uses decimal gigabytes (1000^3) for disk and application display:
 function formatBytes(bytes) {
@@ -29,7 +30,7 @@ const COLOR_MAP = {
 };
 const RING_COLORS = ['#eab308','#22c55e','#06b6d4','#3b82f6','#8b5cf6','#ec4899','#f97316','#14b8a6','#6366f1'];
 function getNodeColor(node, idx, matrixTheme = false) {
-  if (node?.name === 'Other protected space' && node?.hiddenSpaceAdminUnlocked) return 'rgba(255, 42, 64, 0.9)';
+  if (node?.name === 'Other protected space' && node?.hiddenSpaceAdminUnlocked) return 'rgba(255, 123, 138, 0.9)';
   if (matrixTheme) return '#39ff66';
   if (node?.name === 'smaller objects...') return COLOR_MAP['smaller objects...'];
   if (node?.name === 'hidden space...' || node?.type === 'special') return COLOR_MAP['hidden space...'];
@@ -767,7 +768,7 @@ function buildSmartCleanTelemetry(candidates, riskFilter = 'all', categoryFilter
   };
 }
 
-const APP_VERSION = '0.2.3';
+const APP_VERSION = '0.2.4';
 const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 
 const DEFAULT_DRIVES = [
@@ -861,7 +862,6 @@ export default function App() {
       return Boolean(previousVersion) && previousVersion !== APP_VERSION;
     } catch { return false; }
   });
-  const [permissionStatus, setPermissionStatus] = useState({ fullDiskAccess: 'unknown', notifications: 'optional' });
   const [askSiriSetupStatus, setAskSiriSetupStatus] = useState(null);
 
   const contextOpenWithRequestRef = useRef(0);
@@ -1460,17 +1460,7 @@ export default function App() {
     try { window.localStorage.setItem(ONBOARDING_STORAGE_KEY, APP_VERSION); } catch {}
   };
 
-  const refreshPermissionStatus = useCallback(async () => {
-    if (!window.electronAPI?.getPermissionStatus) return;
-    try {
-      const status = await window.electronAPI.getPermissionStatus();
-      setPermissionStatus(previous => ({ ...previous, ...status }));
-    } catch {}
-  }, []);
 
-  useEffect(() => {
-    if (onboardingOpen) void refreshPermissionStatus();
-  }, [onboardingOpen, refreshPermissionStatus]);
 
   const handleSetupAskSiri = useCallback(async () => {
     try {
@@ -1483,6 +1473,16 @@ export default function App() {
     }
   }, []);
 
+  const handleSaveShortcutGuide = useCallback(async () => {
+    try {
+      const result = await window.electronAPI?.saveTextFile?.('Sunburst-Disk-Ask-Siri-Shortcut-Guide.txt', shortcutGuideText);
+      if (result?.ok) setAskSiriSetupStatus(`TXT guide saved to ${result.filePath || 'your selected location'}.`);
+      else if (result?.canceled) setAskSiriSetupStatus('TXT guide save canceled.');
+      else setAskSiriSetupStatus(result?.error || 'TXT guide could not be saved.');
+    } catch (error) {
+      setAskSiriSetupStatus(error?.message || 'TXT guide could not be saved.');
+    }
+  }, []);
   const fetchDrives = async () => {
     try {
       if (window.electronAPI) {
@@ -1879,6 +1879,33 @@ export default function App() {
       setHiddenSpaceAdminError(error?.message || 'Administrator authentication failed.');
     }
   }, [hiddenSpaceAdminPassword, openHiddenSpace]);
+
+  const lockHiddenSpace = useCallback(async (node) => {
+    try { await window.electronAPI?.revokeHiddenSpace?.(); } catch { /* best-effort revoke */ }
+    setHiddenSpaceAdminAuthorized(false);
+    setHiddenSpaceAdminPromptOpen(false);
+    setHiddenSpaceAdminPassword('');
+    setHiddenSpaceAdminError(null);
+    const rootSource = navStack.find(current => current.path === '__hidden__') || node;
+    const lockedRoot = rootSource ? {
+      ...rootSource,
+      path: '__hidden__',
+      name: 'hidden space...',
+      type: 'directory',
+      children: [],
+      hiddenSpaceAdminUnlocked: false,
+      hiddenSpaceUnlocked: false,
+      hiddenSpaceUnavailable: true
+    } : null;
+    setScannedTree(previous => previous && lockedRoot ? updateNodeInTree(previous, '__hidden__', lockedRoot) : previous);
+    setNavStack(previous => {
+      const hiddenIndex = previous.findIndex(current => current.path === '__hidden__');
+      if (hiddenIndex < 0) return previous;
+      return [...previous.slice(0, hiddenIndex), lockedRoot];
+    });
+    if (lockedRoot) setFocusedNode(lockedRoot);
+    setTreeSelectionPath(null);
+  }, [navStack]);
 
   const showPackageContents = useCallback(async (node) => {
     if (!isPackageContainerNode(node)) return;
@@ -3100,12 +3127,11 @@ export default function App() {
                 <div className="onboarding-section-title">Before first scan</div>
                 <div className="onboarding-permission">
                   <div>
-                    <strong>Full Disk Access <em className={`onboarding-permission-status ${permissionStatus.fullDiskAccess === 'granted' ? 'granted' : 'not-granted'}`}>{permissionStatus.fullDiskAccess === 'granted' ? 'Detected for this run' : permissionStatus.fullDiskAccess === 'not-granted' ? 'Needs verification' : 'Check in Settings'}</em></strong>
-                    <span>Needed for Hidden Space and some protected system locations. For a new ad-hoc build, quit Sunburst Disk, turn its old Full Disk Access entry Off, turn it On again for the current app, accept the macOS relaunch request, and reopen the app. The status below is only a probe for this run, not a permanent grant.</span>
+                    <strong>Full Disk Access</strong>
+                    <span>For Hidden Space only. In macOS Settings turn access Off, then On again for this installed Sunburst Disk.app. Sunburst Disk will relaunch automatically. Repeat this after installing a new ad-hoc build.</span>
                   </div>
                   <div className="onboarding-permission-actions">
                     <button type="button" className="onboarding-settings-btn" onClick={() => { void window.electronAPI?.openFullDiskAccessSettings?.(); }}>Open Settings</button>
-                    <button type="button" className="onboarding-check-btn" onClick={() => { void refreshPermissionStatus(); }}>Check again</button>
                   </div>
                 </div>
                                 <div className="onboarding-permission">
@@ -3125,27 +3151,12 @@ export default function App() {
                     {askSiriSetupStatus && <span className="onboarding-setup-status" role="status">{askSiriSetupStatus}</span>}
                   </div>
                 </div>
-                <details className="onboarding-shortcut-guide">
-                  <summary>How to create the Shortcut — beginner guide</summary>
-                  <ol>
-                    <li>Open Apple <strong>Shortcuts</strong>, choose <strong>New Shortcut</strong>, and name it exactly <code>Sunburst Disk — Ask Siri</code>.</li>
-                    <li>Open the shortcut details and allow input from other apps. Keep <strong>Text</strong> enabled.</li>
-                    <li>Add the input action first: <strong>Receive Text from Shortcut Input</strong>.</li>
-                    <li>Add one available AI action: <strong>Use Cloud Model</strong>, <strong>Ask ChatGPT</strong>, or <strong>Apple Intelligence</strong>. Tell it to use the received text, explain the object, cite useful sources, and never change or delete files.</li>
-                    <li>Make the returned value plain text. If the AI result is rich or structured, insert <strong>Get Text from Input</strong>.</li>
-                    <li>Finish with <strong>Stop and Output</strong>. Its blue content field must be the AI text, or the output of <strong>Get Text from Input</strong>.</li>
-                    <li>Remove <strong>Show Response</strong>, <strong>Show Result</strong>, <strong>Show Alert</strong>, <strong>Ask for Input</strong>, <strong>Choose from Menu</strong> and <strong>Quick Look</strong> from the normal input path. They interrupt background execution.</li>
-                  </ol>
-                  <pre>Receive Text → AI action → Get Text from Input (if needed) → Stop and Output</pre>
-                  <p>Before using the app, temporarily make the final output the plain text <code>SUNBURST_DEBUG_OUTPUT_OK</code>. If Terminal can read that marker, reconnect the AI result to <strong>Stop and Output</strong>. Then right-click an object in Sunburst Disk and choose <strong>Ask Siri…</strong>.</p>
-                </details>
-                <div className="onboarding-guide-downloads" aria-label="Download Ask Siri Shortcut guide">
-                  <span>Prefer a file?</span>
-                  <a href="./Sunburst-Disk-Ask-Siri-Shortcut-Guide.md" download>Download MD</a>
-                  <a href="./Sunburst-Disk-Ask-Siri-Shortcut-Guide.txt" download>Download TXT</a>
+                <div className="onboarding-guide-downloads" aria-label="Save Ask Siri Shortcut guide">
+                  <span>Need the full setup recipe?</span>
+                  <button type="button" className="onboarding-settings-btn" onClick={() => { void handleSaveShortcutGuide(); }}>Save TXT guide</button>
+                  {askSiriSetupStatus && <span className="onboarding-setup-status" role="status">{askSiriSetupStatus}</span>}
                 </div>
-                <div className="onboarding-note">
-The status is checked against a protected filesystem path, not just a saved preference. Replacing an ad-hoc signed app can make macOS revoke its previous TCC grant; if that happens, use the Off → On → relaunch procedure above for the exact installed Sunburst Disk.app. Permission access never unlocks deletion.</div>
+                <div className="onboarding-note">The TXT guide contains the complete setup recipe and troubleshooting marker. Permission access never unlocks deletion.</div>
               </div>
             </div>
             <div className="onboarding-footer">
@@ -3846,7 +3857,8 @@ The status is checked against a protected filesystem path, not just a saved pref
               packageContentsShown={Boolean(packageContentsShown[focusedLiveNode?.path])}
               packageContentsStatus={packageContentsStatus[focusedLiveNode?.path]}
               onOpenFullDiskAccessSettings={() => { void window.electronAPI?.openFullDiskAccessSettings?.(); }}
-              onRequestHiddenSpaceAccess={node => openHiddenSpace(node)}
+              onRequestHiddenSpaceAccess={node => hiddenSpaceAdminAuthorized ? lockHiddenSpace(node) : openHiddenSpace(node)}
+              hiddenSpaceUnlocked={hiddenSpaceAdminAuthorized}
             />
           )}
           <DebugDownbar

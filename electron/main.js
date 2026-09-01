@@ -29,9 +29,11 @@ app.setName('Sunburst Disk');
 app.setAppUserModelId('com.sunburstdisk.app');
 
 function getDockIconPath() {
-  const filename = nativeTheme.shouldUseDarkColors
-    ? 'Sunburst Disk-macOS-Dark-1024@1x.png'
-    : 'Sunburst Disk-macOS-ClearLight-1024@1x.png';
+  const isDark = nativeTheme.shouldUseDarkColors;
+  const highContrast = nativeTheme.shouldUseHighContrastColors;
+  const filename = isDark
+    ? (highContrast ? 'Sunburst Disk-macOS-TintedDark-1024@1x.png' : 'Sunburst Disk-macOS-Dark-1024@1x.png')
+    : (highContrast ? 'Sunburst Disk-macOS-TintedLight-1024@1x.png' : 'Sunburst Disk-macOS-ClearLight-1024@1x.png');
   return path.join(__dirname, '../assets/iconset', filename);
 }
 
@@ -494,6 +496,19 @@ ipcMain.handle('open-system-settings', async (_event, { section = '' } = {}) => 
   if (!url) return { ok: false, error: 'Unknown System Settings section' };
   await shell.openExternal(url);
   return { ok: true, section };
+});
+
+ipcMain.handle('save-text-file', async (_event, { defaultName = 'Sunburst-Disk-Ask-Siri-Shortcut-Guide.txt', content = '' } = {}) => {
+  const safeName = path.basename(String(defaultName || 'Sunburst-Disk-Ask-Siri-Shortcut-Guide.txt')).replace(/[^a-zA-Z0-9._ -]/g, '_');
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save Shortcut guide',
+    defaultPath: path.join(app.getPath('downloads'), safeName),
+    filters: [{ name: 'Text document', extensions: ['txt'] }],
+    properties: ['createDirectory', 'showOverwriteConfirmation']
+  });
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+  await fs.promises.writeFile(result.filePath, String(content), 'utf8');
+  return { ok: true, filePath: result.filePath };
 });
 
 ipcMain.handle('scan-hidden-space',
