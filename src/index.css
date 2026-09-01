@@ -100,6 +100,27 @@ body {
   color: #9aa0ac;
   pointer-events: none;
 }
+.home-info-btn {
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #3a414d;
+  border-radius: 50%;
+  background: #2b3038;
+  color: #c2c7d0;
+  font: 600 12px Georgia, serif;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: background .15s, border-color .15s, color .15s, transform .15s;
+}
+.home-info-btn:hover { background: #3a414d; border-color: #687386; color: #fff; }
+.home-info-btn:active { transform: scale(.96); }
+.theme-matrix .home-info-btn { border-color: var(--matrix-line); background: var(--matrix-panel); color: var(--matrix-text); text-shadow: 0 0 5px rgba(57,255,102,.55); }
+.theme-matrix .home-info-btn:hover { border-color: var(--matrix-line-bright); background: rgba(57,255,102,.12); color: #d3ffd8; }
 .mac-toolbar { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; }
 .nav-history-controls { display: flex; align-items: center; gap: 2px; -webkit-app-region: no-drag; }
 .nav-icon-btn {
@@ -234,6 +255,10 @@ body {
   font-family: SFMono-Regular, Menlo, monospace;
 }
 .drives-bottom-bar { display: flex; justify-content: space-between; align-items: center; margin-top: 22px; padding-top: 18px; border-top: 1px solid rgba(255,255,255,.06); }
+.drives-bottom-actions { display: flex; align-items: center; gap: 7px; }
+.drives-bottom-actions .mac-action-btn { min-height: 23px; padding: 4px 9px; border-radius: 5px; font-size: 10px; }
+.theme-matrix .drives-bottom-actions .mac-action-btn { border-color: var(--matrix-line); background: var(--matrix-panel); color: var(--matrix-text); }
+.theme-matrix .drives-bottom-actions .mac-action-btn:hover { border-color: var(--matrix-line-bright); background: rgba(57,255,102,.12); color: #d3ffd8; }
 .drive-scan-control {
   position: relative;
   display: flex;
@@ -1989,7 +2014,8 @@ body {
 .onboarding-permission strong, .onboarding-permission span { display: block; }
 .onboarding-permission strong { color: #e7ebf0; font-size: 12px; }
 .onboarding-permission span { margin-top: 4px; color: #929cab; font-size: 11px; line-height: 1.4; }
-.onboarding-settings-btn, .onboarding-continue { border: 1px solid #54749e; border-radius: 5px; background: #31445e; color: #dbeafe; padding: 6px 10px; font: 600 11px inherit; white-space: nowrap; cursor: pointer; }
+.onboarding-settings-btn, .onboarding-continue { border: 1px solid #54749e; border-radius: 5px; background: #31445e; color: #dbeafe; padding: 4px 8px; min-height: 22px; font: 600 10px inherit; white-space: nowrap; cursor: pointer; transition: background .15s, border-color .15s, color .15s, transform .15s; }
+.onboarding-settings-btn:active, .onboarding-continue:active { transform: scale(.97); }
 .onboarding-settings-btn:hover, .onboarding-continue:hover { background: #3f5c7f; color: #fff; }
 .onboarding-note { margin-top: 10px; color: #7e8795; font-size: 10px; line-height: 1.45; }
 .onboarding-footer { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 20px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,.09); color: #7e8795; font-size: 10px; }
@@ -2000,6 +2026,7 @@ body {
 .theme-matrix .onboarding-permission strong, .theme-matrix .onboarding-modal h1 { color: #b7ffc0; }
 .theme-matrix .onboarding-settings-btn, .theme-matrix .onboarding-continue { border-color: #39ff66; background: rgba(57,255,102,.08); color: #8dff9e; }
 .theme-matrix .onboarding-settings-btn:hover, .theme-matrix .onboarding-continue:hover { background: rgba(57,255,102,.18); color: #d3ffd8; }
+.theme-matrix .onboarding-settings-btn, .theme-matrix .onboarding-continue { box-shadow: 0 0 0 1px rgba(57,255,102,.06), inset 0 0 8px rgba(57,255,102,.04); }
 @media (max-width: 760px) { .onboarding-columns { grid-template-columns: 1fr; } .onboarding-footer { align-items: flex-start; flex-direction: column; } }
 
 /* Keep the active-filter signal last so the open-panel state cannot override it. */

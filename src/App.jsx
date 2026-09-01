@@ -71,6 +71,20 @@ function recordCapacitySnapshot(phase, snapshot, renderer = {}, scan = {}) {
   });
 }
 
+function syncDriveCapacityFromSnapshot(drive, snapshot) {
+  if (!drive || !snapshot?.df) return drive;
+  const total = Number(snapshot.df.totalBytes || drive.total || 0);
+  const used = Number(snapshot.df.usedBytes || 0);
+  const free = Number(snapshot.df.availableBytes || 0);
+  return {
+    ...drive,
+    total: total || drive.total,
+    used: used || drive.used,
+    free: free || drive.free,
+    usePercent: total > 0 ? `${Math.round((used / total) * 100)}%` : drive.usePercent
+  };
+}
+
 function quoteTerminalPath(value) {
   const text = String(value || '');
   return `'${text.replaceAll("'", "'\\''")}'`;
@@ -1521,13 +1535,16 @@ export default function App() {
           const snapshotPath = startupDrive?.scanPath || startupDrive?.mount;
           if (snapshotPath && window.electronAPI.getCapacitySnapshot) {
             void window.electronAPI.getCapacitySnapshot(snapshotPath).then(snapshot => {
+              const syncedDrive = syncDriveCapacityFromSnapshot(startupDrive, snapshot);
+              setDrives(current => current.map(item => getDriveKey(item) === getDriveKey(startupDrive) ? syncedDrive : item));
+              setCurrentDrive(current => current && getDriveKey(current) === getDriveKey(startupDrive) ? syncedDrive : current);
               recordCapacitySnapshot('home-load', snapshot, {
-                currentDriveFreeBytes: startupDrive.free,
-                currentDriveUsedBytes: startupDrive.used,
-                currentDriveTotalBytes: startupDrive.total,
-                displayedFreeBytes: startupDrive.free,
-                displayedUsedBytes: startupDrive.used,
-                displayedTotalBytes: startupDrive.total
+                currentDriveFreeBytes: syncedDrive.free,
+                currentDriveUsedBytes: syncedDrive.used,
+                currentDriveTotalBytes: syncedDrive.total,
+                displayedFreeBytes: syncedDrive.free,
+                displayedUsedBytes: syncedDrive.used,
+                displayedTotalBytes: syncedDrive.total
               });
             }).catch(() => {});
           }
@@ -1546,14 +1563,15 @@ export default function App() {
     const targetPath = drive?.scanPath || drive?.mount;
     if (!targetPath || !window.electronAPI?.getCapacitySnapshot) return;
     void window.electronAPI.getCapacitySnapshot(targetPath).then(snapshot => {
+      const syncedDrive = syncDriveCapacityFromSnapshot(drive, snapshot);
       recordCapacitySnapshot('capture-start', snapshot, {
-        currentDriveFreeBytes: drive.free,
-        currentDriveUsedBytes: drive.used,
-        currentDriveTotalBytes: drive.total,
+        currentDriveFreeBytes: syncedDrive.free,
+        currentDriveUsedBytes: syncedDrive.used,
+        currentDriveTotalBytes: syncedDrive.total,
         currentTotalSizeBytes: scannedTree?.size,
-        displayedFreeBytes: drive.free,
-        displayedUsedBytes: scannedTree?.size || drive.used,
-        displayedTotalBytes: drive.total
+        displayedFreeBytes: syncedDrive.free,
+        displayedUsedBytes: syncedDrive.used,
+        displayedTotalBytes: syncedDrive.total
       }, {
         rootPath: targetPath,
         indexedTreeBytes: scannedTree?.size,
@@ -1590,13 +1608,16 @@ export default function App() {
     const scanPath = drive.scanPath || drive.mount;
     if (window.electronAPI?.getCapacitySnapshot) {
       void window.electronAPI.getCapacitySnapshot(scanPath).then(snapshot => {
+        const syncedDrive = syncDriveCapacityFromSnapshot(drive, snapshot);
+        setDrives(current => current.map(item => getDriveKey(item) === getDriveKey(drive) ? syncedDrive : item));
+        setCurrentDrive(current => current && getDriveKey(current) === getDriveKey(drive) ? syncedDrive : current);
         recordCapacitySnapshot('scan-start', snapshot, {
-          currentDriveFreeBytes: drive.free,
-          currentDriveUsedBytes: drive.used,
-          currentDriveTotalBytes: drive.total,
-          displayedFreeBytes: drive.free,
-          displayedUsedBytes: drive.used,
-          displayedTotalBytes: drive.total
+          currentDriveFreeBytes: syncedDrive.free,
+          currentDriveUsedBytes: syncedDrive.used,
+          currentDriveTotalBytes: syncedDrive.total,
+          displayedFreeBytes: syncedDrive.free,
+          displayedUsedBytes: syncedDrive.used,
+          displayedTotalBytes: syncedDrive.total
         }, { rootPath: scanPath, source: 'fresh' });
       }).catch(() => {});
     }
@@ -1618,16 +1639,19 @@ export default function App() {
         if (data?.tree) {
           data.tree.name = drive.name;
           if (window.electronAPI?.getCapacitySnapshot) {
-            void window.electronAPI.getCapacitySnapshot(scanPath).then(snapshot => {
-              recordCapacitySnapshot('scan-complete', snapshot, {
-                currentDriveFreeBytes: drive.free,
-                currentDriveUsedBytes: drive.used,
-                currentDriveTotalBytes: drive.total,
-                currentTotalSizeBytes: data.tree.size,
-                displayedFreeBytes: drive.free,
-                displayedUsedBytes: data.tree.size,
-                displayedTotalBytes: drive.total
-              }, {
+      void window.electronAPI.getCapacitySnapshot(scanPath).then(snapshot => {
+        const syncedDrive = syncDriveCapacityFromSnapshot(drive, snapshot);
+        setDrives(current => current.map(item => getDriveKey(item) === getDriveKey(drive) ? syncedDrive : item));
+        setCurrentDrive(current => current && getDriveKey(current) === getDriveKey(drive) ? syncedDrive : current);
+        recordCapacitySnapshot('scan-complete', snapshot, {
+          currentDriveFreeBytes: syncedDrive.free,
+          currentDriveUsedBytes: syncedDrive.used,
+          currentDriveTotalBytes: syncedDrive.total,
+          currentTotalSizeBytes: data.tree.size,
+          displayedFreeBytes: syncedDrive.free,
+          displayedUsedBytes: syncedDrive.used,
+          displayedTotalBytes: syncedDrive.total
+        }, {
                 rootPath: scanPath,
                 indexedTreeBytes: data.tree.size,
                 indexedObjectCount: data.tree.itemCount,
@@ -3197,7 +3221,21 @@ export default function App() {
             </button>
           </div>
         ) : (
-          <div className="mac-title">Sunburst Disk</div>
+          <>
+            <div className="mac-title">Sunburst Disk</div>
+            <button
+              type="button"
+              className="home-info-btn"
+              title="Open Welcome"
+              aria-label="Open Welcome"
+              onClick={() => {
+                setAskSiriSetupStatus(null);
+                setOnboardingOpen(true);
+              }}
+            >
+              i
+            </button>
+          </>
         )}
       </header>
 
