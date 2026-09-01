@@ -811,7 +811,7 @@ function buildSmartCleanTelemetry(candidates, riskFilter = 'all', categoryFilter
   };
 }
 
-const APP_VERSION = '0.2.5';
+const APP_VERSION = '0.2.6';
 const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 
 const DEFAULT_DRIVES = [
@@ -3240,8 +3240,17 @@ export default function App() {
       </header>
 
       {onboardingOpen && (
-        <div className="onboarding-backdrop" role="presentation">
-          <section className="onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+        <div className="onboarding-backdrop" role="presentation" onClick={completeOnboarding}>
+          <section className="onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="onboarding-title" onClick={event => event.stopPropagation()}>
+            <button
+              type="button"
+              className="onboarding-close"
+              title="Close Welcome"
+              aria-label="Close Welcome"
+              onClick={completeOnboarding}
+            >
+              <X size={14} strokeWidth={2} aria-hidden="true" />
+            </button>
             <div className="onboarding-kicker">SUNBURST DISK · {onboardingIsUpdate ? `UPDATED ${APP_VERSION}` : 'WELCOME'}</div>
             <h1 id="onboarding-title">{onboardingIsUpdate ? `What’s new in Sunburst Disk ${APP_VERSION}` : 'Understand your storage at a glance'}</h1>
             <p className="onboarding-intro">Sunburst Disk lets you understand storage before you act: scan a disk or one folder, move through the same hierarchy in the sunburst and content tree, inspect real file details, follow live Finder changes and send reviewed candidates to Collector. Nothing is removed automatically.</p>
