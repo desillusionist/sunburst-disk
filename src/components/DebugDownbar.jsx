@@ -19,7 +19,7 @@ function downloadSnapshot(snapshot) {
   URL.revokeObjectURL(url);
 }
 
-export default function DebugDownbar({ terminalOpen = false, onToggleTerminal }) {
+export default function DebugDownbar({ terminalOpen = false, onToggleTerminal, onLoggingEnabled }) {
   const [snapshot, setSnapshot] = useState(getPerformanceSnapshot);
   const [copied, setCopied] = useState(false);
 
@@ -54,6 +54,7 @@ export default function DebugDownbar({ terminalOpen = false, onToggleTerminal })
       recordPerfInstant('keyboard.arrow-session-start', {
         instruction: 'Run each requested Arrow-key scenario once, then export this JSON log.'
       });
+      onLoggingEnabled?.();
     }
   };
 

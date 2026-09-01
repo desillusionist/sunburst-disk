@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getDrives:             ()                     => ipcRenderer.invoke('get-drives'),
+  getCapacitySnapshot:   (targetPath)          => ipcRenderer.invoke('get-capacity-snapshot', { targetPath }),
   setWindowLayout:       (layout, driveCount = 0) => ipcRenderer.invoke('set-window-layout', { layout, driveCount }),
   chooseFolder:          ()                     => ipcRenderer.invoke('choose-folder'),
   smartCleanPreview:     (scope, paths = {})    => ipcRenderer.invoke('smart-clean-preview', { scope, ...paths }),

@@ -1558,6 +1558,79 @@ function getDiskutilInfo(mount) {
   });
 }
 
+function parseDiskutilCapacity(info, label) {
+  const match = String(info || '').match(new RegExp(String.raw`^\s*${label}:.*?\(([0-9]+) Bytes\)`, 'mi'));
+  return match ? Number(match[1]) : null;
+}
+
+function parseDfCapacity(stdout) {
+  const line = String(stdout || '').split(/\r?\n/).slice(1).find(Boolean) || '';
+  const match = line.match(/^(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+%)\s+(.+)$/);
+  if (!match) return null;
+  return {
+    filesystem: match[1],
+    blocks1024: Number(match[2]),
+    used1024: Number(match[3]),
+    available1024: Number(match[4]),
+    capacity: match[5],
+    mountedOn: match[6]
+  };
+}
+
+async function getCapacitySnapshot(targetPath) {
+  const resolvedPath = path.resolve(String(targetPath || '/'));
+  const [df, diskutilInfo] = await Promise.all([
+    new Promise(resolve => {
+      execFile('/bin/df', ['-kP', resolvedPath], { env: UTF8_COMMAND_ENV, timeout: 10000, maxBuffer: 128 * 1024 }, (_error, stdout) => resolve(parseDfCapacity(stdout)));
+    }),
+    getDiskutilInfo(resolvedPath)
+  ]);
+  let statfs = null;
+  try {
+    const stats = fs.statfsSync(resolvedPath);
+    statfs = {
+      blocks: Number(stats.blocks),
+      bfree: Number(stats.bfree),
+      bavail: Number(stats.bavail),
+      blockSize: Number(stats.bsize),
+      usedBytes: Math.max(0, (Number(stats.blocks) - Number(stats.bfree)) * Number(stats.bsize)),
+      availableBytes: Math.max(0, Number(stats.bavail) * Number(stats.bsize))
+    };
+  } catch {}
+  return {
+    source: 'fresh',
+    capturedPath: resolvedPath,
+    drive: {
+      filesystem: df?.filesystem || null,
+      mount: df?.mountedOn || resolvedPath,
+      scanPath: resolvedPath,
+      isStartup: resolvedPath === '/' || resolvedPath === '/System/Volumes/Data'
+    },
+    df: df ? {
+      ...df,
+      usedBytes: df.used1024 * 1024,
+      availableBytes: df.available1024 * 1024,
+      totalBytes: df.blocks1024 * 1024
+    } : null,
+    statfs,
+    diskutil: {
+      deviceIdentifier: String(diskutilInfo || '').match(/^\s*Device Identifier:\s*(.+)$/mi)?.[1]?.trim() || null,
+      volumeName: String(diskutilInfo || '').match(/^\s*Volume Name:\s*(.+)$/mi)?.[1]?.trim() || null,
+      volumeUsedBytes: parseDiskutilCapacity(diskutilInfo, 'Volume Used Space'),
+      volumeFreeBytes: parseDiskutilCapacity(diskutilInfo, 'Volume Free Space'),
+      containerTotalBytes: parseDiskutilCapacity(diskutilInfo, 'Container Total Space'),
+      containerFreeBytes: parseDiskutilCapacity(diskutilInfo, 'Container Free Space'),
+      diskSizeBytes: parseDiskutilCapacity(diskutilInfo, 'Disk Size')
+    },
+    symlinks: {
+      policy: 'do-not-follow-external-targets',
+      externalTargetsFollowed: false,
+      entriesSeen: null,
+      entriesExcluded: null
+    }
+  };
+}
+
 function isEjectableMountInfo(info) {
   return /Device Location:\s+External/i.test(info)
     || /Removable Media:\s+(?:Removable|Ejectable)/i.test(info);
@@ -1582,6 +1655,15 @@ ipcMain.handle('eject-drive', async (_event, { mount = '' } = {}) => {
       });
     });
   });
+});
+
+ipcMain.handle('get-capacity-snapshot', async (_event, { targetPath = '/' } = {}) => {
+  if (!isFilesystemPath(targetPath)) return { error: 'Invalid filesystem path' };
+  try {
+    return await getCapacitySnapshot(targetPath);
+  } catch (error) {
+    return { error: error?.message || 'Capacity snapshot failed' };
+  }
 });
 
 ipcMain.handle('get-drives', async () => {

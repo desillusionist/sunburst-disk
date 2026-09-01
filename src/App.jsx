@@ -42,6 +42,35 @@ function getDriveKey(drive) {
   return drive?.filesystem || drive?.mount || drive?.name;
 }
 
+function recordCapacitySnapshot(phase, snapshot, renderer = {}, scan = {}) {
+  if (!snapshot || snapshot.error) return;
+  recordPerfInstant('capacity.snapshot', {
+    phase,
+    capturedPath: snapshot.capturedPath || null,
+    drive: snapshot.drive || null,
+    df: snapshot.df || null,
+    statfs: snapshot.statfs || null,
+    diskutil: snapshot.diskutil || null,
+    symlinks: snapshot.symlinks || null,
+    scan: {
+      rootPath: scan.rootPath || null,
+      indexedTreeBytes: Number(scan.indexedTreeBytes || 0),
+      indexedObjectCount: Number(scan.indexedObjectCount || 0),
+      hiddenSpaceEstimateBytes: Number(scan.hiddenSpaceEstimateBytes || 0),
+      source: scan.source || 'fresh'
+    },
+    renderer: {
+      currentDriveFreeBytes: Number(renderer.currentDriveFreeBytes || 0),
+      currentDriveUsedBytes: Number(renderer.currentDriveUsedBytes || 0),
+      currentDriveTotalBytes: Number(renderer.currentDriveTotalBytes || 0),
+      currentTotalSizeBytes: Number(renderer.currentTotalSizeBytes || 0),
+      displayedFreeBytes: Number(renderer.displayedFreeBytes || 0),
+      displayedUsedBytes: Number(renderer.displayedUsedBytes || 0),
+      displayedTotalBytes: Number(renderer.displayedTotalBytes || 0)
+    }
+  });
+}
+
 function quoteTerminalPath(value) {
   const text = String(value || '');
   return `'${text.replaceAll("'", "'\\''")}'`;
@@ -768,7 +797,7 @@ function buildSmartCleanTelemetry(candidates, riskFilter = 'all', categoryFilter
   };
 }
 
-const APP_VERSION = '0.2.4';
+const APP_VERSION = '0.2.5';
 const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 
 const DEFAULT_DRIVES = [
@@ -1488,6 +1517,20 @@ export default function App() {
       if (window.electronAPI) {
         const data = await window.electronAPI.getDrives();
         if (data?.drives?.length > 0) {
+          const startupDrive = data.drives.find(item => item.isStartup) || data.drives[0];
+          const snapshotPath = startupDrive?.scanPath || startupDrive?.mount;
+          if (snapshotPath && window.electronAPI.getCapacitySnapshot) {
+            void window.electronAPI.getCapacitySnapshot(snapshotPath).then(snapshot => {
+              recordCapacitySnapshot('home-load', snapshot, {
+                currentDriveFreeBytes: startupDrive.free,
+                currentDriveUsedBytes: startupDrive.used,
+                currentDriveTotalBytes: startupDrive.total,
+                displayedFreeBytes: startupDrive.free,
+                displayedUsedBytes: startupDrive.used,
+                displayedTotalBytes: startupDrive.total
+              });
+            }).catch(() => {});
+          }
           setDrives(current => {
             const nativeKeys = new Set(data.drives.map(item => getDriveKey(item)));
             const savedFolders = current.filter(item => item.isCustomFolder && !nativeKeys.has(getDriveKey(item)));
@@ -1497,6 +1540,28 @@ export default function App() {
       }
     } catch (e) { console.error('Drive fetch error:', e); }
   };
+
+  const handleCapacityCaptureStart = useCallback(() => {
+    const drive = currentDrive || drives.find(item => item.isStartup) || drives[0];
+    const targetPath = drive?.scanPath || drive?.mount;
+    if (!targetPath || !window.electronAPI?.getCapacitySnapshot) return;
+    void window.electronAPI.getCapacitySnapshot(targetPath).then(snapshot => {
+      recordCapacitySnapshot('capture-start', snapshot, {
+        currentDriveFreeBytes: drive.free,
+        currentDriveUsedBytes: drive.used,
+        currentDriveTotalBytes: drive.total,
+        currentTotalSizeBytes: scannedTree?.size,
+        displayedFreeBytes: drive.free,
+        displayedUsedBytes: scannedTree?.size || drive.used,
+        displayedTotalBytes: drive.total
+      }, {
+        rootPath: targetPath,
+        indexedTreeBytes: scannedTree?.size,
+        indexedObjectCount: scannedTree?.itemCount,
+        source: scannedTree ? 'cache-or-current' : 'fresh'
+      });
+    }).catch(() => {});
+  }, [currentDrive, drives, scannedTree]);
 
   const handleScanDrive = async (drive) => {
     const requestId = `scan-${Date.now()}-${++scanRequestSequenceRef.current}`;
@@ -1523,6 +1588,18 @@ export default function App() {
     setViewState('scan');
     setScanProgress({ percent: -1, currentDir: 'Preparing…', itemsScanned: 0 });
     const scanPath = drive.scanPath || drive.mount;
+    if (window.electronAPI?.getCapacitySnapshot) {
+      void window.electronAPI.getCapacitySnapshot(scanPath).then(snapshot => {
+        recordCapacitySnapshot('scan-start', snapshot, {
+          currentDriveFreeBytes: drive.free,
+          currentDriveUsedBytes: drive.used,
+          currentDriveTotalBytes: drive.total,
+          displayedFreeBytes: drive.free,
+          displayedUsedBytes: drive.used,
+          displayedTotalBytes: drive.total
+        }, { rootPath: scanPath, source: 'fresh' });
+      }).catch(() => {});
+    }
 
     try {
       if (window.electronAPI) {
@@ -1540,6 +1617,25 @@ export default function App() {
         }
         if (data?.tree) {
           data.tree.name = drive.name;
+          if (window.electronAPI?.getCapacitySnapshot) {
+            void window.electronAPI.getCapacitySnapshot(scanPath).then(snapshot => {
+              recordCapacitySnapshot('scan-complete', snapshot, {
+                currentDriveFreeBytes: drive.free,
+                currentDriveUsedBytes: drive.used,
+                currentDriveTotalBytes: drive.total,
+                currentTotalSizeBytes: data.tree.size,
+                displayedFreeBytes: drive.free,
+                displayedUsedBytes: data.tree.size,
+                displayedTotalBytes: drive.total
+              }, {
+                rootPath: scanPath,
+                indexedTreeBytes: data.tree.size,
+                indexedObjectCount: data.tree.itemCount,
+                source: 'fresh'
+              });
+            }).catch(() => {});
+          }
+
           if (drive.isCustomFolder) {
             setScanCache(current => ({ ...current, [getDriveKey(drive)]: { tree: data.tree, scannedAt: Date.now() } }));
             setDrives(current => {
@@ -3864,6 +3960,7 @@ export default function App() {
           <DebugDownbar
             terminalOpen={terminalOpen}
             onToggleTerminal={() => setTerminalOpen(open => !open)}
+            onLoggingEnabled={handleCapacityCaptureStart}
           />
         </div>
       )}
