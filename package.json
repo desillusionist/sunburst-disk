@@ -57,20 +57,10 @@
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "dmg": {
-      "contents": [
-        {
-          "x": 130,
-          "y": 220,
-          "type": "file",
-          "path": "installer/README.txt",
-          "name": "README.txt"
-        },
-        {
-          "x": 410,
-          "y": 220,
-          "type": "link",
-          "path": "/Applications"
-        }
+            "contents": [
+        { "x": 130, "y": 220 },
+        { "x": 270, "y": 400, "type": "file", "path": "installer/README.txt", "name": "README.txt" },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
       ]
     }
   }
