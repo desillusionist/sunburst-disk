@@ -964,6 +964,10 @@ async function chooseOtherApplication(itemPath) {
 let quickLookChild = null;
 let quickLookItemPath = null;
 
+function sendQuickLookEvent(payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('quick-look-key', payload);
+}
+
 function closeQuickLook() {
   if (quickLookChild && !quickLookChild.killed) quickLookChild.kill('SIGTERM');
   quickLookChild = null;
@@ -983,9 +987,25 @@ function quickLookPath(itemPath) {
     quickLookChild = null;
     quickLookItemPath = itemPath;
 
-    const child = spawn(helperPath, [itemPath], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(helperPath, [itemPath], { stdio: ['ignore', 'pipe', 'pipe'] });
     quickLookChild = child;
+    const childItemPath = itemPath;
+    let stdoutBuffer = '';
     let stderr = '';
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      stdoutBuffer += chunk;
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const payload = JSON.parse(line);
+          if (payload?.key) sendQuickLookEvent(payload);
+        } catch {}
+      }
+    });
     let settled = false;
     const settle = result => {
       if (settled) return;
@@ -1009,9 +1029,11 @@ function quickLookPath(itemPath) {
       setTimeout(() => settle({ ok: true, persistent: true }), 350);
     });
     child.once('close', (code, signal) => {
-      if (quickLookChild === child) {
+      const wasCurrent = quickLookChild === child && quickLookItemPath === childItemPath;
+      if (wasCurrent) {
         quickLookChild = null;
         quickLookItemPath = null;
+        sendQuickLookEvent({ key: 'closed', path: childItemPath });
       }
       if (!settled) {
         settle(code === 0

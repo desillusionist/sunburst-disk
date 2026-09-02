@@ -309,6 +309,51 @@ function replaceNodeWithDelta(tree, targetPath, updatedNode) {
     ? { ...tree, size: Math.max(0, Number(tree.size || 0) + sizeDelta), children }
     : tree;
 }
+
+function removePathsFromTree(tree, paths) {
+  if (!tree || !Array.isArray(paths) || paths.length === 0) return { tree, changed: false, removedCount: 0, removedBytes: 0 };
+  const targets = new Set(paths.filter(path => typeof path === 'string' && path && !path.startsWith('__')));
+  if (!targets.size) return { tree, changed: false, removedCount: 0, removedBytes: 0 };
+
+  const visit = node => {
+    if (!node?.children?.length) return { node, changed: false, removedCount: 0, removedBytes: 0 };
+    let changed = false;
+    let removedCount = 0;
+    let removedBytes = 0;
+    const children = [];
+    for (const child of node.children) {
+      if (targets.has(child.path)) {
+        changed = true;
+        removedCount += Math.max(1, Number(child.itemCount) || 0);
+        removedBytes += Math.max(0, Number(child.size) || 0);
+        continue;
+      }
+      const result = visit(child);
+      if (result.changed) {
+        changed = true;
+        removedCount += result.removedCount;
+        removedBytes += result.removedBytes;
+      }
+      children.push(result.node);
+    }
+    return changed
+      ? {
+        node: {
+          ...node,
+          size: Math.max(0, Number(node.size || 0) - removedBytes),
+          itemCount: Math.max(0, (Number(node.itemCount) || 0) - removedCount),
+          children
+        },
+        changed: true,
+        removedCount,
+        removedBytes
+      }
+      : { node, changed: false, removedCount: 0, removedBytes: 0 };
+  };
+
+  const result = visit(tree);
+  return { tree: result.node, changed: result.changed, removedCount: result.removedCount, removedBytes: result.removedBytes };
+}
 const TYPE_ORDER = { directory: 0, file: 1, special: 2 };
 const TYPE_FILTER_EXTENSIONS = Object.freeze({
   audio: new Set(['.aac', '.aiff', '.alac', '.caf', '.flac', '.m4a', '.m4b', '.mp3', '.oga', '.ogg', '.opus', '.wav', '.wma']),
@@ -840,6 +885,7 @@ export default function App() {
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [hoveredNode, setHoveredNode]       = useState(null);
   const [highlightedPath, setHighlightedPath] = useState(null);
+  const [keyboardNavigationActive, setKeyboardNavigationActive] = useState(false);
   const [treeSelectionPath, setTreeSelectionPath] = useState(null);
   const [loading, setLoading]               = useState(false);
     const [scanError, setScanError]       = useState(null);
@@ -909,6 +955,9 @@ export default function App() {
 
   const contextOpenWithRequestRef = useRef(0);
   const quickLookPathRef = useRef(null);
+  const quickLookNodeRef = useRef(null);
+  const quickLookKeyboardPriorityRef = useRef(false);
+  const keyboardNavigationRef = useRef(false);
   const quickLookFollowRequestRef = useRef(0);
   const terminalDragRef = useRef(null);
   const terminalDrawerRef = useRef(null);
@@ -920,7 +969,7 @@ export default function App() {
   const folderWatchQueuedRef = useRef(null);
   const folderWatchGenerationRef = useRef(0);
   const folderWatchUpdatingTimerRef = useRef(null);
-  const arrowStateRef = useRef({ currentViewPath: null, visibleChildren: [], treeSelectionPath: null, pointerNode: null, focusedNode: null, hoveredNode: null, highlightedPath: null });
+  const arrowStateRef = useRef({ currentViewPath: null, visibleChildren: [], treeSelectionPath: null, pointerNode: null, focusedNode: null, hoveredNode: null, highlightedPath: null, keyboardNavigationActive: false });
   const arrowEventSequenceRef = useRef(0);
   const breadcrumbRef = useRef(null);
   const breadcrumbMeasureRef = useRef(null);
@@ -1119,6 +1168,9 @@ export default function App() {
 
   const hoverPathRef = useRef(null);
   const handleHoverNode = useCallback((node) => {
+    keyboardNavigationRef.current = false;
+    quickLookKeyboardPriorityRef.current = false;
+    setKeyboardNavigationActive(false);
     const nextPath = node?.path || null;
     if (hoverPathRef.current === nextPath) return;
     hoverPathRef.current = nextPath;
@@ -1459,6 +1511,19 @@ export default function App() {
       setAssistantResult(payload || { ok: false, error: 'No result returned.' });
       setAssistantOpen(true);
     });
+    const removeQuickLookKey = window.electronAPI.onQuickLookKey?.(payload => {
+      const key = payload?.key;
+      if (key === 'closed') {
+        if (!payload?.path || quickLookPathRef.current === payload.path) {
+          quickLookPathRef.current = null;
+          quickLookNodeRef.current = null;
+          quickLookKeyboardPriorityRef.current = false;
+        }
+        return;
+      }
+      if (key !== ' ' && !ARROW_KEYS.has(key)) return;
+      window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+    });
     window.electronAPI.onScanComplete?.(payload => {
       setScanNotice(payload);
       window.setTimeout(() => setScanNotice(null), 5200);
@@ -1483,6 +1548,7 @@ export default function App() {
     return () => {
       removeAskSiriStart?.();
       removeAskSiriResult?.();
+      removeQuickLookKey?.();
     };
   }, [collectItem]);
   // The main process reports filesystem-walk completion before the renderer has
@@ -2429,6 +2495,28 @@ export default function App() {
     }
   }, [currentDrive, currentViewNode, packageContentsShown, refreshing, scannedTree]);
 
+  const applyOptimisticTrashRemoval = useCallback(paths => {
+    const sourceTree = folderWatchTreeRef.current || scannedTree;
+    const result = removePathsFromTree(sourceTree, paths);
+    if (!result.changed) return result;
+
+    const nextTree = result.tree;
+    folderWatchTreeRef.current = nextTree;
+    setScannedTree(nextTree);
+    setNavStack(previous => previous.map(node => resolveByPath(nextTree, node.path) || node));
+    setFocusedNode(previous => previous?.path ? resolveByPath(nextTree, previous.path) || null : previous);
+    setHoveredNode(previous => previous?.path ? resolveByPath(nextTree, previous.path) || null : previous);
+    setPointerNode(previous => previous?.path ? resolveByPath(nextTree, previous.path) || null : previous);
+    setHighlightedPath(previous => previous && resolveByPath(nextTree, previous) ? previous : null);
+    setTreeSelectionPath(previous => previous && resolveByPath(nextTree, previous) ? previous : null);
+    recordPerfInstant('collector.optimistic-removal', {
+      removedCount: result.removedCount,
+      removedBytes: result.removedBytes,
+      paths: paths.slice(0, 40)
+    });
+    return result;
+  }, [scannedTree]);
+
   // ── Countdown & Move to Trash ───────────────────────────────────────────────
   const startPurgeCountdown = () => {
     if (!collector.length || countdown !== null) return;
@@ -2472,14 +2560,17 @@ export default function App() {
         setCollectorExpanded(false);
       }
 
-      // Re-read the current folder instead of deriving its size from visible
-      // children. This keeps allocated sizes correct after moving items to Trash.
-      if (deletedPaths.size > 0) await refreshCurrentFolder();
+      // Update the cached tree immediately. The old implementation called
+      // refreshCurrentFolder here; for a startup volume that is a full
+      // scanDirectory walk over millions of entries, which caused the visible
+      // "Loading folder…" pause. FSEvents will still reconcile later where a
+      // watcher is active, while this optimistic delta keeps the UI responsive.
+      if (deletedPaths.size > 0) applyOptimisticTrashRemoval([...deletedPaths]);
 
     } catch (e) {
       alert('Error moving items to Trash: ' + e.message);
     }
-  }, [collector, refreshCurrentFolder]);
+  }, [applyOptimisticTrashRemoval, collector]);
 
   useEffect(() => {
     if (countdown === null) return;
@@ -2495,8 +2586,13 @@ export default function App() {
   }, [countdown, executePurgeAndRefresh]);
 
   // ── Context Menu ─────────────────────────────────────────────────────────────
-  const handleQuickLook = useCallback(async (item) => {
+  const handleQuickLook = useCallback(async (item, options = {}) => {
     if (!item?.path) return;
+    if (!options.keyboardNavigation) {
+      keyboardNavigationRef.current = false;
+      quickLookKeyboardPriorityRef.current = false;
+      setKeyboardNavigationActive(false);
+    }
     if (item.type === 'special' || item.path === '__hidden__') {
       await openHiddenSpace(item);
       return;
@@ -2510,14 +2606,32 @@ export default function App() {
       const closed = await window.electronAPI.quickLookClose?.();
       if (closed?.closed) {
         quickLookPathRef.current = null;
+        quickLookNodeRef.current = null;
+        quickLookKeyboardPriorityRef.current = false;
         return;
       }
     }
+    quickLookNodeRef.current = item;
     quickLookPathRef.current = item.path;
     const result = await window.electronAPI.quickLook(item.path);
-    if (result?.closed || !result?.ok) quickLookPathRef.current = null;
+    if (result?.closed || !result?.ok) {
+      quickLookPathRef.current = null;
+      quickLookNodeRef.current = null;
+    }
     if (!result?.ok) alert(result?.error || 'Quick Look could not open this file');
   }, [openHiddenSpace]);
+
+  useEffect(() => {
+    const onPointerMove = event => {
+      if (event.pointerType && event.pointerType !== 'mouse') return;
+      if (!keyboardNavigationRef.current && !quickLookKeyboardPriorityRef.current) return;
+      keyboardNavigationRef.current = false;
+      quickLookKeyboardPriorityRef.current = false;
+      setKeyboardNavigationActive(false);
+    };
+    window.addEventListener('pointermove', onPointerMove, true);
+    return () => window.removeEventListener('pointermove', onPointerMove, true);
+  }, []);
 
   useEffect(() => {
     const onKeyDown = event => {
@@ -2525,9 +2639,17 @@ export default function App() {
       const target = event.target;
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable) return;
       if (target instanceof HTMLButtonElement && !target.closest('.legend-row, .sunburst-stage, .content-tree-row')) return;
-      if (!pointerNode || pointerNode.archiveVirtual || !['file', 'directory', 'symlink'].includes(pointerNode.type)) return;
       event.preventDefault();
-      handleQuickLook(pointerNode);
+      if (quickLookPathRef.current) {
+        void window.electronAPI?.quickLookClose?.();
+        quickLookPathRef.current = null;
+        quickLookNodeRef.current = null;
+        quickLookKeyboardPriorityRef.current = false;
+        return;
+      }
+      const candidate = quickLookKeyboardPriorityRef.current ? quickLookNodeRef.current : pointerNode;
+      if (!candidate || candidate.archiveVirtual || !['file', 'directory', 'symlink'].includes(candidate.type)) return;
+      void handleQuickLook(candidate, { keyboardNavigation: quickLookKeyboardPriorityRef.current });
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -2536,6 +2658,7 @@ export default function App() {
   useEffect(() => {
     const activePath = quickLookPathRef.current;
     const candidate = pointerNode;
+    if (keyboardNavigationRef.current || quickLookKeyboardPriorityRef.current) return undefined;
     if (!activePath || !candidate?.path || candidate.path === activePath || candidate.archiveVirtual || candidate.path.startsWith('__')) return undefined;
     if (!['file', 'directory', 'symlink'].includes(candidate.type) || !window.electronAPI?.quickLook) return undefined;
     const requestId = ++quickLookFollowRequestRef.current;
@@ -2786,8 +2909,9 @@ export default function App() {
     pointerNode,
     focusedNode: focusedLiveNode,
     hoveredNode: liveHoveredNode,
-    highlightedPath
-  };
+        highlightedPath,
+    keyboardNavigationActive
+      };
   useEffect(() => {
     const getStateSnapshot = () => {
       const state = arrowStateRef.current;
@@ -2891,10 +3015,17 @@ export default function App() {
           if (nextNode) {
             selectedTarget = { path: nextNode.path, index: nextIndex };
             handledByGlobalTree = true;
+            keyboardNavigationRef.current = true;
+            quickLookKeyboardPriorityRef.current = Boolean(quickLookPathRef.current);
+            setKeyboardNavigationActive(true);
             event.preventDefault();
             setTreeSelectionPath(nextNode.path);
             setFocusedNode(nextNode);
             setHighlightedPath(nextNode.path);
+            if (quickLookPathRef.current) {
+              quickLookNodeRef.current = nextNode;
+              void handleQuickLook(nextNode, { keyboardNavigation: true });
+            }
             const row = document.querySelector(`[data-tree-path="${CSS.escape(nextNode.path)}"]`);
             row?.scrollIntoView({ block: 'nearest' });
             reason = event.repeat ? 'current-global-tree-handler-repeat' : 'current-global-tree-handler';
@@ -2959,7 +3090,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onArrowKey);
     return () => window.removeEventListener('keydown', onArrowKey);
-  }, [treeSelectionPath, focusedLiveNode, highlightedPath, viewState, loading, nodeLoading]);
+  }, [treeSelectionPath, focusedLiveNode, highlightedPath, viewState, loading, nodeLoading, handleQuickLook]);
   const visibleChildCount = visibleChildren.length;
   const visibleSizesKey = visibleChildren.slice(0, 20).map(child => Number(child.size) || 0).join(',');
   useEffect(() => {
@@ -3550,6 +3681,7 @@ export default function App() {
                   setHoveredNode={handleHoverNode}
                   onContextMenu={handleContextMenu}
                   highlightedPath={highlightedPath}
+                  keyboardNavigationActive={keyboardNavigationActive}
                   colorAssignments={chartColorAssignments}
                   theme={matrixTheme ? 'matrix' : 'classic'}
                   collectedPaths={collectedPaths}
@@ -3929,6 +4061,9 @@ export default function App() {
                       if (item.type === 'directory' || item.type === 'special' || archiveIsOpen) navigateTo(item);
                     }}
                     onMouseEnter={() => {
+                      keyboardNavigationRef.current = false;
+                      quickLookKeyboardPriorityRef.current = false;
+                      setKeyboardNavigationActive(false);
                       setTreeSelectionPath(item.path);
                       setHighlightedPath(item.path);
                       setFocusedNode(item);

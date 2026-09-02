@@ -38,6 +38,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   terminalRunSafe:        (command, cwd, adminMode = false) => ipcRenderer.invoke('terminal-run-safe', { command, cwd, adminMode }),
   quickLook:              (itemPath)             => ipcRenderer.invoke('quick-look', itemPath),
   quickLookClose:         ()                     => ipcRenderer.invoke('quick-look-close'),
+  onQuickLookKey:         (cb)                   => {
+    const listener = (_e, data) => cb(data);
+    ipcRenderer.on('quick-look-key', listener);
+    return () => ipcRenderer.removeListener('quick-look-key', listener);
+  },
   scanHiddenSpace:        (knownSize = 0)        => ipcRenderer.invoke('scan-hidden-space', { knownSize }),
   openFullDiskAccessSettings: () => ipcRenderer.invoke('open-full-disk-access-settings'),
   openSystemSettings:       (section) => ipcRenderer.invoke('open-system-settings', { section }),

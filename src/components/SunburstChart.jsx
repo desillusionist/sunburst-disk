@@ -50,6 +50,7 @@ export default function SunburstChart({
   setHoveredNode,
   onContextMenu,
   highlightedPath,
+  keyboardNavigationActive = false,
   colorAssignments = {},
   theme = 'classic',
   collectedPaths = new Set(),
@@ -349,7 +350,7 @@ export default function SunburstChart({
 
   const drawPulseOverlay = useCallback(() => {
     const canvas = pulseCanvasRef.current;
-    const activePath = hoveredPathRef.current || highlightedPath;
+    const activePath = keyboardNavigationActive ? highlightedPath : (hoveredPathRef.current || highlightedPath);
     if (!canvas || !activePath) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -388,7 +389,7 @@ export default function SunburstChart({
     ctx.globalAlpha = pulseAlpha;
     ctx.fill();
     ctx.restore();
-  }, [highlightedPath, theme]);
+  }, [highlightedPath, keyboardNavigationActive, theme]);
 
   const stopPulse = useCallback(() => {
     if (pulseRafRef.current) cancelAnimationFrame(pulseRafRef.current);

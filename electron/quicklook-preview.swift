@@ -18,6 +18,14 @@ final class PreviewPanelController: NSObject, NSApplicationDelegate, QLPreviewPa
     private let item: PreviewItem
     private var previewPanel: QLPreviewPanel?
 
+    private func forwardKey(_ key: String) {
+        let payload: [String: String] = ["key": key, "path": item.url.path]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let line = String(data: data, encoding: .utf8) else { return }
+        print(line)
+        fflush(stdout)
+    }
+
     init(url: URL) {
         item = PreviewItem(url: url)
         super.init()
@@ -42,6 +50,22 @@ final class PreviewPanelController: NSObject, NSApplicationDelegate, QLPreviewPa
         panel.center()
         panel.makeKeyAndOrderFront(nil)
         panel.reloadData()
+
+        NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            guard let self else { return event }
+            if event.keyCode == 49 {
+                self.forwardKey(" ")
+                return nil
+            }
+            switch event.keyCode {
+            case 126: self.forwardKey("ArrowUp")
+            case 125: self.forwardKey("ArrowDown")
+            case 123: self.forwardKey("ArrowLeft")
+            case 124: self.forwardKey("ArrowRight")
+            default: break
+            }
+            return event
+        }
     }
 
     func numberOfPreviewItems(in panel: QLPreviewPanel) -> Int { 1 }
