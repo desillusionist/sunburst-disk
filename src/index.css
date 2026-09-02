@@ -653,11 +653,16 @@ body {
   min-width: 0;
 }
 .collector-item-name {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 180px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 180px;
 }
+.collector-item-name .legend-label-track { gap: 24px; }
+.collector-item-name.is-crawling .legend-label-track { animation-duration: 7s; }
 .collector-item-right {
   display: flex;
   align-items: center;
@@ -669,17 +674,28 @@ body {
   font-family: SFMono-Regular, Menlo, monospace;
   font-size: 11px;
 }
+.collector-quicklook-btn,
 .collector-remove-btn {
   background: transparent;
-  border: none;
-  color: #6b7280;
+  border: 1px solid transparent;
+  color: #7e8796;
   cursor: pointer;
   padding: 2px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 3px;
-  transition: color 0.15s, background 0.15s;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.collector-quicklook-btn:hover,
+.collector-quicklook-btn:focus-visible {
+  color: #d8e4ff;
+  background: rgba(96,165,250,0.16);
+  border-color: rgba(96,165,250,0.35);
+  outline: none;
+}
+.collector-remove-btn {
+  color: #6b7280;
 }
 .collector-remove-btn:hover {
   color: #f87171;

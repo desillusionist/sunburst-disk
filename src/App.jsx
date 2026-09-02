@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ChevronDown, PanelRight, PanelRightClose, RefreshCw, ShieldCheck, ShieldAlert, LockKeyhole, AlertTriangle, Folder, FileText, Trash2, X, RotateCcw, Copy } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ChevronDown, PanelRight, PanelRightClose, RefreshCw, ShieldCheck, ShieldAlert, LockKeyhole, AlertTriangle, Folder, FileText, Trash2, X, RotateCcw, Copy, Eye } from 'lucide-react';
 import SunburstChart from './components/SunburstChart';
 import DetailsSidebar from './components/DetailsSidebar';
 import DebugDownbar from './components/DebugDownbar';
@@ -290,6 +290,27 @@ function pathDirname(value) {
   const trimmed = value.replace(/\/+$/, '');
   const index = trimmed.lastIndexOf('/');
   return index <= 0 ? '/' : trimmed.slice(0, index);
+}
+function pathResolveForRenderer(value) {
+  return typeof value === 'string' ? value.replace(/\/+$/, '') || '/' : null;
+}
+function remapTreePathPrefix(tree, oldRoot, newRoot) {
+  if (!tree || !oldRoot || !newRoot) return tree;
+  const remap = value => {
+    if (typeof value !== 'string') return value;
+    if (value === oldRoot) return newRoot;
+    return value.startsWith(`${oldRoot}/`) ? `${newRoot}${value.slice(oldRoot.length)}` : value;
+  };
+  const path = remap(tree.path);
+  const children = Array.isArray(tree.children)
+    ? tree.children.map(child => remapTreePathPrefix(child, oldRoot, newRoot))
+    : tree.children;
+  return {
+    ...tree,
+    path,
+    name: tree.path === oldRoot ? (newRoot.split('/').filter(Boolean).pop() || tree.name) : tree.name,
+    children
+  };
 }
 function replaceNodeWithDelta(tree, targetPath, updatedNode) {
   if (!tree) return tree;
@@ -1296,6 +1317,36 @@ export default function App() {
     }
 
     const rootPath = targetNode.path;
+    if (payload.rootRenamedTo && payload.rootMissing) {
+      const renamedRoot = pathResolveForRenderer(payload.rootRenamedTo);
+      if (renamedRoot && renamedRoot !== rootPath && !renamedRoot.startsWith('__')) {
+        const renamedTree = remapTreePathPrefix(tree, rootPath, renamedRoot);
+        folderWatchTreeRef.current = renamedTree;
+        setScannedTree(renamedTree);
+        setNavStack(previous => previous.map(node => {
+          const remappedPath = node?.path === rootPath
+            ? renamedRoot
+            : node?.path?.startsWith(`${rootPath}/`)
+              ? `${renamedRoot}${node.path.slice(rootPath.length)}`
+              : node?.path;
+          return remappedPath ? (resolveByPath(renamedTree, remappedPath) || { ...node, path: remappedPath }) : node;
+        }));
+        setFocusedNode(previous => {
+          if (!previous?.path) return previous;
+          const remappedPath = previous.path === rootPath
+            ? renamedRoot
+            : previous.path.startsWith(`${rootPath}/`) ? `${renamedRoot}${previous.path.slice(rootPath.length)}` : previous.path;
+          return resolveByPath(renamedTree, remappedPath) || { ...previous, path: remappedPath };
+        });
+        setHoveredNode(previous => previous?.path ? resolveByPath(renamedTree, previous.path === rootPath ? renamedRoot : previous.path.startsWith(`${rootPath}/`) ? `${renamedRoot}${previous.path.slice(rootPath.length)}` : previous.path) || null : previous);
+        setPointerNode(previous => previous?.path ? resolveByPath(renamedTree, previous.path === rootPath ? renamedRoot : previous.path.startsWith(`${rootPath}/`) ? `${renamedRoot}${previous.path.slice(rootPath.length)}` : previous.path) || null : previous);
+        setHighlightedPath(previous => previous === rootPath ? renamedRoot : previous?.startsWith(`${rootPath}/`) ? `${renamedRoot}${previous.slice(rootPath.length)}` : previous);
+        setTreeSelectionPath(previous => previous === rootPath ? renamedRoot : previous?.startsWith(`${rootPath}/`) ? `${renamedRoot}${previous.slice(rootPath.length)}` : previous);
+        setFolderWatchState(previous => ({ ...previous, active: true, updating: false, rootPath: renamedRoot, error: null, lastChangedAt: payload.observedAt || Date.now() }));
+        recordPerfInstant('folder-watch.rename-recovered', { from: rootPath, to: renamedRoot });
+        return;
+      }
+    }
     const knownDirectoryForPath = changedPath => {
       // Always reconcile from the event's parent. A renamed/deleted directory
       // may still exist in the old tree, but its former filesystem path no
@@ -1513,6 +1564,14 @@ export default function App() {
     });
     const removeQuickLookKey = window.electronAPI.onQuickLookKey?.(payload => {
       const key = payload?.key;
+      recordPerfInstant('quick-look.helper-key', {
+        key: key || null,
+        path: payload?.path || quickLookPathRef.current || null,
+        quickLookPath: quickLookPathRef.current || null,
+        focusedPath: arrowStateRef.current.focusedNode?.path || null,
+        pointerPath: arrowStateRef.current.pointerNode?.path || null,
+        keyboardPriority: Boolean(keyboardNavigationRef.current || quickLookKeyboardPriorityRef.current)
+      });
       if (key === 'closed') {
         if (!payload?.path || quickLookPathRef.current === payload.path) {
           quickLookPathRef.current = null;
@@ -2641,19 +2700,36 @@ export default function App() {
       if (target instanceof HTMLButtonElement && !target.closest('.legend-row, .sunburst-stage, .content-tree-row')) return;
       event.preventDefault();
       if (quickLookPathRef.current) {
+        recordPerfInstant('quick-look.space-close', {
+          path: quickLookPathRef.current,
+          focusedPath: arrowStateRef.current.focusedNode?.path || null,
+          pointerPath: arrowStateRef.current.pointerNode?.path || null,
+          keyboardPriority: Boolean(keyboardNavigationRef.current || quickLookKeyboardPriorityRef.current)
+        });
         void window.electronAPI?.quickLookClose?.();
         quickLookPathRef.current = null;
         quickLookNodeRef.current = null;
         quickLookKeyboardPriorityRef.current = false;
         return;
       }
-      const candidate = quickLookKeyboardPriorityRef.current ? quickLookNodeRef.current : pointerNode;
+      const arrowState = arrowStateRef.current;
+      const keyboardOwnsSelection = keyboardNavigationRef.current || quickLookKeyboardPriorityRef.current || keyboardNavigationActive;
+      const candidate = keyboardOwnsSelection
+        ? (quickLookNodeRef.current || arrowState.focusedNode || arrowState.pointerNode || pointerNode)
+        : (arrowState.pointerNode || pointerNode || arrowState.focusedNode);
+      recordPerfInstant('quick-look.space-open-target', {
+        path: candidate?.path || null,
+        source: keyboardOwnsSelection ? 'keyboard-selection' : 'pointer-or-focus-selection',
+        focusedPath: arrowState.focusedNode?.path || null,
+        pointerPath: arrowState.pointerNode?.path || null,
+        highlightedPath: arrowState.highlightedPath || null
+      });
       if (!candidate || candidate.archiveVirtual || !['file', 'directory', 'symlink'].includes(candidate.type)) return;
-      void handleQuickLook(candidate, { keyboardNavigation: quickLookKeyboardPriorityRef.current });
+      void handleQuickLook(candidate, { keyboardNavigation: keyboardOwnsSelection });
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleQuickLook, loading, nodeLoading, pointerNode, viewState]);
+  }, [handleQuickLook, keyboardNavigationActive, loading, nodeLoading, pointerNode, viewState]);
 
   useEffect(() => {
     const activePath = quickLookPathRef.current;
@@ -3016,7 +3092,8 @@ export default function App() {
             selectedTarget = { path: nextNode.path, index: nextIndex };
             handledByGlobalTree = true;
             keyboardNavigationRef.current = true;
-            quickLookKeyboardPriorityRef.current = Boolean(quickLookPathRef.current);
+            quickLookKeyboardPriorityRef.current = true;
+            quickLookNodeRef.current = nextNode;
             setKeyboardNavigationActive(true);
             event.preventDefault();
             setTreeSelectionPath(nextNode.path);
@@ -3394,21 +3471,12 @@ export default function App() {
                   <li>Live Finder change reconciliation through the macOS FSEvents watcher and explicit Refresh.</li>
                   <li>Review-first Collector and System Smart Clean preview with Safe, Moderate and High-risk tiers; protected roots remain blocked.</li>
                   <li>Archive/package contents, Quick Look, Finder Reveal, Get Info, Open With, Terminal helpers and Classic/Matrix themes.</li>
-                  {onboardingIsUpdate && <li>New in this build: saved folder scans, scan cancellation, one-level Hidden Space diagnostics, permission checklist and Unicode filename handling.</li>}
+                  {onboardingIsUpdate && <li>New in this build: saved folder scans, scan cancellation, one-level Hidden Space diagnostics and Unicode filename handling.</li>}
                 </ul>
               </div>
               <div className="onboarding-section">
                 <div className="onboarding-section-title">Before first scan</div>
                 <div className="onboarding-permission">
-                  <div>
-                    <strong>Full Disk Access</strong>
-                    <span>For Hidden Space only. In macOS Settings turn access Off, then On again for this installed Sunburst Disk.app. Sunburst Disk will relaunch automatically. Repeat this after installing a new ad-hoc build.</span>
-                  </div>
-                  <div className="onboarding-permission-actions">
-                    <button type="button" className="onboarding-settings-btn" onClick={() => { void window.electronAPI?.openFullDiskAccessSettings?.(); }}>Open Settings</button>
-                  </div>
-                </div>
-                                <div className="onboarding-permission">
                   <div>
                     <strong>Notifications <em className="onboarding-permission-status optional">Optional</em></strong>
                     <span>Allows a native notification and sound when a long disk scan finishes.</span>
@@ -3430,7 +3498,7 @@ export default function App() {
                   <button type="button" className="onboarding-settings-btn" onClick={() => { void handleSaveShortcutGuide(); }}>Save TXT guide</button>
                   {askSiriSetupStatus && <span className="onboarding-setup-status" role="status">{askSiriSetupStatus}</span>}
                 </div>
-                <div className="onboarding-note">The TXT guide contains the complete setup recipe and troubleshooting marker. Permission access never unlocks deletion.</div>
+                <div className="onboarding-note">The TXT guide contains the complete setup recipe and troubleshooting marker. Setup guidance never unlocks deletion.</div>
               </div>
             </div>
             <div className="onboarding-footer">
@@ -3706,10 +3774,18 @@ export default function App() {
                         <div className="collector-item-row">
                           <div className="collector-item-info">
                             {item.type === 'directory' ? <Folder size={12} color="#3b82f6" /> : <FileText size={12} color="#71717a" />}
-                            <span className="collector-item-name" title={item.path}>{item.name}</span>
+                            <CrawlLabel name={item.name} className="collector-item-name" />
                           </div>
                           <div className="collector-item-right">
                             <span className="collector-item-size">{formatBytes(item.size)}</span>
+                            <button
+                              className="collector-quicklook-btn"
+                              title="Quick Look"
+                              aria-label={`Quick Look ${item.name}`}
+                              onClick={event => { event.stopPropagation(); void handleQuickLook(item); }}
+                            >
+                              <Eye size={12} />
+                            </button>
                             <button
                               className="collector-remove-btn"
                               title="Remove from collector"

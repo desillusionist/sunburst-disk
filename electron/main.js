@@ -169,22 +169,54 @@ function sendFolderWatchEvent(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
 }
 
-function stopFolderWatcher() {
+function stopFolderWatcher({ notify = true } = {}) {
   const state = folderWatcher;
   folderWatcher = null;
   if (!state) return;
   if (state.timer) clearTimeout(state.timer);
   state.timer = null;
   if (state.child && !state.child.killed) state.child.kill('SIGTERM');
-  sendFolderWatchEvent('folder-watch-status', {
-    active: false,
-    rootPath: state.rootPath,
-    reason: 'stopped'
+  if (notify) {
+    sendFolderWatchEvent('folder-watch-status', {
+      active: false,
+      rootPath: state.rootPath,
+      reason: 'stopped'
+    });
+  }
+}
+
+function getFileIdentity(stat) {
+  return stat && Number.isFinite(stat.dev) && Number.isFinite(stat.ino) ? `${stat.dev}:${stat.ino}` : null;
+}
+
+function findRenamedWatcherRoot(state, rawPaths) {
+  if (!state?.rootIdentity) return null;
+  const oldRoot = state.canonicalRoot;
+  const parent = path.dirname(oldRoot);
+  const candidates = new Set();
+  const addCandidate = candidate => {
+    const resolved = path.resolve(candidate);
+    if (resolved !== oldRoot && path.dirname(resolved) === parent) candidates.add(resolved);
+  };
+  for (const rawPath of rawPaths || []) {
+    for (const candidate of getFSEventPathCandidates(rawPath)) addCandidate(candidate);
+  }
+  try {
+    for (const entry of fs.readdirSync(parent, { withFileTypes: true })) {
+      if (entry.isDirectory() || entry.isSymbolicLink()) addCandidate(path.join(parent, entry.name));
+    }
+  } catch {}
+  const matches = [...candidates].filter(candidate => {
+    try { return getFileIdentity(fs.statSync(candidate)) === state.rootIdentity; } catch { return false; }
   });
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function flushFolderWatcher(state) {
   if (folderWatcher !== state) return;
+  const rawPaths = [...state.pendingRawPaths];
+  const rootMissing = !fs.existsSync(state.canonicalRoot);
+  const renamedTo = rootMissing ? findRenamedWatcherRoot(state, rawPaths) : null;
   const changedPaths = [...state.pendingPaths].slice(0, FOLDER_WATCH_MAX_PATHS).map(eventPath => {
     if (eventPath === state.canonicalRoot) return state.rootPath;
     if (isWithinRoot(eventPath, state.canonicalRoot)) {
@@ -192,21 +224,23 @@ function flushFolderWatcher(state) {
     }
     return state.rootPath;
   });
-  const rootMissing = !fs.existsSync(state.canonicalRoot);
   const payload = {
     rootPath: state.rootPath,
     changedPaths,
-    fullScan: state.needsFullScan || rootMissing,
+    fullScan: renamedTo ? false : (state.needsFullScan || rootMissing),
     rootChanged: state.rootChanged,
     rootMissing,
+    rootRenamedTo: renamedTo ? path.resolve(renamedTo) : null,
     truncated: state.pendingPaths.size > FOLDER_WATCH_MAX_PATHS,
     observedAt: Date.now()
   };
   state.pendingPaths.clear();
+  state.pendingRawPaths.clear();
   state.needsFullScan = false;
   state.rootChanged = false;
   state.timer = null;
   sendFolderWatchEvent('folder-watch-change', payload);
+  if (renamedTo) stopFolderWatcher({ notify: false });
 }
 
 function queueFolderWatcherEvent(state, event) {
@@ -226,6 +260,7 @@ function queueFolderWatcherEvent(state, event) {
   // size/content tree. Ignoring metadata-only events prevents background
   // services from making the Updating badge blink without a visible change.
   if (!contentEvent && !recoveryEvent) return;
+  state.pendingRawPaths.add(rawEventPath);
   if (eventPath) state.pendingPaths.add(eventPath);
   else if (rawEventPath !== state.canonicalRoot) state.needsFullScan = true;
   if (dropped || rootChanged || ((flags & FSEVENT_FLAGS.mustScanSubDirs) && !contentEvent)) {
@@ -270,8 +305,10 @@ function startFolderWatcher(rootPath) {
     rootPath: displayRoot,
     canonicalRoot,
     pendingPaths: new Set(),
+    pendingRawPaths: new Set(),
     needsFullScan: false,
     rootChanged: false,
+    rootIdentity: getFileIdentity(fs.statSync(canonicalRoot)),
     timer: null
   };
   folderWatcher = state;
@@ -963,13 +1000,17 @@ async function chooseOtherApplication(itemPath) {
 // ─── Quick Look ────────────────────────────────────────────────────────────────
 let quickLookChild = null;
 let quickLookItemPath = null;
+const expectedQuickLookStops = new WeakMap();
 
 function sendQuickLookEvent(payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('quick-look-key', payload);
 }
 
 function closeQuickLook() {
-  if (quickLookChild && !quickLookChild.killed) quickLookChild.kill('SIGTERM');
+  if (quickLookChild && !quickLookChild.killed) {
+    expectedQuickLookStops.set(quickLookChild, 'close');
+    quickLookChild.kill('SIGTERM');
+  }
   quickLookChild = null;
   quickLookItemPath = null;
   return { ok: true, closed: true };
@@ -983,7 +1024,10 @@ function quickLookPath(itemPath) {
     const helperPath = getNativeHelperPath('quicklook-preview');
     if (!helperPath) return resolve({ ok: false, error: 'Native Quick Look helper is not built.' });
 
-    if (quickLookChild && !quickLookChild.killed) quickLookChild.kill('SIGTERM');
+    if (quickLookChild && !quickLookChild.killed) {
+      expectedQuickLookStops.set(quickLookChild, 'replace');
+      quickLookChild.kill('SIGTERM');
+    }
     quickLookChild = null;
     quickLookItemPath = itemPath;
 
@@ -1029,6 +1073,8 @@ function quickLookPath(itemPath) {
       setTimeout(() => settle({ ok: true, persistent: true }), 350);
     });
     child.once('close', (code, signal) => {
+      const stopReason = expectedQuickLookStops.get(child) || null;
+      expectedQuickLookStops.delete(child);
       const wasCurrent = quickLookChild === child && quickLookItemPath === childItemPath;
       if (wasCurrent) {
         quickLookChild = null;
@@ -1036,10 +1082,14 @@ function quickLookPath(itemPath) {
         sendQuickLookEvent({ key: 'closed', path: childItemPath });
       }
       if (!settled) {
-        settle(code === 0
-          ? { ok: true }
-          : { ok: false, error: stderr.trim() || `Quick Look helper stopped (${signal || `exit ${code}`}).` });
-      } else if (code !== 0) {
+        if (stopReason === 'close' || stopReason === 'replace') {
+          settle({ ok: true, closed: stopReason === 'close', replaced: stopReason === 'replace' });
+        } else {
+          settle(code === 0
+            ? { ok: true }
+            : { ok: false, error: stderr.trim() || `Quick Look helper stopped (${signal || `exit ${code}`}).` });
+        }
+      } else if (code !== 0 && !stopReason) {
         console.warn('Quick Look helper stopped after preview opened:', stderr.trim() || signal || code);
       }
     });
