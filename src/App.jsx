@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ChevronDown, PanelRight, PanelRightClose, RefreshCw, ShieldCheck, ShieldAlert, LockKeyhole, AlertTriangle, Folder, FileText, Trash2, X, RotateCcw, Copy, Eye } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ChevronDown, PanelRight, PanelRightClose, RefreshCw, ShieldCheck, ShieldAlert, LockKeyhole, AlertTriangle, Folder, FileText, Trash2, X, RotateCcw, Copy, Eye, Maximize2, Minimize2, Sparkles, List } from 'lucide-react';
 import SunburstChart from './components/SunburstChart';
 import DetailsSidebar from './components/DetailsSidebar';
 import DebugDownbar from './components/DebugDownbar';
@@ -14,6 +14,28 @@ function formatBytes(bytes) {
   const i = Math.floor(Math.log(Math.max(1, bytes)) / Math.log(k));
   const val = (bytes / Math.pow(k, i));
   return (val >= 100 ? val.toFixed(0) : val.toFixed(1)) + ' ' + sizes[i];
+}
+
+function normalizeAssistantOutput(text, mode) {
+  const source = String(text || '').trim();
+  if (mode !== 'bullets' || !source) return source;
+  const lines = source.split(/\r?\n/);
+  const output = [];
+  for (const line of lines) {
+    const cleaned = line
+      .replace(/^\s*(?:[-*•‣◦]|\d+[.)])\s+/, '')
+      .replace(/^\s*#+\s*/, '')
+      .replace(/\*\*/g, '')
+      .trim();
+    if (!cleaned) {
+      if (output.length && output[output.length - 1] !== '') output.push('');
+      continue;
+    }
+    output.push(`• ${cleaned}`);
+    output.push('');
+  }
+  while (output[output.length - 1] === '') output.pop();
+  return output.join('\n');
 }
 
 const COLOR_MAP = {
@@ -2755,7 +2777,8 @@ export default function App() {
     try {
       const result = await window.electronAPI.askSiriTransform(mode, assistantResult.output, assistantItem?.name);
       if (!result?.ok || !result.output) throw new Error(result?.error || 'The Shortcut returned no formatted text.');
-      setAssistantResult(previous => ({ ...previous, ...result, ok: true }));
+      const output = normalizeAssistantOutput(result.output, mode);
+      setAssistantResult(previous => ({ ...previous, ...result, output, ok: true }));
     } catch (error) {
       setAssistantTransformError(error.message || 'Ask Siri could not reformat this answer.');
     } finally {
@@ -3193,7 +3216,7 @@ export default function App() {
   return (
     <div className={`mac-window ${matrixTheme ? 'theme-matrix' : ''}`} onClick={() => { setContextMenu(null); }}>
       {assistantOpen && (
-        <div className="assistant-backdrop" onClick={() => setAssistantOpen(false)}>
+        <div className="assistant-backdrop">
           <section
             className="assistant-drawer"
             role="dialog"
@@ -3223,11 +3246,20 @@ export default function App() {
                     {assistantTransformMode ? `Formatting ${assistantTransformMode}…` : `Returned by ${assistantResult.shortcutName || 'Sunburst Disk — Ask Siri'}`}
                   </div>
                   <div className="assistant-result-actions">
-                    <button className="assistant-format-btn" type="button" disabled={Boolean(assistantTransformMode)} onClick={() => void transformAssistantResult('expand')}>Expand</button>
-                    <button className="assistant-format-btn" type="button" disabled={Boolean(assistantTransformMode)} onClick={() => void transformAssistantResult('shorten')}>Shorten</button>
-                    <button className="assistant-format-btn" type="button" disabled={Boolean(assistantTransformMode)} onClick={() => void transformAssistantResult('bullets')}>Bullet List</button>
-                    <button className="assistant-copy-btn" type="button" disabled={Boolean(assistantTransformMode)} onClick={() => void copyAssistantResult()} title="Copy result to clipboard" aria-label="Copy result to clipboard">
-                      <Copy size={12} /> {assistantCopied ? 'Copied' : 'Copy'}
+                    <button className="assistant-format-btn" type="button" disabled={Boolean(assistantTransformMode)} onClick={() => void transformAssistantResult('expand')} title="Expand" aria-label="Expand">
+                      <Maximize2 size={13} />
+                    </button>
+                    <button className="assistant-format-btn" type="button" disabled={Boolean(assistantTransformMode)} onClick={() => void transformAssistantResult('shorten')} title="Shorten" aria-label="Shorten">
+                      <Minimize2 size={13} />
+                    </button>
+                    <button className="assistant-format-btn" type="button" disabled={Boolean(assistantTransformMode)} onClick={() => void transformAssistantResult('simplify')} title="Simplify" aria-label="Simplify">
+                      <Sparkles size={13} />
+                    </button>
+                    <button className="assistant-format-btn" type="button" disabled={Boolean(assistantTransformMode)} onClick={() => void transformAssistantResult('bullets')} title="Bullet List" aria-label="Bullet List">
+                      <List size={13} />
+                    </button>
+                    <button className="assistant-copy-btn" type="button" disabled={Boolean(assistantTransformMode)} onClick={() => void copyAssistantResult()} title="Copy" aria-label="Copy" data-copied={assistantCopied ? 'true' : 'false'}>
+                      <Copy size={13} />
                     </button>
                   </div>
                 </div>

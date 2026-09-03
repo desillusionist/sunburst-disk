@@ -1381,7 +1381,8 @@ const ASK_SIRI_SHORTCUT_NAME = 'Sunburst Disk — Ask Siri';
 const ASK_SIRI_REFORMAT_MODES = Object.freeze({
   expand: 'Expand the explanation with more useful context, practical meaning, safety nuance, and source details. Keep it focused on the same object.',
   shorten: 'Shorten the explanation to a compact summary of no more than three brief paragraphs while preserving the essential safety guidance.',
-  bullets: 'Rewrite the explanation as a clear bullet list. Group purpose, important data, removal risk, and sources when those sections are supported by the reference text.'
+  simplify: 'Explain the answer for a complete beginner. Use plain everyday language, define unavoidable technical terms, and say what the object is for and what the user should understand. Do not omit important safety caveats.',
+  bullets: 'Rewrite the explanation as a plain-text bullet list. Use no Markdown emphasis, no bold markers, and no headings wrapped in asterisks. Start each item with a single bullet character and insert one blank line between consecutive bullet items. Group purpose, important data, removal risk, and sources when those sections are supported by the reference text.'
 });
 function formatPromptBytes(bytes) {
   const value = Number(bytes);
@@ -1464,18 +1465,40 @@ async function runAskSiriShortcut(prompt) {
     if (tempDir) await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
 }
-function buildAskSiriPrompt(itemPath, itemName, item = {}) {
-  const type = item.type === 'directory' ? 'folder' : 'file';
+function isProtectedSystemAskSiriObject(itemPath, itemName = '') {
+  const normalizedPath = String(itemPath || '').replace(/\\/g, '/');
+  const normalizedName = String(itemName || '').trim().toLowerCase();
+  return normalizedName === 'system (os volume)'
+    || normalizedName === 'system'
+    || normalizedName === 'usr'
+    || normalizedPath === '/'
+    || normalizedPath === '/usr'
+    || normalizedPath.startsWith('/usr/')
+    || normalizedPath === '/system'
+    || normalizedPath.startsWith('/system/')
+    || normalizedPath === '/private'
+    || normalizedPath.startsWith('/private/');
+}
+function buildAskSiriPrompt(itemPath, itemName, item = {}, { protectedSystemFallback = false } = {}) {
+  const type = item.type === 'directory' || item.type === 'special' ? 'folder' : 'file';
   const parent = path.basename(path.dirname(itemPath)) || 'unknown parent';
   const extension = type === 'file' ? path.extname(itemName || itemPath) : '';
+  const isProtectedSystemObject = isProtectedSystemAskSiriObject(itemPath, itemName);
+  const systemGuidance = isProtectedSystemObject
+    ? (protectedSystemFallback
+      ? 'This is a protected or system-managed macOS location. Answer from general macOS knowledge and the metadata below only. Do not inspect, read, modify, or request access to the path. Do not refuse merely because the location is protected. Explain that exact contents can vary by macOS version when relevant.'
+      : 'The object may be a protected or system-managed macOS location. Explain its general role from the metadata and established macOS knowledge. Do not attempt to inspect or modify it, do not request access, and do not refuse solely because it is protected.')
+    : 'Use the metadata below and general knowledge; do not pretend to have inspected file contents that were not provided.';
   return [
-    'I selected this object in Sunburst Disk. Explain what it is used for, whether it is normally safe to remove, and what current web information is relevant. Do not recommend deletion solely from the name; distinguish cache, personal data, application data, and system data.',
+    'I selected this object in Sunburst Disk. Explain what it is used for, whether it is normally safe to remove, and what relevant background a user should know. Do not recommend deletion solely from the name; distinguish cache, personal data, application data, and system data.',
+    systemGuidance,
     `Name: ${String(itemName || path.basename(itemPath)).slice(0, 240)}`,
+    `Reference path: ${String(itemPath || '').replace(/[\r\n]/g, ' ').slice(0, 500)}`,
     `Type: ${type}${extension ? ` (${extension})` : ''}`,
     `Size: ${formatPromptBytes(item.size)}`,
     `Parent folder: ${parent}`,
     `Category: ${String(item.category || item.description || 'unknown').slice(0, 240)}`,
-    'Return a concise explanation with sources or a suggested web search when facts may have changed.'
+    'Return a concise explanation with sources or a suggested web search when facts may have changed. If the path is protected, discuss it without asking for filesystem access.'
   ].join('\n');
 }
 async function reformatAskSiriResult({ mode, text, itemName } = {}) {
@@ -1529,8 +1552,32 @@ async function askSiriForItem({ itemPath, itemName, item } = {}) {
       error: `Create a Shortcut named “${ASK_SIRI_SHORTCUT_NAME}” that receives Text and performs the web/Siri analysis.`
     };
   }
+  const isProtectedSystemObject = isProtectedSystemAskSiriObject(itemPath, itemName);
   const prompt = buildAskSiriPrompt(itemPath, itemName, item);
-  const result = await runAskSiriShortcut(prompt);
+  let result = await runAskSiriShortcut(prompt);
+  if (!result.ok && isProtectedSystemObject) {
+    const fallbackResult = await runAskSiriShortcut(buildAskSiriPrompt(itemPath, itemName, item, { protectedSystemFallback: true }));
+    if (fallbackResult.ok) {
+      result = {
+        ...fallbackResult,
+        diagnostics: {
+          ...(fallbackResult.diagnostics || {}),
+          protectedSystemPromptRetry: true,
+          initialAttempt: result.diagnostics || null
+        }
+      };
+    } else {
+      result = {
+        ...result,
+        diagnostics: {
+          ...(result.diagnostics || {}),
+          protectedSystemPromptRetry: true,
+          fallbackAttempt: fallbackResult.diagnostics || null
+        },
+        error: `${result.error || 'The Shortcut could not answer this protected system object.'}\n\nA protected-system fallback prompt was also attempted, but the Shortcut returned no usable text.`
+      };
+    }
+  }
   return {
     ...result,
     shortcutName: ASK_SIRI_SHORTCUT_NAME,

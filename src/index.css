@@ -1930,20 +1930,27 @@ body {
 }
 .assistant-format-btn,
 .assistant-copy-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex: 0 0 auto;
-  padding: 4px 8px;
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  place-items: center;
+  padding: 0;
   border: 1px solid #4c5665;
-  border-radius: 4px;
+  border-radius: 5px;
   background: #20252d;
   color: #bfc7d2;
   cursor: pointer;
   font-size: 10px;
+  line-height: 1;
 }
 .assistant-format-btn:hover:not(:disabled),
-.assistant-copy-btn:hover:not(:disabled) { border-color: #93c5fd; color: #fff; background: #2a313c; }
+.assistant-copy-btn:hover:not(:disabled),
+.assistant-copy-btn[data-copied="true"] { border-color: #93c5fd; color: #fff; background: #2a313c; }
+.assistant-format-btn:focus-visible,
+.assistant-copy-btn:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+.assistant-format-btn:active:not(:disabled),
+.assistant-copy-btn:active:not(:disabled) { transform: scale(.96); }
 .assistant-format-btn:disabled,
 .assistant-copy-btn:disabled { opacity: .5; cursor: default; }
 .assistant-transform-error {
@@ -1958,11 +1965,14 @@ body {
   color: var(--matrix-text-dim);
 }
 .theme-matrix .assistant-format-btn:hover:not(:disabled),
-.theme-matrix .assistant-copy-btn:hover:not(:disabled) {
+.theme-matrix .assistant-copy-btn:hover:not(:disabled),
+.theme-matrix .assistant-copy-btn[data-copied="true"] {
   border-color: var(--matrix-line-bright);
   background: rgba(57,255,102,.12);
   color: var(--matrix-text);
 }
+.theme-matrix .assistant-format-btn:focus-visible,
+.theme-matrix .assistant-copy-btn:focus-visible { outline-color: var(--matrix-line-bright); }
 .theme-matrix .assistant-transform-error { color: #ff9f9f; }
 
 .folder-watch-badge {
