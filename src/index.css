@@ -223,7 +223,17 @@ body {
   justify-content: space-between;
   overflow: hidden;
 }
-.drives-list { display: flex; flex-direction: column; gap: 14px; }
+.drives-list {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 5px;
+  scrollbar-gutter: stable;
+}
 .drive-row {
   display: flex;
   align-items: center;
@@ -1866,6 +1876,9 @@ body {
 }
 .assistant-result-meta { padding: 12px 0 8px; }
 .assistant-output {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
   height: clamp(160px, 48vh, 470px);
   min-height: 120px;
   max-height: 470px;

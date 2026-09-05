@@ -3632,7 +3632,7 @@ export default function App() {
       )}
 
       {smartCleanOpen && (
-        <div className="smart-clean-backdrop" onClick={() => setSmartCleanOpen(false)}>
+        <div className="smart-clean-backdrop">
           <section className="smart-clean-drawer" role="dialog" aria-modal="true" aria-labelledby="smart-clean-title" onClick={event => event.stopPropagation()}>
             <div className="smart-clean-header">
               <div>
