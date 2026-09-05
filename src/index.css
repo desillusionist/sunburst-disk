@@ -217,11 +217,13 @@ body {
 /* ── Drives Screen ────────────────────────────────────────────────────────── */
 .drives-screen {
   flex: 1;
+  min-height: 0;
   padding: 28px 40px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 .drives-list { display: flex; flex-direction: column; gap: 14px; }
 .drive-row {
@@ -1877,6 +1879,9 @@ body {
   color: #e5e7eb;
   font-size: 12px;
   line-height: 1.52;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
