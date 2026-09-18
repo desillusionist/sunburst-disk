@@ -854,6 +854,15 @@ const TERMINAL_ADMIN_COMMAND_PRESETS = [
     options: '-R copies directories; -- ends options; both paths remain scoped to the current folder.',
     examples: 'cp -R -- Photos Photos-copy',
     help: 'Admin-only copy helper. The app asks for confirmation and rejects paths outside the current folder.'
+  },
+  {
+    command: 'ln -s -- target link-name',
+    label: 'ln',
+    syntax: 'ln -s -- [target] [link-name]',
+    purpose: 'Create a symbolic link to a file or folder inside the current folder.',
+    options: '-s creates a symbolic link; -- ends options; both target and link name stay scoped to the current folder.',
+    examples: 'ln -s -- Documents Shared-Documents',
+    help: 'Admin-only link helper. Creates a symbolic link without copying the target; the app rejects paths outside the current folder and protected system roots.'
   }
 ];
 
@@ -2428,7 +2437,7 @@ export default function App() {
     if (terminalBusy) return;
     const enteredCommand = terminalCommand.trim();
     if (!enteredCommand) return;
-    if (terminalAdminMode && /^(?:rm|mv|cp -R)\s/.test(enteredCommand)) {
+    if (terminalAdminMode && /^(?:rm|mv|cp -R|ln -s)\s/.test(enteredCommand)) {
       const confirmed = window.confirm(`Run this admin filesystem command?\n\n${enteredCommand}`);
       if (!confirmed) return;
     }

@@ -1234,7 +1234,7 @@ ipcMain.handle('inspect-app-related', async (event, appPath) => {
 const SAFE_TERMINAL_ARGUMENT = "[^\\n\\r;|&><`$]+";
 const SAFE_TERMINAL_COMMANDS = new RegExp(`^(?:pwd|df -h|ls(?: -la|-lah)?(?: ${SAFE_TERMINAL_ARGUMENT})?|du -sh(?: ${SAFE_TERMINAL_ARGUMENT})?)$`);
 const SAFE_ADMIN_ARGUMENT = "[A-Za-z0-9_./~'() -]+";
-const SAFE_ADMIN_COMMANDS = new RegExp(`^(?:touch|mkdir -p|rm(?: -i)? --|mv --|cp -R --) ${SAFE_ADMIN_ARGUMENT}(?: ${SAFE_ADMIN_ARGUMENT})?$`);
+const SAFE_ADMIN_COMMANDS = new RegExp(`^(?:touch|mkdir -p|rm(?: -i)? --|mv --|cp -R --|ln -s --) ${SAFE_ADMIN_ARGUMENT}(?: ${SAFE_ADMIN_ARGUMENT})?$`);
 let terminalAdminAuthorized = false;
 const hiddenSpaceAuthorizedSenders = new Set();
 
@@ -1302,6 +1302,11 @@ function getAdminCommandOperation(command, workingDirectory) {
     const destinationTarget = adminTargetPath(tokens[4], normalizedWorkingDirectory);
     return sourceTarget && destinationTarget ? { operation, targets: [tokens[3], tokens[4]] } : null;
   }
+  if (operation === 'ln' && tokens.length === 5 && tokens[1] === '-s' && tokens[2] === '--') {
+    const sourceTarget = adminTargetPath(tokens[3], normalizedWorkingDirectory);
+    const linkTarget = adminTargetPath(tokens[4], normalizedWorkingDirectory);
+    return sourceTarget && linkTarget ? { operation, targets: [tokens[3], tokens[4]] } : null;
+  }
   return null;
 }
 
@@ -1344,7 +1349,7 @@ ipcMain.handle('terminal-run-safe', async (_event, { command = '', cwd = '', adm
     return {
       ok: false,
       error: useAdmin
-        ? 'Allowed commands are read-only helpers plus scoped touch, mkdir -p, rm, mv and cp -R inside the current folder. Sudo and arbitrary shell commands remain blocked.'
+        ? 'Allowed commands are read-only helpers plus scoped touch, mkdir -p, rm, mv, cp -R and ln -s inside the current folder. Sudo and arbitrary shell commands remain blocked.'
         : 'Only read-only commands are allowed: pwd, ls, du -sh and df -h.'
     };
   }
