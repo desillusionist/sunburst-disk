@@ -233,7 +233,39 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 5px;
-  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(145, 153, 168, .72) transparent;
+}
+.drives-list::-webkit-scrollbar {
+  width: 7px;
+}
+.drives-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.drives-list::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(145, 153, 168, .72);
+  background-clip: padding-box;
+}
+.drives-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(190, 198, 211, .9);
+  background-clip: padding-box;
+}
+.theme-matrix .drives-list {
+  scrollbar-color: rgba(57, 255, 102, .72) transparent;
+}
+.theme-matrix .drives-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.theme-matrix .drives-list::-webkit-scrollbar-thumb {
+  background: rgba(57, 255, 102, .72);
+  background-clip: padding-box;
+  box-shadow: 0 0 5px rgba(57, 255, 102, .35);
+}
+.theme-matrix .drives-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(122, 255, 144, .95);
+  background-clip: padding-box;
 }
 .drive-row {
   display: flex;
