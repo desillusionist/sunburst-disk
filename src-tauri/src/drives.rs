@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use crate::capacity::{is_ejectable_mount_info, run_capture};
+use crate::capacity::{diskutil_field, is_ejectable_mount_info, run_capture};
 use crate::types::{Drive, DrivesResponse};
 
 /// Mount points that are hidden from the Home screen.
@@ -19,45 +19,36 @@ const EXCLUDED_MOUNTS: [&str; 8] = [
     "/Volumes/Recovery",
 ];
 
+/// Display name of the startup disk as the user named it (for example
+/// "Macintosh HD"). The sealed System volume mounted at `/` carries that name;
+/// the Data volume is often just "Data", so it is not used as a source.
+fn startup_volume_name() -> String {
+    if let Some(info) = run_capture("/usr/sbin/diskutil", &["info", "/"]) {
+        if let Some(name) = diskutil_field(&info, "Volume Name") {
+            let name = name.trim();
+            if !name.is_empty() && !name.contains("com.apple") {
+                return name.to_string();
+            }
+        }
+    }
+    "Macintosh HD".to_string()
+}
+
+/// Minimal single-drive list used only when `df` cannot be read at all. It never
+/// invents volumes or capacities: the startup disk is shown without metrics.
 fn fallback_drives() -> Vec<Drive> {
-    vec![
-        Drive {
-            filesystem: "/dev/disk3s5".into(),
-            name: "iDāsOS".into(),
-            total: 245_100_000_000,
-            used: 231_300_000_000,
-            free: 22_700_000_000,
-            use_percent: "89%".into(),
-            mount: "/".into(),
-            scan_path: "/System/Volumes/Data".into(),
-            is_startup: true,
-            is_ejectable: false,
-        },
-        Drive {
-            filesystem: "/dev/disk7s1".into(),
-            name: "exAPFS".into(),
-            total: 2_000_000_000_000,
-            used: 216_100_000_000,
-            free: 1_783_900_000_000,
-            use_percent: "11%".into(),
-            mount: "/Volumes/exAPFS".into(),
-            scan_path: "/Volumes/exAPFS".into(),
-            is_startup: false,
-            is_ejectable: true,
-        },
-        Drive {
-            filesystem: "/dev/disk8s1".into(),
-            name: "I-MOVIES".into(),
-            total: 2_000_000_000_000,
-            used: 1_286_900_000_000,
-            free: 713_100_000_000,
-            use_percent: "64%".into(),
-            mount: "/Volumes/I-MOVIES".into(),
-            scan_path: "/Volumes/I-MOVIES".into(),
-            is_startup: false,
-            is_ejectable: true,
-        },
-    ]
+    vec![Drive {
+        filesystem: String::new(),
+        name: startup_volume_name(),
+        total: 0,
+        used: 0,
+        free: 0,
+        use_percent: String::new(),
+        mount: "/".into(),
+        scan_path: "/System/Volumes/Data".into(),
+        is_startup: true,
+        is_ejectable: false,
+    }]
 }
 
 fn excluded(mount: &str) -> bool {
@@ -110,6 +101,7 @@ pub fn get_drives() -> DrivesResponse {
         .collect();
 
     let mut drives: Vec<Drive> = Vec::new();
+    let startup_name = startup_volume_name();
     for parts in &rows {
         let mount = mount_of(parts);
         let use_percent = parts[4].clone();
@@ -138,7 +130,7 @@ pub fn get_drives() -> DrivesResponse {
             };
             drives.push(Drive {
                 filesystem: parts[0].clone(),
-                name: "iDāsOS".into(),
+                name: startup_name.clone(),
                 total,
                 used,
                 free,
@@ -211,9 +203,11 @@ mod tests {
     }
 
     #[test]
-    fn fallback_has_startup_drive() {
+    fn fallback_is_a_single_named_startup_drive() {
         let drives = fallback_drives();
-        assert!(drives.iter().any(|drive| drive.is_startup));
-        assert_eq!(drives.len(), 3);
+        assert_eq!(drives.len(), 1);
+        assert!(drives[0].is_startup);
+        assert_eq!(drives[0].mount, "/");
+        assert!(!drives[0].name.is_empty());
     }
 }

@@ -450,6 +450,18 @@ Everything that remains is optional:
   ordered largest-first. No backend change was needed: the Rust
   `SmartCleanCandidate` already serialized `modifiedAt`, `category` and
   `categoryId`.
+- **r25** — Removed developer-machine data from the shipped app:
+  - The startup drive name was hardcoded to the developer's disk (`iDāsOS`), so
+    every install showed that name. `drives.rs` now reads the user's real disk
+    name from `diskutil info /` (`Volume Name`), falling back to
+    `Macintosh HD`; the Data volume (often just `Data`) is not used as a source.
+  - `fallback_drives()` no longer invents the developer's volumes (`exAPFS`,
+    `I-MOVIES`); it returns one startup drive with no metrics.
+  - The renderer's `DEFAULT_DRIVES` (the same developer disks) is gone — drives
+    start empty and come only from the backend.
+  - `APP_VERSION` was a stale `0.2.6` literal; it is now injected by Vite from
+    `package.json` (`__APP_VERSION__`), so the onboarding copy tracks the real
+    release.
 
 ## Terminal security model
 

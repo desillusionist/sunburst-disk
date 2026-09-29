@@ -931,18 +931,13 @@ function buildSmartCleanTelemetry(candidates, riskFilter = 'all', categoryFilter
   };
 }
 
-const APP_VERSION = '0.2.6';
+// Injected by Vite from package.json (see vite.config.js).
+const APP_VERSION = __APP_VERSION__;
 const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
-
-const DEFAULT_DRIVES = [
-  { filesystem: '/dev/disk3s5', name: 'iDāsOS', total: 245.1e9, used: 231.3e9, free: 22.7e9, usePercent: '89%', mount: '/', scanPath: '/System/Volumes/Data', isStartup: true },
-  { filesystem: '/dev/disk7s1', name: 'exAPFS', total: 2e12, used: 216.1e9, free: 1783.9e9, usePercent: '11%', mount: '/Volumes/exAPFS', scanPath: '/Volumes/exAPFS', isStartup: false },
-  { filesystem: '/dev/disk8s1', name: 'I-MOVIES', total: 2e12, used: 1286.9e9, free: 713.1e9, usePercent: '64%', mount: '/Volumes/I-MOVIES', scanPath: '/Volumes/I-MOVIES', isStartup: false }
-];
 
 export default function App() {
   const [viewState, setViewState]           = useState('drives');
-  const [drives, setDrives]                 = useState(DEFAULT_DRIVES);
+  const [drives, setDrives]                 = useState([]);
   const [currentDrive, setCurrentDrive]     = useState(null);
   const [scannedTree, setScannedTree]       = useState(null);
   const [scanCache, setScanCache]           = useState({});
