@@ -1,6 +1,6 @@
 # Build and publish a release whenever a version tag is pushed.
 #
-# Pushing a `v*` tag (e.g. `git tag v0.3.1 && git push origin v0.3.1`) is the
+# Pushing a `v*` tag (e.g. `git tag v0.3.2 && git push origin v0.3.2`) is the
 # whole release: this workflow builds the Apple-Silicon app + DMG on a macOS
 # runner and attaches them to a draft GitHub Release.
 #

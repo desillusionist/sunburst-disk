@@ -941,6 +941,11 @@ const RELEASES_PAGE = 'https://github.com/desillusionist/sunburst-disk/releases'
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.3.2': [
+    'The startup disk now shows your real disk name; the app no longer ships any developer-machine disk data.',
+    'New “Check for Updates…” in the home footer compares your version with the newest release and links to the download — it never installs anything on its own.',
+    'The “What’s new” list is now written per release, so every update describes its own changes.'
+  ],
   '0.3.1': [
     'The locked “hidden space…” slice is a neutral outline and pulses to fully transparent on hover; the pale-red fill is reserved for the unlocked session.',
     'The content-tree title scrolls automatically while a slice is hovered, Sort & Filter is a compact icon, and the preview badges are gone.',
