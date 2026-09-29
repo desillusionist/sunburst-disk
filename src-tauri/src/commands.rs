@@ -731,6 +731,139 @@ pub async fn open_external_url(url: Option<String>) -> serde_json::Value {
     .unwrap_or_else(|_| json!({ "ok": false, "error": "The link could not be opened" }))
 }
 
+const RELEASES_API: &str =
+    "https://api.github.com/repos/desillusionist/sunburst-disk/releases/latest";
+const RELEASES_PAGE: &str = "https://github.com/desillusionist/sunburst-disk/releases";
+
+fn parse_version_segments(value: &str) -> Vec<u64> {
+    value
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .split('.')
+        .map(|segment| segment.parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
+/// True when `candidate` is strictly newer than `current`.
+fn is_newer_version(candidate: &str, current: &str) -> bool {
+    let left = parse_version_segments(candidate);
+    let right = parse_version_segments(current);
+    for index in 0..left.len().max(right.len()) {
+        let a = left.get(index).copied().unwrap_or(0);
+        let b = right.get(index).copied().unwrap_or(0);
+        if a != b {
+            return a > b;
+        }
+    }
+    false
+}
+
+/// Newest release as `(version, html_url)`. Fetched with the system `curl` so the
+/// core keeps its dependency-free, CLI-driven approach.
+fn fetch_latest_release() -> Result<(String, String), String> {
+    let output = std::process::Command::new("/usr/bin/curl")
+        .args([
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--location",
+            "--max-time",
+            "12",
+            "--header",
+            "Accept: application/vnd.github+json",
+            "--header",
+            "User-Agent: sunburst-disk",
+            RELEASES_API,
+        ])
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            "GitHub could not be reached".to_string()
+        } else {
+            detail
+        });
+    }
+    let payload: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())?;
+    let tag = payload
+        .get("tag_name")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .trim();
+    if tag.is_empty() {
+        return Err("The latest release has no version tag".to_string());
+    }
+    let version = tag.trim_start_matches(['v', 'V']).to_string();
+    let url = payload
+        .get("html_url")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(RELEASES_PAGE)
+        .to_string();
+    Ok((version, url))
+}
+
+/// App-menu action: compare the running version with the newest GitHub release
+/// and report the result in a native dialog.
+pub async fn check_for_update(app: AppHandle) -> serde_json::Value {
+    let current = app.package_info().version.to_string();
+    let release = tauri::async_runtime::spawn_blocking(fetch_latest_release)
+        .await
+        .unwrap_or_else(|error| Err(error.to_string()));
+
+    match release {
+        Ok((latest, url)) if is_newer_version(&latest, &current) => {
+            let (sender, receiver) = tokio::sync::oneshot::channel::<bool>();
+            app.dialog()
+                .message(format!(
+                    "Sunburst Disk {latest} is available. You are running {current}."
+                ))
+                .title("A new version is available")
+                .kind(MessageDialogKind::Info)
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Download".to_string(),
+                    "Later".to_string(),
+                ))
+                .show(move |confirmed| {
+                    let _ = sender.send(confirmed);
+                });
+            if receiver.await.unwrap_or(false) {
+                let _ = open_external_url(Some(url.clone())).await;
+            }
+            json!({ "ok": true, "updateAvailable": true, "latest": latest, "url": url })
+        }
+        Ok((latest, _)) => {
+            app.dialog()
+                .message(format!("Sunburst Disk {current} is the newest version."))
+                .title("You’re up to date")
+                .kind(MessageDialogKind::Info)
+                .buttons(MessageDialogButtons::Ok)
+                .show(|_| {});
+            json!({ "ok": true, "updateAvailable": false, "latest": latest })
+        }
+        Err(error) => {
+            let (sender, receiver) = tokio::sync::oneshot::channel::<bool>();
+            app.dialog()
+                .message("Sunburst Disk could not reach GitHub to check for updates.")
+                .title("Check for Updates")
+                .kind(MessageDialogKind::Warning)
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Open Releases Page".to_string(),
+                    "Close".to_string(),
+                ))
+                .show(move |confirmed| {
+                    let _ = sender.send(confirmed);
+                });
+            if receiver.await.unwrap_or(false) {
+                let _ = open_external_url(Some(RELEASES_PAGE.to_string())).await;
+            }
+            json!({ "ok": false, "error": error })
+        }
+    }
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub async fn save_text_file(
     app: AppHandle,
@@ -1134,5 +1267,15 @@ mod tests {
         assert!(is_startup_path("/"));
         assert!(is_startup_path("/System/Volumes/Data"));
         assert!(!is_startup_path("/Volumes/exAPFS"));
+    }
+
+    #[test]
+    fn update_versions_compare_numerically() {
+        assert_eq!(parse_version_segments("V1.2.3"), vec![1, 2, 3]);
+        assert!(is_newer_version("v0.4.0", "0.3.2"));
+        assert!(is_newer_version("0.10.0", "0.9.9"));
+        assert!(is_newer_version("1.0", "0.9.9"));
+        assert!(!is_newer_version("0.3.2", "0.3.2"));
+        assert!(!is_newer_version("0.3.1", "0.3.2"));
     }
 }

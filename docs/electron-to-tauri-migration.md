@@ -474,6 +474,17 @@ Everything that remains is optional:
   - The repository is now **public**, so `releases/latest` is reachable anonymously
     and the check reports the newest version directly; if GitHub is unreachable it
     falls back to “Couldn’t check · Open releases”.
+- **r27** — “Check for Updates…” moved into the app menu:
+  - It now sits in the macOS app menu directly below “About Sunburst Disk”.
+    `lib.rs` builds Tauri’s default menu (which preserves About/Edit/Window/Help
+    and their shortcuts) and inserts the item at position 1.
+  - The check itself moved to Rust (`commands::check_for_update`): it fetches
+    `releases/latest` with the system `curl` (so the core gains no HTTP client
+    dependency), compares versions numerically, and reports the outcome in a
+    native dialog with a Download / Open Releases Page action. The webview no
+    longer performs the request, so the drives-footer button, its state, its CSS
+    and the `openExternalUrl` bridge method were removed.
+  - New test: `update_versions_compare_numerically`.
 
 ## Terminal security model
 

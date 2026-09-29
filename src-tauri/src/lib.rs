@@ -21,8 +21,12 @@ mod types;
 mod watcher;
 
 use commands::ScanJobs;
+use tauri::menu::{Menu, MenuItem, MenuItemKind};
 use terminal::TerminalState;
 use watcher::FolderWatch;
+
+/// Id of the app-menu item that runs the update check.
+const CHECK_FOR_UPDATES_ID: &str = "check-for-updates";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -32,6 +36,35 @@ pub fn run() {
         .manage(ScanJobs::default())
         .manage(FolderWatch::default())
         .manage(TerminalState::default())
+        .menu(|app_handle| {
+            // Start from Tauri's default macOS menu (About/Edit/Window/Help) and add
+            // "Check for Updates…" directly under "About Sunburst Disk".
+            let menu = Menu::default(app_handle)?;
+            let check_item = MenuItem::with_id(
+                app_handle,
+                CHECK_FOR_UPDATES_ID,
+                "Check for Updates…",
+                true,
+                None::<&str>,
+            )?;
+            if let Some(MenuItemKind::Submenu(app_submenu)) = menu
+                .items()?
+                .into_iter()
+                .find(|item| matches!(item, MenuItemKind::Submenu(_)))
+            {
+                // Position 1 sits directly below "About Sunburst Disk".
+                app_submenu.insert(&check_item, 1)?;
+            }
+            Ok(menu)
+        })
+        .on_menu_event(|app_handle, event| {
+            if event.id() == CHECK_FOR_UPDATES_ID {
+                let app_handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    commands::check_for_update(app_handle).await;
+                });
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_drives,
             commands::get_capacity_snapshot,
