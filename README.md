@@ -1,111 +1,289 @@
-# Disk Analyzer
+# Sunburst Disk
 
-Небольшое macOS-десктопное приложение для анализа занятого места на дисках. Интерфейс построен на React, а доступ к файловой системе и системным операциям выполняется через Electron main process.
+**A fast, safety-first macOS disk-space analyzer with an interactive sunburst.**
+Rust + [Tauri v2](https://v2.tauri.app) backend, React interface. Inspects, previews and plans — never deletes on its own.
 
-## Архитектура
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Проект использует один рабочий путь: **React renderer → preload bridge → Electron main process**.
+<!-- Add a screenshot here, e.g.:
+![Sunburst Disk](docs/screenshot.png)
+-->
 
-- `src/App.jsx` управляет интерфейсом, навигацией, прогрессом сканирования и collector.
-- `src/components/SunburstChart.jsx` рисует интерактивную карту каталогов на Canvas.
-- `electron/main.js` получает диски через `df`, сканирует содержимое через `du`, обрабатывает IPC, открывает Finder и перемещает выбранные объекты в Корзину.
-- `electron/preload.cjs` предоставляет renderer только явно разрешённые IPC-методы.
-- `src/index.css` содержит визуальную тему приложения.
+Sunburst Disk scans a disk or a single folder and renders the result as an
+interactive sunburst next to a matching content tree, so the chart and the list
+always describe the same hierarchy. It is a Rust/Tauri rewrite of an earlier
+Electron app: the original React UI is kept, backed by a native Rust core instead
+of the Electron main process.
 
-Отдельный HTTP-backend в проекте не используется. Сканирование и удаление выполняются только через Electron IPC, поэтому логика размеров и поведения удаления находится в одном месте.
+## Safety model
 
-## Возможности
+Nothing is removed, moved or modified automatically. Every action is explicit and
+review-oriented:
 
-Приложение показывает подключённые диски, строит sunburst-визуализацию занятого места, поддерживает переход внутрь каталогов, ленивую загрузку глубоких уровней, пульсацию hover-объекта, drag-and-drop в collector и Terminal command line, Quick Look по пробелу и context menu, а также открытие объектов в Finder. После успешного сканирования результат сохраняется в памяти текущего сеанса: на стартовом экране кнопка диска меняется с `Scan` на `View`, а в её dropdown остаётся команда `Scan again`. Высота окна Home автоматически подстраивается под число подключённых хранилищ, а при переходе к анализу возвращается к стандартному размеру.
+- Deleted items go to the macOS Trash (after a short confirmation delay), never
+  unlinked in place.
+- Protected system paths (`/`, `/System`, the Data volume's `System`, `private`
+  and `usr` branches) are refused outright.
+- Hidden Space and the admin Terminal mode require an explicit, per-session
+  authorization and Full Disk Access where needed.
+- Smart Clean is a **preview**: candidates must be selected and sent to the
+  Collector by hand.
 
-Размеры файлов и каталогов берутся из одного источника — строк `du` для соответствующего пути. Вместо сложения уже накопительных размеров каталогов приложение использует размер самого узла как авторитетный. Объём тома и свободное место берутся отдельно из `df`; они не складываются с размером дерева. Для системного диска ветви `/System/Volumes` исключаются из системного остатка, чтобы Data-том не учитывался повторно.
+## Features
 
-Удаление выполняется через системную Корзину macOS. Перед операцией используется шестисекундная задержка. Если часть объектов не удалось переместить, они остаются в collector, а из дерева удаляются только подтверждённо перемещённые элементы.
+- **Interactive sunburst + content tree** sharing one hierarchy, with hover
+  pulse, stable keyboard navigation and breadcrumbs.
+- **In-process scanner** with `du -x` parity: it stays on one filesystem, prunes
+  system junk and cloud FileProvider domains (`~/Library/CloudStorage`,
+  `~/Library/Mobile Documents`), and counts each physical object once
+  (filesystem boundaries, firmlinks and hardlinks de-duplicated by
+  `(st_dev, st_ino)`).
+- **Startup-disk view** splits the sealed OS volume from the writable Data volume
+  and reconciles the difference as `hidden space...`.
+- **Details inspector**: type/class, size, permissions, access, owner, timestamps
+  and a category description tuned to the selected path.
+- **Quick Look** (bundled Swift `QLPreviewView` panel), **Reveal in Finder**,
+  **Open With** (LaunchServices via `NSWorkspace`) and **Get Info**.
+- **Archive viewer**: ZIP read in-process from its central directory, other
+  formats via `bsdtar`. Archives are opened read-only and never extracted.
+- **Live folder updates** through FSEvents (the `notify` crate), reconciled with a
+  bounded re-scan and a debounce window.
+- **Collector**: drag items from the chart or tree (or use `+`) and review them
+  before acting.
+- **Themes** (Classic / Matrix) and a saved-folder list with per-drive scan cache.
 
-## Quick Look и Hidden Space
+## Hidden Space
 
-Для обычного файла Quick Look открывается нажатием пробела, когда курсор находится над слайсом или строкой файла, через пункт native context menu или через иконку глаза в Details sidebar. Пульсирующая alpha-анимация используется как единственная hover-подсветка sunburst без постоянного glow-shadow.
+`hidden space...` is a reconciliation entry, not a folder. Opening it asks for
+Full Disk Access and then shows a diagnostic breakdown:
 
-В native context menu доступен пункт `Ask Siri…`. Он передаёт ограниченное описание выбранного объекта в заранее созданный macOS Shortcut с именем `Sunburst Disk — Ask Siri`. Основной путь запускается в фоне через `/usr/bin/shortcuts run`, передаёт prompt через stdin, направляет текстовый результат во временный output-файл и читает его обратно в Electron; результат показывается во встроенной панели Sunburst Disk. Кнопки `Expand`, `Shorten` и `Bullet List` повторно вызывают тот же Shortcut с текущим ответом как reference text, а `Copy` копирует отображаемую версию. При пустом результате панель показывает безопасные технические diagnostics: exit code и размеры output/stdout/stderr. Shortcut должен принимать `Text` input и завершаться текстовым output или `Stop and Output`; `Show Result`, `Show Alert` и `Ask for Input` в обычном input-present path использовать нельзя, иначе background process может завершиться без возвращаемого текста или ждать пользовательского действия. Полная пошаговая инструкция находится в [`docs/how-to-create-sunburst-disk-ask-siri-shortcut.md`](docs/how-to-create-sunburst-disk-ask-siri-shortcut.md). Если Shortcut отсутствует, приложение открывает Shortcuts для настройки. Произвольный вопрос нельзя напрямую внедрить в live Siri UI через публичный Electron API, поэтому UI-scripting Siri не используется.
+- **Purgeable space** — `availableCapacityForImportantUsage − availableCapacity`
+  from Foundation volume resource values (the Finder/DaisyDisk definition).
+- **Snapshots** — local APFS snapshots reported by `tmutil` (count; their space is
+  accounted inside purgeable).
+- **Diagnostic candidates** — virtual memory, system caches, Spotlight index,
+  document revisions, installer sandbox.
+- **Still hidden** — whatever remains of the filesystem accounting difference.
 
-Выбранная тема Classic или Matrix сохраняется в renderer storage и восстанавливается при следующем запуске. На Home `System Smart Clean` визуально отделён от списка и выровнен вправо; для внешних removable/ejectable volumes в dropdown доступен `Eject “DISKNAME”`, который вызывает штатный macOS `diskutil eject` только для томов, отмеченных системой как external/removable. Read-only Terminal сохраняет заданный пользователем размер при длинном выводе, прокручивает только output area, держит command row у нижней границы и поддерживает локальную команду `clear`, не выполняемую через shell. Slice или строку дерева можно перетащить на command line: приложение добавляет shell-quoted путь к безопасному helper command. Панель Read-Only Helper временно расширяется по вертикали при наведении и возвращается к предыдущей высоте после ухода курсора; выполненные команды очищаются из input и доступны через Up/Down в рамках текущей сессии. Кнопка `admin` открывает парольную авторизацию только на текущую сессию; после успеха статус меняется на `READ & WRITE`. Внутри текущей незащищённой папки становятся доступны ограниченные `touch`, `mkdir -p`, `rm --`, `mv --` и `cp -R --`; перед rm/mv/cp приложение просит подтверждение. Оба source/destination для перемещения и копирования проверяются внутри текущей папки, а `/`, System, private, usr и Data-volume protected roots остаются закрыты. `sudo`, произвольные флаги и arbitrary shell по-прежнему заблокированы.
+## Smart Clean
 
-## Live updates открытой папки
+A conservative, tiered survey (Safe / Moderate / High) of regenerable data, with
+every candidate carrying a reason and a verification note:
 
-Когда пользователь находится внутри реальной доступной директории, Electron запускает один небольшой macOS FSEvents helper только для текущего пути. Системный диск целиком, Hidden Space и protected roots не наблюдаются. FSEvents используется как сигнал invalidation, а не как готовое содержимое дерева: события объединяются в debounce-окно 450 ms, после чего приложение выполняет bounded `scanSubdir` ближайшей известной изменённой ветви. Несколько событий в одной ветви дают один reconciliation scan. FSEvents paths нормализуются между macOS firmlink-формами `/Users/...` и `/System/Volumes/Data/Users/...`, чтобы удаление не терялось при сравнении с tree path. В packaged `.app` native helper распаковывается в `app.asar.unpacked`, потому что macOS executable нельзя надёжно запускать непосредственно из `app.asar`.
+- caches, logs and saved state;
+- stale/partial downloads, old installers, large downloads and old screenshots;
+- duplicate files (size + sampled SHA-256 fingerprint);
+- local language-model weights (`~/.cache/huggingface`, `~/.ollama/models`,
+  `~/.lmstudio/models`, `~/.cache/whisper`, GPT4All) that can be re-downloaded;
+- Apple device backups (`~/Library/Application Support/MobileSync/Backup`);
+- Xcode simulator systems and device support (`CoreSimulator/Devices`,
+  `CoreSimulator/Images`, `Xcode/iOS DeviceSupport`, `Xcode/Archives`);
+- other caches/logs/language resources (`~/.npm/_cacache`, `CrashReporter`,
+  `Library/Speech`).
 
-Если macOS сообщает dropped/coalesced/root-changed event, если изменённый путь нельзя сопоставить с текущим tree или если открытая папка исчезла, приложение переключается на один полный reconciliation текущей папки. Rename/remove события reconciliate существующего родителя, а не старый уже отсутствующий путь. Metadata-only Finder/xattr events игнорируются, поскольку не меняют content/size tree. `Updating…` появляется только если reconciliation длится дольше короткого порога, поэтому быстрые фоновые события не создают мигание. После получения результата master tree, navigation и per-drive cache обновляются из одного snapshot. Рекурсивный checksum по таймеру не используется, потому что он создаёт повторный обход десятков тысяч объектов даже при отсутствии изменений.
+## Terminal
 
-`hidden space...` является reconciliation-записью, а не обычным файлом. При запросе просмотра приложение проверяет Full Disk Access. Если разрешение отсутствует, macOS System Settings открывается на странице Privacy & Security → Full Disk Access. После выдачи разрешения пользователь повторяет запрос, и Disk Analyzer пытается показать диагностические категории вроде virtual memory, caches и document revisions. Эти данные остаются защищёнными от удаления.
+An allow-listed, read-only helper (`pwd`, `df -h`, `ls …`, `du -sh`). A
+password-authenticated **admin** mode unlocks a small set of write commands
+(`touch`, `mkdir -p`, `rm`, `mv`, `cp -R`, `ln -s`) scoped to the current,
+non-protected folder and executed through `sudo -n`. Arbitrary shell, unlisted
+flags and protected roots stay blocked.
 
-## Сортировка и фильтрация
+## Ask Siri
 
-В legend доступна панель `Sort & Filter`. Она поддерживает сортировку по имени, типу, размеру и дате изменения, переключение направления ascending/descending, фильтрацию по типу объекта, минимальному размеру, дате изменения и поиску по имени. Один и тот же display tree используется для строк content tree и sunburst. Палитра верхнего уровня переназначается после текущей сортировки, а вложенные элементы наследуют цвет своего верхнего сектора, поэтому соответствие «строка → слайс» сохраняется при любом выбранном режиме.
+A context-menu action sends a bounded description of the selected object to a
+user-created Shortcut (`Sunburst Disk — Ask Siri`) via `/usr/bin/shortcuts run`
+and shows the returned text in an in-app panel, with Expand / Shorten / Bullet
+List / Copy. See `docs/how-to-create-sunburst-disk-ask-siri-shortcut.md`.
 
-Сортировка по дате получает реальные `mtime` через bulk metadata IPC; пока метаданные загружаются, элементы временно упорядочены по пути и автоматически перестраиваются после ответа файловой системы.
+## Architecture
 
-## Refresh и package contents
+```
+React renderer ──► window.electronAPI (src/tauri-bridge.js)
+                        │
+                        ▼
+        Tauri commands (src-tauri/src/commands.rs)
+                        │
+                        ▼
+   Rust core (scan · capacity · drives · inspect · related · openwith ·
+              watcher · archive · smart_clean · hidden_space · terminal ·
+              ask_siri · quick_look)  ──► macOS CLIs + one bundled Swift helper
+```
 
-Кнопка refresh в toolbar повторно сканирует текущую папку и обновляет её содержимое, размер и cached View. После перемещения объектов в Корзину Disk Analyzer автоматически выполняет такой же refresh, поэтому размер каталога не выводится как 0 B из-за локального пересчёта по неполному дереву. Новый диск перед началом сканирования отображается пустым и не сохраняет визуальное содержимое предыдущего просмотра.
+`src/tauri-bridge.js` maps `window.electronAPI.*` onto Tauri `invoke`/`listen`,
+so the renderer stayed almost unchanged through the migration. The full port
+log and the deliberate parity deltas live in
+`docs/electron-to-tauri-migration.md`.
 
-Содержимое `.app` и Photos Library packages (`.photoslibrary`, включая `Photos Library.photoslibrary`) по умолчанию свернуто: сам package отображается как единый directory entry с полным размером, но его внутренние пути не попадают в sunburst или content tree. Кнопка `Show Package Contents` в Details sidebar запускает отдельный scan только после явного запроса пользователя; для `.app` сохраняется также context-menu toggle.
+## Requirements
 
-Для физических archive-файлов (`.zip`, `.tar`, `.tar.gz`, `.tgz`, `.xz` и совместимых форматов) `Show Package Contents` открывает bounded read-only virtual tree через корректный argument-safe вызов `bsdtar -tvf <archive>`. После успешного listing archive root становится текущим virtual navigation node, а Inspector показывает loading/status, количество загруженных top-level entries либо понятную ошибку. Архив не распаковывается и не изменяется; virtual members не являются filesystem paths и не доступны для удаления, Collector или write-mode Terminal. Архивная навигация описана отдельно в [`docs/archive-preview-design.md`](docs/archive-preview-design.md).
+- macOS 11 or later (macOS 26+ additionally shows the dark/tinted app icon).
+- To build from source: Node.js 20+, a Rust toolchain, and Xcode (for the Quick
+  Look helper and the Icon Composer icon).
 
-Inspector классифицирует файлы по расширению и базовой категории — `audio`, `video`, `image`, `text`, `document`, `archive`, `font`, `database` и `other`; те же классы доступны в `Sort & Filter → Type` как независимые checkbox-фильтры. Можно выбрать несколько типов одновременно: результат использует OR semantics, а пустой выбор означает `All types`. Для media-файлов macOS `mdls` может добавить dimensions, duration, codecs, sample rate, bitrate, channels и bit depth, если эти значения доступны в metadata.
+## Install
 
-Context menu содержит `Get Info` и `Open with`: первый делает reveal в Finder и открывает нативное Finder information window, а второй получает зарегистрированные macOS applications для конкретного объекта через LaunchServices-compatible native helper. Повторное нажатие `Open with…` закрывает раскрытый список; длинные списки имеют собственную прокрутку. В конце списка есть `Other…`, который позволяет выбрать любое приложение `.app`. Оба renderer/native menu ограничивают popup областью окна, поэтому пункты у нижнего края не обрезаются. В Matrix native Electron menu заменяется стилизованным renderer menu, чтобы все пункты наследовали Matrix palette.
+Download `Sunburst Disk_0.3.0_aarch64.dmg` from
+[Releases](../../releases), open it and drag **Sunburst Disk** to *Applications*.
 
-Quick Look использует отдельный native Swift `QLPreviewView` helper, а не прямой `qlmanage` child process. Helper запускается как floating nonactivating panel, не активирует отдельное приложение и не закрывается по таймеру: он остаётся открытым, пока пользователь не закроет preview. Повторное нажатие Space на том же объекте закрывает текущий preview; выбор другого объекта заменяет его. Если Quick Look plugin аварийно завершится, падение изолировано от Electron.
-
-Путь в Details sidebar является действием `Reveal in Finder`. Вход в `Hidden Space` каждый раз требует явного подтверждения пользователя; затем Electron проверяет Full Disk Access. Если разрешение отсутствует, приложение открывает системные настройки macOS вместо чтения защищённых областей.
-
-## Запуск
-
-Требования: macOS, Node.js и npm.
+## Build from source
 
 ```bash
 npm install
-npm run electron:dev
+npm run tauri:dev        # dev build with the Vite dev server
 ```
 
-Для проверки только web-сборки:
+Release bundle (`.app` + `.dmg`):
 
 ```bash
-npm run build
-npm run lint
+npm run build:quicklook  # compile the Quick Look Swift helper (once)
+npm run tauri:build
 ```
 
-Для создания macOS-пакета:
+Rust checks (no webview needed):
 
 ```bash
-npm run electron:build
+npm run rust:test        # cargo test --lib
+npm run rust:lint        # cargo clippy --lib --bins, warnings are errors
+npm run rust:test:all    # also bins + doctests
+npm run rust:lint:all    # clippy --all-targets
 ```
 
-Команда `npm run electron:dev` запускает Vite на порту `3000`, затем открывает Electron-окно. В режиме обычного Vite без Electron операции с файловой системой недоступны намеренно.
+The macOS 26 icon is generated from `src-tauri/icons/Sunburst Disk.icon` with
+`actool`; `npm run build:icon` regenerates it (needs Xcode). The compiled
+outputs are committed, so a normal build does not need Xcode.
 
-## Безопасность и ограничения
-
-Main process принимает для сканирования, открытия и перемещения только абсолютные пути файловой системы и отбрасывает служебные идентификаторы. Сканер не следует по символическим ссылкам и исключает системный мусор вроде `.Trash` и `.Spotlight`.
-
-Приложение предназначено для macOS: команды `df`, `du`, `find`, системные пути `/System` и `/Volumes`, а также `shell.trashItem` зависят от платформы. Для полного сканирования системного диска могут потребоваться разрешения macOS на доступ к файлам и папкам.
-
-## Структура
+## Project structure
 
 ```text
 .
-├── electron/
-│   ├── main.js
-│   └── preload.cjs
+├── electron/quicklook-preview{,.swift}   # bundled Quick Look helper (+ source)
 ├── public/
-│   └── favicon.svg
-├── src/
-│   ├── components/SunburstChart.jsx
-│   ├── App.jsx
-│   ├── index.css
-│   └── main.jsx
-├── index.html
-├── package.json
-├── package-lock.json
-└── vite.config.js
+├── scripts/build-icon.sh                 # .icon → Assets.car + icon.icns (actool)
+├── src/                                  # React UI (App.jsx, components, bridge)
+├── src-tauri/                            # Rust core, Tauri commands, icons, config
+│   ├── src/
+│   ├── icons/
+│   ├── capabilities/
+│   ├── Info.plist
+│   └── tauri.conf.json
+└── docs/
 ```
+
+## Documentation
+
+- `docs/electron-to-tauri-migration.md` — architecture, command status, parity notes.
+- `docs/how-to-create-sunburst-disk-ask-siri-shortcut.md` — Ask Siri setup.
+- `docs/archive-preview-design.md` — archive viewer design.
+
+## License
+
+[MIT](LICENSE).
+
+---
+
+<details>
+<summary>🇷🇺 Русский</summary>
+
+# Sunburst Disk
+
+**Быстрый и безопасный анализатор дискового пространства macOS с интерактивной
+sunburst-диаграммой.** Бэкенд на Rust + [Tauri v2](https://v2.tauri.app),
+интерфейс на React. Приложение только анализирует, показывает предпросмотр и
+планирует — само ничего не удаляет.
+
+Sunburst Disk сканирует диск или отдельную папку и рисует результат как
+интерактивную sunburst-диаграмму рядом с тем же деревом каталогов, поэтому
+диаграмма и список всегда описывают одну иерархию. Это переписывание прежнего
+Electron-приложения на Rust/Tauri: исходный React-интерфейс сохранён, но работает
+поверх нативного Rust-ядра.
+
+## Безопасность
+
+Ничего не удаляется и не изменяется автоматически:
+
+- удаление — только в системную Корзину (после короткой задержки-подтверждения);
+- защищённые системные пути (`/`, `/System`, ветви `System`, `private`, `usr`
+  Data-тома) отклоняются;
+- Hidden Space и admin-режим Терминала требуют явной авторизации на сессию и, при
+  необходимости, Full Disk Access;
+- Smart Clean — только предпросмотр: кандидаты нужно явно выбрать и отправить в
+  Collector.
+
+## Возможности
+
+- **Sunburst + content tree** по одной иерархии, пульсация hover, устойчивая
+  навигация с клавиатуры, breadcrumbs.
+- **Сканер в процессе** с паритетом `du -x`: остаётся в пределах одной файловой
+  системы, исключает системный мусор и облачные FileProvider-домены
+  (`~/Library/CloudStorage`, `~/Library/Mobile Documents`) и считает каждый
+  физический объект один раз (границы ФС, firmlink-и и hardlink-и
+  дедуплицируются по `(st_dev, st_ino)`).
+- **Системный диск** разделяется на sealed OS-том и записываемый Data-том, а
+  разница показывается как `hidden space...`.
+- **Инспектор**: тип/класс, размер, права, владелец, даты и описание категории для
+  выбранного пути.
+- **Quick Look** (встроенный Swift-хелпер `QLPreviewView`), **Reveal in Finder**,
+  **Open With** (LaunchServices через `NSWorkspace`) и **Get Info**.
+- **Просмотр архивов**: ZIP читается в процессе по central directory, остальные
+  форматы — через `bsdtar`; только чтение, без распаковки.
+- **Живые обновления** открытой папки через FSEvents (crate `notify`).
+- **Collector**: перетаскивание из диаграммы или дерева (или кнопка `+`).
+- **Темы** Classic / Matrix и список сохранённых папок с кэшем сканов.
+
+## Hidden Space
+
+`hidden space...` — это reconciliation-запись, а не папка. При открытии
+запрашивается Full Disk Access и показывается разбивка:
+
+- **Purgeable space** — `availableCapacityForImportantUsage − availableCapacity`
+  (определение Finder/DaisyDisk);
+- **Snapshots** — локальные APFS-снимки из `tmutil` (количество; их место учтено
+  в purgeable);
+- **диагностические кандидаты** — virtual memory, системные кэши, индекс
+  Spotlight, document revisions, installer sandbox;
+- **Still hidden** — остаток файловой разницы.
+
+## Smart Clean
+
+Консервативный обзор по уровням (Safe / Moderate / High) с причиной и способом
+проверки для каждого кандидата: кэши, логи и saved state; незавершённые загрузки,
+старые инсталляторы, крупные загрузки и старые скриншоты; дубликаты файлов
+(размер + выборочный SHA-256); локальные веса языковых моделей
+(`~/.cache/huggingface`, `~/.ollama/models`, `~/.lmstudio/models`,
+`~/.cache/whisper`, GPT4All); резервные копии устройств Apple
+(`~/Library/Application Support/MobileSync/Backup`); симуляторы и device support
+Xcode (`CoreSimulator/Devices`, `CoreSimulator/Images`, `Xcode/iOS DeviceSupport`,
+`Xcode/Archives`); прочие кэши/логи/языковые ресурсы (`~/.npm/_cacache`,
+`CrashReporter`, `Library/Speech`).
+
+## Терминал
+
+Read-only хелпер по allowlist (`pwd`, `df -h`, `ls …`, `du -sh`).
+Пароль-авторизованный **admin**-режим открывает небольшой набор write-команд
+(`touch`, `mkdir -p`, `rm`, `mv`, `cp -R`, `ln -s`) в пределах текущей
+незащищённой папки через `sudo -n`. Произвольный shell, неразрешённые флаги и
+защищённые корни блокируются.
+
+## Требования и сборка
+
+macOS 11+. Для сборки из исходников: Node.js 20+, Rust toolchain и Xcode (для
+Quick Look-хелпера и иконки Icon Composer).
+
+```bash
+npm install
+npm run tauri:dev        # разработка
+npm run build:quicklook  # собрать Swift-хелпер Quick Look (один раз)
+npm run tauri:build      # релиз .app + .dmg
+npm run rust:test        # тесты Rust
+npm run rust:lint        # clippy (warnings = errors)
+```
+
+Установка: скачайте DMG из [Releases](../../releases) и перетащите **Sunburst
+Disk** в *Applications*.
+
+## Лицензия
+
+[MIT](LICENSE).
+
+</details>

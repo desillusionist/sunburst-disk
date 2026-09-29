@@ -4,18 +4,23 @@
   "private": true,
   "version": "0.3.0",
   "description": "A macOS disk usage analyzer with a visual sunburst, safe review tools and live updates for the current folder.",
+  "license": "MIT",
   "type": "module",
-  "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:fsevents": "swiftc electron/fsevents-watcher.swift -o electron/fsevents-watcher && chmod 755 electron/fsevents-watcher",
     "build:quicklook": "swiftc electron/quicklook-preview.swift -framework Cocoa -framework QuickLookUI -o electron/quicklook-preview && chmod 755 electron/quicklook-preview",
-    "build:openwith": "swiftc electron/openwith-applications.swift -framework AppKit -o electron/openwith-applications && chmod 755 electron/openwith-applications",
-    "electron:dev": "concurrently \"VITE_DEV_SERVER_URL=http://localhost:3000 vite --port 3000\" \"wait-on http://localhost:3000 && electron .\"",
-    "electron:build": "vite build && npm run build:fsevents && npm run build:quicklook && npm run build:openwith && electron-builder --mac",
+    "build:icon": "bash scripts/build-icon.sh",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml --lib",
+    "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml --lib",
+    "rust:test:all": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "rust:lint": "cargo clippy --manifest-path src-tauri/Cargo.toml --lib --bins -- -D warnings",
+    "rust:lint:all": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings"
   },
   "dependencies": {
     "lucide-react": "^1.25.0",
@@ -23,59 +28,11 @@
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.4.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
-    "concurrently": "^10.0.3",
-    "electron": "^43.2.0",
-    "electron-builder": "^26.15.3",
     "oxlint": "^1.71.0",
-    "vite": "^8.1.1",
-    "wait-on": "^9.1.0"
-  },
-  "build": {
-    "appId": "com.sunburstdisk.app",
-    "productName": "Sunburst Disk",
-    "files": [
-      "dist/**/*",
-      "electron/**/*",
-      "assets/**/*"
-    ],
-    "asarUnpack": [
-      "electron/fsevents-watcher",
-      "electron/quicklook-preview",
-      "electron/openwith-applications"
-    ],
-    "mac": {
-      "icon": "assets/SunburstDisk.icns",
-      "identity": "-",
-      "hardenedRuntime": false,
-      "target": [
-        "dmg",
-        "dir"
-      ],
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
-    },
-    "dmg": {
-      "contents": [
-        {
-          "x": 130,
-          "y": 220
-        },
-        {
-          "x": 270,
-          "y": 400,
-          "type": "file",
-          "path": "installer/README.txt",
-          "name": "README.txt"
-        },
-        {
-          "x": 410,
-          "y": 220,
-          "type": "link",
-          "path": "/Applications"
-        }
-      ]
-    }
+    "vite": "^8.1.1"
   }
 }

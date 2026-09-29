@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Rust / Tauri
+src-tauri/target
+src-tauri/gen
+src-tauri/.cargo-home
+.npm-cache

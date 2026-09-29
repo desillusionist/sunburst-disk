@@ -3294,7 +3294,7 @@ export default function App() {
       )}
 
       {/* ── Header ──────────────────────────────────────────────────────────── */}
-      <header className="mac-header">
+      <header className="mac-header" data-tauri-drag-region="deep">
         {viewState === 'scan' ? (
           <div className="mac-toolbar">
             <div className="nav-history-controls" aria-label="Navigation history">
@@ -3319,7 +3319,7 @@ export default function App() {
             </div>
             <div className={`breadcrumb-shell ${breadcrumbsCompact ? 'compact' : ''}`} ref={breadcrumbRef}>
               <div className="mac-breadcrumbs">
-                <span className="mac-pill" title="Disks and Folders" onClick={() => setViewState('drives')}>
+                <span className="mac-pill" data-tauri-drag-region="false" title="Disks and Folders" onClick={() => setViewState('drives')}>
                   {compactBreadcrumbLabel('Disks and Folders')}
                 </span>
                 {breadcrumbsCompact ? (
@@ -3337,7 +3337,7 @@ export default function App() {
                         }}
                       >…</button>
                       {breadcrumbsMenuOpen && (
-                        <div className="breadcrumb-overflow-menu" onClick={event => event.stopPropagation()}>
+                        <div className="breadcrumb-overflow-menu" data-tauri-drag-region="false" onClick={event => event.stopPropagation()}>
                           {navStack.slice(1, -2).map((node, offset) => {
                             const idx = offset + 1;
                             return (
@@ -3357,7 +3357,7 @@ export default function App() {
                       return (
                         <React.Fragment key={node.path || idx}>
                           <ChevronRight size={10} color="#656c7a" />
-                          <span className={`mac-pill ${idx === navStack.length - 1 ? 'active' : ''}`} title={node.name} onClick={() => navigateTo(node, idx)}>
+                          <span className={`mac-pill ${idx === navStack.length - 1 ? 'active' : ''}`} data-tauri-drag-region="false" title={node.name} onClick={() => navigateTo(node, idx)}>
                             {compactBreadcrumbLabel(node.name)}
                           </span>
                         </React.Fragment>
@@ -3367,7 +3367,7 @@ export default function App() {
                 ) : navStack.map((node, idx) => (
                   <React.Fragment key={node.path || idx}>
                     <ChevronRight size={10} color="#656c7a" />
-                    <span className={`mac-pill ${idx === navStack.length - 1 ? 'active' : ''}`} title={node.name} onClick={() => navigateTo(node, idx)}>
+                    <span className={`mac-pill ${idx === navStack.length - 1 ? 'active' : ''}`} data-tauri-drag-region="false" title={node.name} onClick={() => navigateTo(node, idx)}>
                       {compactBreadcrumbLabel(node.name)}
                     </span>
                   </React.Fragment>
@@ -3602,14 +3602,18 @@ export default function App() {
                   >
                     <ChevronDown size={12} />
                   </button>
-                  {driveMenuKey === driveKey && (
+                  {driveMenuKey === driveKey && (hasCachedScan || drive.isEjectable || drive.isCustomFolder) && (
                     <div className="drive-menu" onClick={event => event.stopPropagation()}>
-                      <button className="drive-menu-item" onClick={() => handleViewDrive(drive)} disabled={!hasCachedScan}>
-                        View saved scan
-                      </button>
-                      <button className="drive-menu-item" onClick={() => handleScanDrive(drive)}>
-                        Scan again
-                      </button>
+                      {hasCachedScan && (
+                        <button className="drive-menu-item" onClick={() => handleViewDrive(drive)}>
+                          View saved scan
+                        </button>
+                      )}
+                      {hasCachedScan && (
+                        <button className="drive-menu-item" onClick={() => handleScanDrive(drive)}>
+                          Scan again
+                        </button>
+                      )}
                       {drive.isEjectable && (
                         <button
                           className="drive-menu-item drive-eject-item"
