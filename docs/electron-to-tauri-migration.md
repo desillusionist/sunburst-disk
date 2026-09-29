@@ -471,9 +471,9 @@ Everything that remains is optional:
     `RELEASE_HIGHLIGHTS` (one entry per version) instead of a hardcoded bullet, so
     each release updates its own copy; the first-run modal still shows
     `CORE_FEATURES`.
-  - **Requires the releases to be publicly reachable.** The repository is private
-    today, so the check falls back to “Couldn’t check · Open releases”; it starts
-    reporting versions as soon as the repo (or the update endpoint) is public.
+  - The repository is now **public**, so `releases/latest` is reachable anonymously
+    and the check reports the newest version directly; if GitHub is unreachable it
+    falls back to “Couldn’t check · Open releases”.
 
 ## Terminal security model
 
