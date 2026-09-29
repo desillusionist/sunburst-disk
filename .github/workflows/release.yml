@@ -1,0 +1,54 @@
+# Build and publish a release whenever a version tag is pushed.
+#
+# Pushing a `v*` tag (e.g. `git tag v0.3.0 && git push origin v0.3.0`) is the
+# whole release: this workflow builds the Apple-Silicon app + DMG on a macOS
+# runner and attaches them to a draft GitHub Release.
+#
+# Mirrors the local `npm run tauri:build` flow. The macOS 26 icon (Assets.car)
+# and the Quick Look helper binary are committed, so the runner only needs to
+# rebuild the Swift helper and the Rust/Tauri app.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    # macos-14 is Apple Silicon; keep this in sync with the arm64-only release.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      # Rebuild the Quick Look Swift helper for the runner (committed binary is arm64).
+      - run: npm run build:quicklook
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Sunburst Disk ${{ github.ref_name }}'
+          releaseBody: 'See the assets below to download and install. Apple Silicon (arm64) only.'
+          releaseDraft: true
+          prerelease: false
+          args: --target aarch64-apple-darwin
