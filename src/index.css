@@ -857,7 +857,7 @@ body {
 }
 .legend-header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .view-options-trigger {
-  display: flex; align-items: center; gap: 4px; padding: 4px 7px; border: 1px solid #303741; border-radius: 5px;
+  display: inline-flex; align-items: center; justify-content: center; line-height: 0; padding: 5px 6px; border: 1px solid #303741; border-radius: 5px;
   background: #242931; color: #8f97a5; font-size: 10px; cursor: pointer;
 }
 .view-options-trigger:hover, .view-options-trigger.active { background: #303742; color: #e1e4e8; border-color: #4a5564; }
@@ -996,7 +996,8 @@ body {
 .sort-direction-btn:hover { background: #303742; color: #fff; }
 .view-options-reset { margin-top: 9px; padding: 0; border: 0; background: transparent; color: #7aa2d8; font-size: 10px; cursor: pointer; }
 .view-options-reset:hover { color: #afd0ff; }
-.legend-title { font-size: 17px; font-weight: 500; color: #d8dcde; }
+.legend-title { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 17px; font-weight: 500; color: #d8dcde; }
+.legend-title .legend-title-crawl { flex: 0 1 auto; min-width: 0; max-width: 100%; color: inherit; font: inherit; }
 .legend-preview-badge {
   font-size: 10px;
   color: #3b82f6;
@@ -1776,7 +1777,10 @@ body {
 .smart-clean-row:hover { background: rgba(255,255,255,.04); }
 .smart-clean-row input { accent-color: #d5ad45; }
 .smart-clean-candidate-main { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
-.smart-clean-candidate-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e5e7eb; font-size: 11px; }
+.smart-clean-candidate-name { display: flex; align-items: center; gap: 6px; overflow: hidden; color: #e5e7eb; font-size: 11px; }
+.smart-clean-candidate-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.smart-clean-age { flex: 0 0 auto; padding: 1px 6px; border: 1px solid rgba(148,163,184,.28); border-radius: 999px; background: rgba(148,163,184,.12); color: #9aa0ac; font-size: 8px; white-space: nowrap; }
+.smart-clean-candidate-hint { color: #d5ad45; font-size: 9px; }
 .smart-clean-candidate-meta,
 .smart-clean-candidate-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8f97a5; font-size: 9px; }
 .smart-clean-candidate-path { color: #687384; font-family: SFMono-Regular, Menlo, monospace; }

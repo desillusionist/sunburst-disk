@@ -19,12 +19,31 @@ const RING_COLORS = [
   '#ec4899', '#f97316', '#14b8a6', '#6366f1', '#a855f7'
 ];
 
+// Distinct pale-red fill for hidden-space entries, kept in every theme (incl.
+// Matrix). It is reserved for the unlocked session; while locked the slice is a
+// neutral outline instead.
+const HIDDEN_SPACE_FILL = '#ff7b8a';
+const HIDDEN_SPACE_LOCKED_OUTLINE = '#9aa0ac';
+
+/** The hidden-space reconciliation slice and its diagnostic rows. */
+function isHiddenSpaceNode(node) {
+  return Boolean(node)
+    && (node.path === '__hidden__'
+      || node.name === 'hidden space...'
+      || node.isHiddenSpaceRemainder === true);
+}
+
 function getBaseColor(node, index, theme) {
   const name = typeof node === 'string' ? node : node?.name;
   const type = typeof node === 'string' ? null : node?.type;
+  // Hidden space stays visually distinct even where every other slice is green,
+  // but the pale-red is only used once the session is unlocked.
+  if (isHiddenSpaceNode(node)) {
+    return node?.hiddenSpaceAdminUnlocked === true ? HIDDEN_SPACE_FILL : HIDDEN_SPACE_LOCKED_OUTLINE;
+  }
   if (theme === 'matrix') return '#39ff66';
   if (name === 'smaller objects...') return COLOR_FAMILY['smaller objects...'];
-  if (name === 'hidden space...' || type === 'special') return COLOR_FAMILY['hidden space...'];
+  if (type === 'special') return COLOR_FAMILY['hidden space...'];
   if (type === 'file') return '#64748b';
   if (type === 'directory') return COLOR_FAMILY[name] || RING_COLORS[index % RING_COLORS.length];
   return COLOR_FAMILY[name] || RING_COLORS[index % RING_COLORS.length];
@@ -55,9 +74,14 @@ export default function SunburstChart({
   theme = 'classic',
   collectedPaths = new Set(),
   centerValue = '',
-  centerUnit = ''
+  centerUnit = '',
+  freeFraction = 0,
+  freeValue = '',
+  freeUnit = '',
+  lockedHiddenHoverPath = null
 }) {
   const [canvasSize, setCanvasSize] = useState(540);
+  const [gapHover, setGapHover] = useState(false);
   const stageRef = useRef(null);
   const canvasRef = useRef(null);
   const pulseCanvasRef = useRef(null);
@@ -77,7 +101,8 @@ export default function SunburstChart({
   const lazyQueueRef = useRef([]);
   const lazyPendingRef = useRef(new Set());
   const lazyActiveRef = useRef(0);
-  const centerRadiusRef = useRef(44);
+  const centerRadiusRef = useRef(0);
+  const gapRegionRef = useRef(null);
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -251,35 +276,51 @@ export default function SunburstChart({
       const visualStart = startAngle + angularGap;
       const visualEnd = endAngle - angularGap;
 
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(cx, cy, r1, visualStart, visualEnd, false);
-      ctx.arc(cx, cy, r2, visualEnd, visualStart, true);
-      ctx.closePath();
-      const isOtherProtectedSpace = node?.name === 'Other protected space' && node?.hiddenSpaceAdminUnlocked;
-      ctx.fillStyle = isOtherProtectedSpace
-        ? '#ff7b8a'
-        : theme === 'matrix'
-          ? '#39ff66'
-          : isCollected
-            ? '#3a3d45'
-            : node.isBulk
-              ? COLOR_FAMILY['smaller objects...']
-              : color;
-      const baseAlpha = isOtherProtectedSpace
-        ? 0.9 * (1 - alphaBoost)
-        : theme === 'matrix'
-          ? Math.max(0.19, 1 - (depth - 1) * 0.09) * (1 - alphaBoost)
-          : isCollected ? 0.6 * (1 - alphaBoost)
-            : Math.max(0.45, 1 - (depth - 1) * 0.06) * (1 - alphaBoost);
-      ctx.globalAlpha = baseAlpha * transitionOpacity;
-      ctx.fill();
-      if (theme !== 'matrix') {
-        ctx.strokeStyle = '#1d2127';
-        ctx.lineWidth = 0.75;
-        ctx.stroke();
+      // Hidden space is pale-red only once the session is unlocked with the admin
+      // password. While locked it is a neutral 1px outline with no fill -- except
+      // while hovered, when the pulse overlay owns it so it can fade to fully
+      // transparent.
+      const isHiddenSpace = isHiddenSpaceNode(node);
+      const hiddenUnlocked = isHiddenSpace && node?.hiddenSpaceAdminUnlocked === true;
+      const lockedHidden = isHiddenSpace && !hiddenUnlocked;
+      if (!(lockedHidden && node?.path === lockedHiddenHoverPath)) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, r1, visualStart, visualEnd, false);
+        ctx.arc(cx, cy, r2, visualEnd, visualStart, true);
+        ctx.closePath();
+        if (lockedHidden) {
+          // Neutral outline, no fill; Matrix stays green until unlocked.
+          ctx.strokeStyle = theme === 'matrix' ? '#39ff66' : HIDDEN_SPACE_LOCKED_OUTLINE;
+          ctx.lineWidth = 1;
+          ctx.globalAlpha = 0.9 * transitionOpacity;
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = isHiddenSpace
+            ? HIDDEN_SPACE_FILL
+            : theme === 'matrix'
+              ? '#39ff66'
+              : isCollected
+                ? '#3a3d45'
+                : node.isBulk
+                  ? COLOR_FAMILY['smaller objects...']
+                  : color;
+          const baseAlpha = isHiddenSpace
+            ? 0.9 * (1 - alphaBoost)
+            : theme === 'matrix'
+              ? Math.max(0.19, 1 - (depth - 1) * 0.09) * (1 - alphaBoost)
+              : isCollected ? 0.6 * (1 - alphaBoost)
+                : Math.max(0.45, 1 - (depth - 1) * 0.06) * (1 - alphaBoost);
+          ctx.globalAlpha = baseAlpha * transitionOpacity;
+          ctx.fill();
+          if (theme !== 'matrix' || isHiddenSpace) {
+            ctx.strokeStyle = '#1d2127';
+            ctx.lineWidth = 0.75;
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
       }
-      ctx.restore();
 
       if (!isCollected) {
         slices.push({ node, r1, r2, startAngle, endAngle, depth });
@@ -306,12 +347,26 @@ export default function SunburstChart({
       });
     }
 
-    // Root ring across the full circle
+    // Root ring. When the volume's free space is known (drive root only) the
+    // ring spans just the used fraction of the circle, leaving a proportional
+    // gap that reads as free space (DaisyDisk style). Otherwise it closes fully.
     const top = (renderData.children || []).filter(c => (c.size || 0) > 0);
     const topSum = top.reduce((s, c) => s + (c.size || 0), 0);
-    let a = 0;
+    const gap = Math.max(0, Math.min(1, freeFraction));
+    const rootStart = gap > 0 ? -Math.PI / 2 : 0;   // gap sits at 12 o'clock
+    const usedSpan = Math.PI * 2 * (1 - gap);
+    // Remember where the free-space gap is so pointer hover can report it.
+    gapRegionRef.current = gap > 0
+      ? {
+          r1: innerRadius,
+          r2: Math.max(innerRadius + 1, innerRadius + ringWidth - 1.2),
+          start: rootStart + usedSpan,
+          end: rootStart + Math.PI * 2
+        }
+      : null;
+    let a = rootStart;
     top.forEach((child, i) => {
-      const sweep = topSum > 0 ? ((child.size || 0) / topSum) * Math.PI * 2 : 0;
+      const sweep = topSum > 0 ? ((child.size || 0) / topSum) * usedSpan : 0;
               drawNode(child, a, a + sweep, 1, colorAssignments[child.path] || getBaseColor(child, i, theme));
 
       a += sweep;
@@ -340,7 +395,7 @@ export default function SunburstChart({
 
     // Lazy children are requested on demand from pointer interaction below.
     // Scanning every visible frontier here caused a burst of IPC work on large disks.
-  }, [data, colorAssignments, collectedPaths, theme]);
+  }, [data, colorAssignments, collectedPaths, theme, freeFraction, lockedHiddenHoverPath]);
 
   const clearPulseOverlay = useCallback(() => {
     const canvas = pulseCanvasRef.current;
@@ -372,9 +427,6 @@ export default function SunburstChart({
     }
     if (!slice) return;
 
-    const pulseAlpha = theme === 'matrix'
-      ? pulseValueRef.current * 0.9
-      : 0.1 + pulseValueRef.current * 0.9;
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
     const angularGap = theme === 'matrix' ? Math.min(0.003, (slice.endAngle - slice.startAngle) * 0.25) : 0;
@@ -385,9 +437,20 @@ export default function SunburstChart({
     ctx.arc(cx, cy, slice.r1, visualStart, visualEnd, false);
     ctx.arc(cx, cy, slice.r2, visualEnd, visualStart, true);
     ctx.closePath();
-    ctx.fillStyle = theme === 'matrix' ? '#000000' : '#ffffff';
-    ctx.globalAlpha = pulseAlpha;
-    ctx.fill();
+    if (isHiddenSpaceNode(slice.node) && slice.node?.hiddenSpaceAdminUnlocked !== true) {
+      // The base outline is suppressed while this slice is hovered, so the stroke
+      // breathes from the normal outline down to fully transparent.
+      ctx.strokeStyle = theme === 'matrix' ? '#39ff66' : HIDDEN_SPACE_LOCKED_OUTLINE;
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.9 * (1 - pulseValueRef.current);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = theme === 'matrix' ? '#000000' : '#ffffff';
+      ctx.globalAlpha = theme === 'matrix'
+        ? pulseValueRef.current * 0.9
+        : 0.1 + pulseValueRef.current * 0.9;
+      ctx.fill();
+    }
     ctx.restore();
   }, [highlightedPath, keyboardNavigationActive, theme]);
 
@@ -514,23 +577,40 @@ export default function SunburstChart({
 
   function hitTest(e) {
     const canvas = canvasRef.current;
-    if (!canvas) return { center: false, slice: null };
+    if (!canvas) return { center: false, slice: null, gap: false };
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     const x = (e.clientX - rect.left) * scaleX - canvas.width / 2;
     const y = (e.clientY - rect.top) * scaleY - canvas.height / 2;
     const dist = Math.sqrt(x * x + y * y);
-    if (dist <= centerRadiusRef.current) return { center: true, slice: null };   // center hub zone
+    if (dist <= centerRadiusRef.current) return { center: true, slice: null, gap: false };   // center hub zone
     let ang = Math.atan2(y, x);
-    if (ang < 0) ang += Math.PI * 2;
+    if (ang < 0) ang += Math.PI * 2;   // [0, 2π)
+    const TAU = Math.PI * 2;
     let best = null;
     for (const s of sliceAnglesRef.current) {
-      if (dist >= s.r1 && dist <= s.r2 && ang >= s.startAngle && ang <= s.endAngle) {
+      if (dist < s.r1 || dist > s.r2) continue;
+      // Slice spans are contiguous but may start at an arbitrary offset (the
+      // free-space gap starts the root ring at -π/2), so compare with a wrapped
+      // delta -- otherwise part of an arc falls outside [start, end] and becomes
+      // unhoverable.
+      const span = s.endAngle - s.startAngle;
+      let delta = (ang - s.startAngle) % TAU;
+      if (delta < 0) delta += TAU;
+      if (delta <= span) {
         if (!best || s.depth > best.depth) best = s; // prefer innermost enclosure match
       }
     }
-    return { center: false, slice: best };
+    // The free-space gap: inside the root ring annulus but between slices.
+    let gap = false;
+    const region = gapRegionRef.current;
+    if (!best && region && dist >= region.r1 && dist <= region.r2) {
+      let delta = (ang - region.start) % TAU;
+      if (delta < 0) delta += TAU;
+      gap = delta <= (region.end - region.start);
+    }
+    return { center: false, slice: best, gap };
   }
 
   return (
@@ -553,7 +633,8 @@ export default function SunburstChart({
         }}
         onMouseMove={e => {
         if (animRef.current) return;
-        const { center, slice } = hitTest(e);
+        const { center, slice, gap } = hitTest(e);
+        setGapHover(gap);
         const nextPath = slice?.node?.path || null;
         if (hoveredPathRef.current !== nextPath) {
           hoveredPathRef.current = nextPath;
@@ -597,6 +678,7 @@ export default function SunburstChart({
           setHoveredNode(null);
         }
         if (!highlightedPath) stopPulse();
+        setGapHover(false);
       }}
       onContextMenu={e => {
         if (animRef.current) return;
@@ -628,8 +710,8 @@ export default function SunburstChart({
         }}
         aria-hidden="true"
       >
-        {centerValue}
-        <span style={{ fontSize: `${Math.max(9, Math.min(16, canvasSize * 12 / 540))}px` }}>{centerUnit}</span>
+        {gapHover && freeValue ? freeValue : centerValue}
+        <span style={{ fontSize: `${Math.max(9, Math.min(16, canvasSize * 12 / 540))}px` }}>{gapHover && freeUnit ? freeUnit : centerUnit}</span>
       </div>
     </div>
   );

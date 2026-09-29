@@ -427,6 +427,29 @@ Everything that remains is optional:
     `sensitive_is_checked_relative_to_the_root`,
     `new_smart_clean_roots_are_registered`, plus `hidden_space_probe` /
     `preview_probe` (ignored).
+- **r23** — Renderer polish (content-tree header + locked hidden-space slice):
+  - The locked `hidden space...` slice is a neutral 1px outline with no fill --
+    the pale-red fill is reserved for the unlocked session. On hover the base
+    outline is suppressed (via the new `lockedHiddenHoverPath` prop) and the pulse
+    overlay strokes it with alpha `0.9 · (1 − pulse)`, so it fades from its normal
+    look down to fully transparent. Previously the locked slice was pale-red and
+    the hover pulse went 25%→100% opacity *on top of* the static outline, so it
+    never reached transparent.
+  - The `preview` and `top 100` badges are removed from the content-tree title
+    area to free up space.
+  - The content-tree title (`legend-title`) now crawls automatically whenever a
+    slice is hovered, so a long hovered name is readable without hovering the
+    title text itself.
+  - The `Sort & Filter` text button is replaced by the compact `ListFilter`
+    Lucide icon (equivalent to the SF Symbol `line.3.horizontal.decrease`),
+    keeping its `title`, `aria-label`, active- and filters-active states.
+- **r24** — Smart Clean rows show candidate age. Each row renders the age from
+  the candidate's ISO `modifiedAt` (e.g. `35d ago`, or `today`), and safe,
+  regenerable candidates older than 60 days get an
+  "Unused for N days — consider cleaning" hint. Visible candidates are now
+  ordered largest-first. No backend change was needed: the Rust
+  `SmartCleanCandidate` already serialized `modifiedAt`, `category` and
+  `categoryId`.
 
 ## Terminal security model
 

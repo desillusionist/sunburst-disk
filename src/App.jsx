@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ChevronDown, PanelRight, PanelRightClose, RefreshCw, ShieldCheck, ShieldAlert, LockKeyhole, AlertTriangle, Folder, FileText, Trash2, X, RotateCcw, Copy, Eye, Maximize2, Minimize2, Sparkles, List } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ChevronDown, PanelRight, PanelRightClose, RefreshCw, ShieldCheck, ShieldAlert, LockKeyhole, AlertTriangle, Folder, FileText, Trash2, X, RotateCcw, Copy, Eye, Maximize2, Minimize2, Sparkles, List, ListFilter } from 'lucide-react';
 import SunburstChart from './components/SunburstChart';
 import DetailsSidebar from './components/DetailsSidebar';
 import DebugDownbar from './components/DebugDownbar';
@@ -52,10 +52,19 @@ const COLOR_MAP = {
 };
 const RING_COLORS = ['#eab308','#22c55e','#06b6d4','#3b82f6','#8b5cf6','#ec4899','#f97316','#14b8a6','#6366f1'];
 function getNodeColor(node, idx, matrixTheme = false) {
-  if (node?.name === 'Other protected space' && node?.hiddenSpaceAdminUnlocked) return 'rgba(255, 123, 138, 0.9)';
+  // Hidden space is pale-red only once the session is unlocked with the admin
+  // password; while locked it uses a neutral grey. Match on the hidden-space
+  // flags (the remainder row was renamed from 'Other protected space' to
+  // 'Still hidden') rather than a name.
+  const isHiddenSpace = node?.path === '__hidden__'
+    || node?.name === 'hidden space...'
+    || node?.isHiddenSpaceRemainder;
+  if (isHiddenSpace) {
+    return node?.hiddenSpaceAdminUnlocked === true ? 'rgba(255, 123, 138, 0.9)' : 'rgba(154, 160, 172, 0.9)';
+  }
   if (matrixTheme) return '#39ff66';
   if (node?.name === 'smaller objects...') return COLOR_MAP['smaller objects...'];
-  if (node?.name === 'hidden space...' || node?.type === 'special') return COLOR_MAP['hidden space...'];
+  if (node?.type === 'special') return COLOR_MAP['hidden space...'];
   if (node?.type === 'file') return '#64748b';
   return COLOR_MAP[node?.name] || RING_COLORS[idx % RING_COLORS.length];
 }
@@ -873,6 +882,20 @@ function normalizeSmartCleanRiskValue(risk) {
   return 'review';
 }
 
+// Smart Clean candidates carry an ISO `modifiedAt`; surface its age so stale
+// caches read like the review lists in comparable disk tools.
+function smartCleanAgeDays(candidate) {
+  const parsed = Date.parse(candidate?.modifiedAt || '');
+  if (!Number.isFinite(parsed)) return null;
+  const days = Math.floor((Date.now() - parsed) / 86400000);
+  return days >= 0 ? days : null;
+}
+
+function formatSmartCleanAge(days) {
+  if (days === null || days === undefined) return null;
+  return days <= 0 ? 'today' : `${days}d ago`;
+}
+
 function buildSmartCleanTelemetry(candidates, riskFilter = 'all', categoryFilters = new Set()) {
   const categoryIds = [...categoryFilters];
   const normalized = (candidates || []).map(candidate => ({
@@ -1206,7 +1229,6 @@ export default function App() {
     });
     return result;
   }, [currentViewDisplayNode, viewOptions, displayMetadata, packageContentsShown, displayOptionsKey, needsDisplayMetadata]);
-  const isPreviewNode = Boolean(liveHoveredNode && liveHoveredNode.children && liveHoveredNode.children.length > 0);
   const colorAssignments = useMemo(() => Object.fromEntries((previewNode?.children || []).map((item, index) => [
     item.path,
     getNodeColor(item, index, matrixTheme)
@@ -1965,11 +1987,13 @@ export default function App() {
     const risk = normalizeSmartCleanRiskValue(candidate.risk);
     return { ...counts, [risk]: (counts[risk] || 0) + 1 };
   }, { safe: 0, review: 0, high: 0 });
-  const smartCleanVisibleCandidates = smartCleanCandidates.filter(candidate => {
-    const riskMatches = smartCleanRiskFilter === 'all' || normalizeSmartCleanRiskValue(candidate.risk) === smartCleanRiskFilter;
-    const categoryMatches = smartCleanCategoryFilters.size === 0 || smartCleanCategoryFilters.has(candidate.categoryId);
-    return riskMatches && categoryMatches;
-  });
+  const smartCleanVisibleCandidates = smartCleanCandidates
+    .filter(candidate => {
+      const riskMatches = smartCleanRiskFilter === 'all' || normalizeSmartCleanRiskValue(candidate.risk) === smartCleanRiskFilter;
+      const categoryMatches = smartCleanCategoryFilters.size === 0 || smartCleanCategoryFilters.has(candidate.categoryId);
+      return riskMatches && categoryMatches;
+    })
+    .sort((a, b) => (Number(b.size) || 0) - (Number(a.size) || 0));
   const smartCleanSelectedItems = smartCleanCandidates.filter(candidate => smartCleanSelected.has(candidate.path));
   const smartCleanSelectedSize = smartCleanSelectedItems.reduce((sum, candidate) => sum + (Number(candidate.size) || 0), 0);
 
@@ -2986,7 +3010,18 @@ export default function App() {
     expandedArchivePaths.has(previewNode.path) &&
     ((archiveContentsByPath[previewNode.path]?.length || 0) > 0 || (previewNode.children?.length || 0) > 0)
   );
-  const isFileHover = (liveHoveredNode?.type === 'file' && !hoveredExpandedArchive && !currentExpandedArchive) || isCollapsedAppHover;
+  // A locked hidden-space slice behaves like a leaf: show only its title + size.
+  const isLockedHiddenHover = Boolean(
+    liveHoveredNode
+      && (liveHoveredNode.path === '__hidden__'
+        || liveHoveredNode.name === 'hidden space...'
+        || liveHoveredNode.isHiddenSpaceRemainder)
+      && liveHoveredNode.hiddenSpaceAdminUnlocked !== true
+  );
+  const isFileHover = (liveHoveredNode?.type === 'file' && !hoveredExpandedArchive && !currentExpandedArchive) || isCollapsedAppHover || isLockedHiddenHover;
+  // Let the chart suppress its static locked-hidden outline while that slice is
+  // hovered, so the pulse overlay's transparent phase is genuinely transparent.
+  const lockedHiddenHoverPath = isLockedHiddenHover ? (liveHoveredNode?.path || null) : null;
   const archiveDisplaySource = hoveredExpandedArchive
     ? liveHoveredNode
     : currentExpandedArchive
@@ -3221,6 +3256,20 @@ export default function App() {
   // reports allocated directory blocks and hidden/excluded entries separately.
   const currentTotalSize = previewNode?.size || 0;
   const liveHeaderNode = isFileHover ? liveHoveredNode : previewNode;
+  // Drive-root only: leave a proportional gap for free space in the root ring.
+  // Disabled for folder scans and any drilled-in / virtual view (path differs).
+  const driveRootPath = currentDrive?.scanPath || currentDrive?.mount || null;
+  const chartFreeFraction = (currentDrive
+    && !currentDrive.isCustomFolder
+    && Number(currentDrive.total) > 0
+    && chartNode?.path
+    && driveRootPath
+    && chartNode.path === driveRootPath)
+    ? Math.max(0, Math.min(1, (Number(currentDrive.free) || 0) / Number(currentDrive.total)))
+    : 0;
+  const chartFreeLabel = chartFreeFraction > 0 ? formatBytes(Number(currentDrive?.free) || 0) : '';
+  const chartFreeValue = chartFreeLabel ? chartFreeLabel.split(' ')[0] : '';
+  const chartFreeUnit = chartFreeLabel ? chartFreeLabel.split(' ')[1] : '';
 
   return (
     <div className={`mac-window ${matrixTheme ? 'theme-matrix' : ''}`} onClick={() => { setContextMenu(null); }}>
@@ -3707,23 +3756,34 @@ export default function App() {
                   ))}
                 </div>
                 <div className="smart-clean-list">
-                  {smartCleanVisibleCandidates.map(candidate => (
-                    <label key={candidate.path} className="smart-clean-row">
-                      <input
-                        type="checkbox"
-                        checked={smartCleanSelected.has(candidate.path)}
-                        onChange={() => toggleSmartCleanCandidate(candidate.path)}
-                      />
-                      <span className="smart-clean-candidate-main">
-                        <span className="smart-clean-candidate-name">{candidate.name}</span>
-                        <span className="smart-clean-candidate-meta">{candidate.category} · {candidate.reason}</span>
-                        <span className="smart-clean-candidate-path" title={candidate.path}>{candidate.path}</span>
-                        {candidate.verification && <span className="smart-clean-candidate-verification">Verification: {candidate.verification}</span>}
-                      </span>
-                      <span className={`smart-clean-risk risk-${normalizeSmartCleanRiskValue(candidate.risk)}`}>{normalizeSmartCleanRiskValue(candidate.risk) === 'safe' ? 'Safe' : normalizeSmartCleanRiskValue(candidate.risk) === 'high' ? 'High' : 'Moderate'}</span>
-                      <span className="smart-clean-candidate-size">{formatBytes(candidate.size)}</span>
-                    </label>
-                  ))}
+                  {smartCleanVisibleCandidates.map(candidate => {
+                    const risk = normalizeSmartCleanRiskValue(candidate.risk);
+                    const ageDays = smartCleanAgeDays(candidate);
+                    const ageLabel = formatSmartCleanAge(ageDays);
+                    return (
+                      <label key={candidate.path} className="smart-clean-row">
+                        <input
+                          type="checkbox"
+                          checked={smartCleanSelected.has(candidate.path)}
+                          onChange={() => toggleSmartCleanCandidate(candidate.path)}
+                        />
+                        <span className="smart-clean-candidate-main">
+                          <span className="smart-clean-candidate-name">
+                            <span className="smart-clean-candidate-label" title={candidate.name}>{candidate.name}</span>
+                            {ageLabel && <span className="smart-clean-age">{ageLabel}</span>}
+                          </span>
+                          <span className="smart-clean-candidate-meta">{candidate.category} · {candidate.reason}</span>
+                          <span className="smart-clean-candidate-path" title={candidate.path}>{candidate.path}</span>
+                          {candidate.verification && <span className="smart-clean-candidate-verification">Verification: {candidate.verification}</span>}
+                          {risk === 'safe' && ageDays >= 60 && (
+                            <span className="smart-clean-candidate-hint">Unused for {ageDays} days — consider cleaning</span>
+                          )}
+                        </span>
+                        <span className={`smart-clean-risk risk-${risk}`}>{risk === 'safe' ? 'Safe' : risk === 'high' ? 'High' : 'Moderate'}</span>
+                        <span className="smart-clean-candidate-size">{formatBytes(candidate.size)}</span>
+                      </label>
+                    );
+                  })}
                   {!smartCleanVisibleCandidates.length && <div className="smart-clean-empty">No candidates in this safety tier. Inspected {smartCleanData?.roots?.length || 0} approved location{smartCleanData?.roots?.length === 1 ? '' : 's'}; a root with no matching items is not a deletion error.</div>}
                 </div>
                 <div className="smart-clean-footer">
@@ -3800,6 +3860,10 @@ export default function App() {
                   collectedPaths={collectedPaths}
                   centerValue={formatBytes(liveHoveredNode ? liveHoveredNode.size : currentTotalSize).split(' ')[0]}
                   centerUnit={formatBytes(liveHoveredNode ? liveHoveredNode.size : currentTotalSize).split(' ')[1]}
+                  freeFraction={chartFreeFraction}
+                  freeValue={chartFreeValue}
+                  freeUnit={chartFreeUnit}
+                  lockedHiddenHoverPath={lockedHiddenHoverPath}
                 />
               </>
             ) : null}
@@ -4037,13 +4101,11 @@ export default function App() {
           <div className="legend-area">
             <div className="legend-header">
               <div className="legend-title">
-                {liveHeaderNode?.name || (loading ? currentDrive?.name || 'Scanning…' : '')}
-                {isPreviewNode && liveHoveredNode?.type !== 'file' && (
-                  <span className="legend-preview-badge"> preview</span>
-                )}
-                {previewNode?.previewLimited && !isFileHover && (
-                  <span className="legend-preview-badge"> top 100</span>
-                )}
+                <CrawlLabel
+                  name={liveHeaderNode?.name || (loading ? currentDrive?.name || 'Scanning…' : '')}
+                  className="legend-title-crawl"
+                  active={Boolean(hoveredNode)}
+                />
                 {currentArchiveStatus?.status === 'loading' && (
                   <span className="legend-preview-badge archive-status-loading"> {currentArchiveStatus.message}</span>
                 )}
@@ -4080,8 +4142,7 @@ export default function App() {
                     setViewOptionsOpen(open => !open);
                   }}
                 >
-                  <span>Sort & Filter</span>
-                  <ChevronDown size={11} />
+                  <ListFilter size={14} />
                 </button>
               </div>
             </div>
