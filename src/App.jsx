@@ -934,10 +934,44 @@ function buildSmartCleanTelemetry(candidates, riskFilter = 'all', categoryFilter
 // Injected by Vite from package.json (see vite.config.js).
 const APP_VERSION = __APP_VERSION__;
 const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
+const RELEASES_API = 'https://api.github.com/repos/desillusionist/sunburst-disk/releases/latest';
+const RELEASES_PAGE = 'https://github.com/desillusionist/sunburst-disk/releases';
+
+// Content of the onboarding "Recent improvements" list: one entry per release,
+// newest first. Add a new entry for each version — the running version's entry
+// is shown on the "What's new" page after an update.
+const RELEASE_HIGHLIGHTS = {
+  '0.3.1': [
+    'The locked “hidden space…” slice is a neutral outline and pulses to fully transparent on hover; the pale-red fill is reserved for the unlocked session.',
+    'The content-tree title scrolls automatically while a slice is hovered, Sort & Filter is a compact icon, and the preview badges are gone.',
+    'Smart Clean rows show each candidate’s age and flag safe caches unused for 60+ days, ordered largest first.',
+    'The startup disk now shows your real disk name instead of a hard-coded one.'
+  ]
+};
+
+const CORE_FEATURES = [
+  'Interactive sunburst and stable content-tree selection, including held ArrowUp/ArrowDown movement.',
+  'Live Finder change reconciliation through the macOS FSEvents watcher and explicit Refresh.',
+  'Review-first Collector and System Smart Clean preview with Safe, Moderate and High-risk tiers; protected roots remain blocked.',
+  'Archive/package contents, Quick Look, Finder Reveal, Get Info, Open With, Terminal helpers and Classic/Matrix themes.'
+];
+
+// Numeric, segment-wise comparison so e.g. "0.10.0" sorts above "0.9.9".
+function compareVersions(a, b) {
+  const left = String(a || '').split('.').map(part => parseInt(part, 10) || 0);
+  const right = String(b || '').split('.').map(part => parseInt(part, 10) || 0);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const diff = (left[i] || 0) - (right[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
 
 export default function App() {
   const [viewState, setViewState]           = useState('drives');
   const [drives, setDrives]                 = useState([]);
+  const [updateState, setUpdateState]       = useState('idle'); // idle | checking | current | available | error
+  const [updateInfo, setUpdateInfo]         = useState(null);
   const [currentDrive, setCurrentDrive]     = useState(null);
   const [scannedTree, setScannedTree]       = useState(null);
   const [scanCache, setScanCache]           = useState({});
@@ -1674,6 +1708,28 @@ export default function App() {
   const completeOnboarding = () => {
     setOnboardingOpen(false);
     try { window.localStorage.setItem(ONBOARDING_STORAGE_KEY, APP_VERSION); } catch {}
+  };
+
+  const openExternal = url => { void window.electronAPI?.openExternalUrl?.(url); };
+
+  // Lightweight update check: compare the running version with the newest GitHub
+  // release. It never downloads or installs anything; the user opens the release
+  // page and installs manually.
+  const checkForUpdates = async () => {
+    setUpdateState('checking');
+    setUpdateInfo(null);
+    try {
+      const response = await fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' } });
+      if (!response.ok) throw new Error(`GitHub responded ${response.status}`);
+      const release = await response.json();
+      const latest = String(release.tag_name || '').replace(/^v/i, '').trim();
+      if (!latest) throw new Error('The latest release has no version tag');
+      setUpdateInfo({ latest, url: release.html_url || RELEASES_PAGE });
+      setUpdateState(compareVersions(latest, APP_VERSION) > 0 ? 'available' : 'current');
+    } catch {
+      setUpdateInfo({ url: RELEASES_PAGE });
+      setUpdateState('error');
+    }
   };
 
 
@@ -3552,11 +3608,9 @@ export default function App() {
               <div className="onboarding-section">
                 <div className="onboarding-section-title">{onboardingIsUpdate ? 'Recent improvements' : 'Core features'}</div>
                 <ul className="onboarding-list">
-                  <li>Interactive sunburst and stable content-tree selection, including held ArrowUp/ArrowDown movement.</li>
-                  <li>Live Finder change reconciliation through the macOS FSEvents watcher and explicit Refresh.</li>
-                  <li>Review-first Collector and System Smart Clean preview with Safe, Moderate and High-risk tiers; protected roots remain blocked.</li>
-                  <li>Archive/package contents, Quick Look, Finder Reveal, Get Info, Open With, Terminal helpers and Classic/Matrix themes.</li>
-                  {onboardingIsUpdate && <li>New in this build: saved folder scans, scan cancellation, one-level Hidden Space diagnostics and Unicode filename handling.</li>}
+                  {(onboardingIsUpdate
+                    ? (RELEASE_HIGHLIGHTS[APP_VERSION] || ['Maintenance release: bug fixes and internal improvements.'])
+                    : CORE_FEATURES).map(item => <li key={item}>{item}</li>)}
                 </ul>
               </div>
               <div className="onboarding-section">
@@ -3683,6 +3737,31 @@ export default function App() {
             <div className="drives-bottom-actions">
               <button className="mac-action-btn" onClick={() => { void handleScanFolder(); }}>Scan Folder...</button>
               <button className="mac-action-btn smart-clean-launch" onClick={() => { void openSmartClean('storage'); }}>System Smart Clean</button>
+              <div className="app-update">
+                <span className="app-update-version">v{APP_VERSION}</span>
+                <button
+                  type="button"
+                  className="app-update-check"
+                  title="Check GitHub for a newer release"
+                  onClick={() => { void checkForUpdates(); }}
+                  disabled={updateState === 'checking'}
+                >
+                  {updateState === 'checking' ? 'Checking…' : 'Check for Updates…'}
+                </button>
+                {updateState === 'current' && <span className="app-update-status">You’re up to date.</span>}
+                {updateState === 'available' && updateInfo && (
+                  <span className="app-update-status available">
+                    {updateInfo.latest} available ·{' '}
+                    <button type="button" className="app-update-link" onClick={() => openExternal(updateInfo.url)}>Download</button>
+                  </span>
+                )}
+                {updateState === 'error' && updateInfo && (
+                  <span className="app-update-status error">
+                    Couldn’t check ·{' '}
+                    <button type="button" className="app-update-link" onClick={() => openExternal(updateInfo.url)}>Open releases</button>
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         </div>

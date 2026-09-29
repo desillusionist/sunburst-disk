@@ -1732,6 +1732,24 @@ body {
 
 .drives-bottom-actions { display: flex; align-items: center; gap: 7px; width: 100%; }
 .smart-clean-launch { margin-left: auto; border-color: #806b31; color: #f1d98b; }
+.app-update { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
+.app-update-version { color: #6f7785; font: 9px SFMono-Regular, Menlo, monospace; }
+.app-update-check {
+  appearance: none; padding: 3px 7px; border: 1px solid #414a57; border-radius: 5px;
+  background: transparent; color: #9aa0ac; font-size: 10px; cursor: pointer;
+}
+.app-update-check:hover:not(:disabled) { border-color: #5c6675; color: #e1e4e8; }
+.app-update-check:disabled { opacity: .6; cursor: default; }
+.app-update-status { color: #8f97a5; font-size: 10px; }
+.app-update-status.available { color: #f1d98b; }
+.app-update-status.error { color: #d99a9a; }
+.app-update-link { padding: 0; border: 0; background: transparent; color: #7aa2d8; font: inherit; cursor: pointer; text-decoration: underline; }
+.app-update-link:hover { color: #afd0ff; }
+.theme-matrix .app-update-version, .theme-matrix .app-update-status { color: var(--matrix-text-dim); }
+.theme-matrix .app-update-status.available { color: #d8ff47; }
+.theme-matrix .app-update-check { border-color: var(--matrix-line); color: var(--matrix-text); }
+.theme-matrix .app-update-check:hover:not(:disabled) { border-color: var(--matrix-line-bright); color: var(--matrix-text-bright); }
+.theme-matrix .app-update-link { color: #79bd83; }
 .smart-clean-backdrop {
   position: absolute;
   inset: 0;

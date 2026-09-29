@@ -708,6 +708,29 @@ pub async fn open_system_settings(section: Option<String>) -> serde_json::Value 
     .unwrap_or_else(|_| json!({ "ok": false, "error": "System Settings could not be opened" }))
 }
 
+/// Open an `http(s)` URL in the user's default browser (used by the renderer's
+/// "Check for Updates…" affordance). Only http/https URLs are accepted, so the
+/// bridge can never launch an arbitrary scheme or a local path.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn open_external_url(url: Option<String>) -> serde_json::Value {
+    let url = url.unwrap_or_default();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return json!({ "ok": false, "error": "Only http(s) URLs can be opened" });
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        match std::process::Command::new("/usr/bin/open")
+            .arg(&url)
+            .status()
+        {
+            Ok(status) if status.success() => json!({ "ok": true }),
+            Ok(_) => json!({ "ok": false, "error": "The link could not be opened" }),
+            Err(error) => json!({ "ok": false, "error": error.to_string() }),
+        }
+    })
+    .await
+    .unwrap_or_else(|_| json!({ "ok": false, "error": "The link could not be opened" }))
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub async fn save_text_file(
     app: AppHandle,

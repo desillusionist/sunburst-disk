@@ -63,6 +63,7 @@ if (tauri?.core?.invoke) {
       invoke('notify_scan_complete', { scanPath, itemCount }),
     getPermissionStatus: () => invoke('get_permission_status'),
     openSystemSettings: section => invoke('open_system_settings', { section }),
+    openExternalUrl: url => invoke('open_external_url', { url }),
     saveTextFile: (defaultName, content) =>
       invoke('save_text_file', { defaultName, content }),
     ejectDrive: mount => invoke('eject_drive', { mount }),

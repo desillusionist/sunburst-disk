@@ -54,6 +54,7 @@ pub fn run() {
             commands::notify_scan_complete,
             commands::get_permission_status,
             commands::open_system_settings,
+            commands::open_external_url,
             commands::save_text_file,
             commands::eject_drive,
             commands::open_full_disk_access_settings,

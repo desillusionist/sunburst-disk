@@ -462,6 +462,18 @@ Everything that remains is optional:
   - `APP_VERSION` was a stale `0.2.6` literal; it is now injected by Vite from
     `package.json` (`__APP_VERSION__`), so the onboarding copy tracks the real
     release.
+- **r26** — “Check for Updates…” + onboarding changelog:
+  - A light update check in the drives footer compares the running `APP_VERSION`
+    with the newest GitHub release (`releases/latest`) and offers a Download link,
+    opened through the new `open_external_url` command (http/https only). It never
+    downloads or installs anything.
+  - The onboarding “Recent improvements” list is now driven by
+    `RELEASE_HIGHLIGHTS` (one entry per version) instead of a hardcoded bullet, so
+    each release updates its own copy; the first-run modal still shows
+    `CORE_FEATURES`.
+  - **Requires the releases to be publicly reachable.** The repository is private
+    today, so the check falls back to “Couldn’t check · Open releases”; it starts
+    reporting versions as soon as the repo (or the update endpoint) is public.
 
 ## Terminal security model
 
