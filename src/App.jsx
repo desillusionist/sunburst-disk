@@ -939,6 +939,10 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.3.3': [
+    '“Check for Updates…” now lives in the app menu, directly under “About Sunburst Disk”.',
+    'It reports the result in a native dialog — with a Download button when a newer version is available — instead of the old footer button.'
+  ],
   '0.3.2': [
     'The startup disk now shows your real disk name; the app no longer ships any developer-machine disk data.',
     'New “Check for Updates…” in the home footer compares your version with the newest release and links to the download — it never installs anything on its own.',
