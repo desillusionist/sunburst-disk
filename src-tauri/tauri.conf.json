@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Sunburst Disk",
+  "version": "0.3.0",
+  "identifier": "com.sunburstdisk.app",
+  "build": {
+    "beforeDevCommand": "npm run dev -- --port 3000 --strictPort",
+    "devUrl": "http://localhost:3000",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Sunburst Disk",
+        "width": 1020,
+        "height": 680,
+        "minWidth": 840,
+        "minHeight": 460,
+        "resizable": true,
+        "fullscreen": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "dragDropEnabled": false,
+        "backgroundColor": "#1d2127"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "resources": ["../electron/quicklook-preview"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.icns"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "files": {
+        "Resources/Assets.car": "icons/Assets.car"
+      }
+    }
+  }
+}

@@ -3,6 +3,8 @@
 **A fast, safety-first macOS disk-space analyzer with an interactive sunburst.**
 Rust + [Tauri v2](https://v2.tauri.app) backend, React interface. Inspects, previews and plans — never deletes on its own.
 
+**Platform:** macOS 11+ · **Apple Silicon (arm64) only** — Intel Macs are not supported in this release.
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 <!-- Add a screenshot here, e.g.:
@@ -117,7 +119,9 @@ log and the deliberate parity deltas live in
 
 ## Requirements
 
-- macOS 11 or later (macOS 26+ additionally shows the dark/tinted app icon).
+- macOS 11 or later on **Apple Silicon (arm64)**. Intel Macs are **not**
+  supported in this release.
+- macOS 26+ additionally shows the dark/tinted app icon.
 - To build from source: Node.js 20+, a Rust toolchain, and Xcode (for the Quick
   Look helper and the Icon Composer icon).
 
@@ -125,6 +129,9 @@ log and the deliberate parity deltas live in
 
 Download `Sunburst Disk_0.3.0_aarch64.dmg` from
 [Releases](../../releases), open it and drag **Sunburst Disk** to *Applications*.
+
+> **Apple Silicon only.** The `aarch64` build runs on M-series Macs. Intel
+> (`x86_64`) is not supported in this release; a universal build is planned.
 
 ## Build from source
 
@@ -267,8 +274,9 @@ Read-only хелпер по allowlist (`pwd`, `df -h`, `ls …`, `du -sh`).
 
 ## Требования и сборка
 
-macOS 11+. Для сборки из исходников: Node.js 20+, Rust toolchain и Xcode (для
-Quick Look-хелпера и иконки Icon Composer).
+macOS 11+ на **Apple Silicon (arm64)** — Intel-маки в этом релизе **не
+поддерживаются**. Для сборки из исходников: Node.js 20+, Rust toolchain и Xcode
+(для Quick Look-хелпера и иконки Icon Composer).
 
 ```bash
 npm install
