@@ -939,6 +939,10 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.3.4': [
+    '“Check for Updates…” now downloads the new version inside the app and opens the installer in Finder — just drag Sunburst Disk onto the Applications alias. No browser and no Terminal command.',
+    'Because the app itself performs the download, the copy you install is not quarantined, so macOS opens it without the “unidentified developer” warning.'
+  ],
   '0.3.3': [
     '“Check for Updates…” now lives in the app menu, directly under “About Sunburst Disk”.',
     'It reports the result in a native dialog — with a Download button when a newer version is available — instead of the old footer button.'
