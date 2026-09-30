@@ -988,6 +988,7 @@ export default function App() {
   const [loading, setLoading]               = useState(false);
     const [scanError, setScanError]       = useState(null);
   const [scanNotice, setScanNotice]     = useState(null);
+  const [updateActivity, setUpdateActivity] = useState(null);
 
   const [scanProgress, setScanProgress]     = useState({ percent: 0, currentDir: '', itemsScanned: 0 });
   const pendingScanCompletionRef = useRef(null);
@@ -1680,10 +1681,17 @@ export default function App() {
         }
       } catch {}
     });
+    const removeUpdateProgress = window.electronAPI.onUpdateProgress?.(payload => {
+      setUpdateActivity(payload);
+      if (payload?.phase === 'done' || payload?.phase === 'error') {
+        window.setTimeout(() => setUpdateActivity(current => (current === payload ? null : current)), 9000);
+      }
+    });
     return () => {
       removeAskSiriStart?.();
       removeAskSiriResult?.();
       removeQuickLookKey?.();
+      removeUpdateProgress?.();
     };
   }, [collectItem]);
   // The main process reports filesystem-walk completion before the renderer has
@@ -3559,6 +3567,41 @@ export default function App() {
           </>
         )}
       </header>
+
+      {updateActivity && (
+        <div className={`update-toast ${updateActivity.phase || ''}`} role="status" aria-live="polite">
+          <strong>
+            {updateActivity.phase === 'downloading'
+              ? `Downloading Sunburst Disk ${updateActivity.version || ''}…`
+              : updateActivity.phase === 'mounting'
+                ? 'Opening the installer…'
+                : updateActivity.phase === 'done'
+                  ? 'Update downloaded'
+                  : 'Update download failed'}
+          </strong>
+          <span>
+            {updateActivity.phase === 'downloading'
+              ? `${formatBytes(updateActivity.received || 0)}${updateActivity.total ? ` of ${formatBytes(updateActivity.total)}` : ''}`
+              : updateActivity.phase === 'mounting'
+                ? 'The disk image will open in Finder.'
+                : updateActivity.phase === 'done'
+                  ? 'Drag Sunburst Disk into Applications, then quit and reopen it.'
+                  : (updateActivity.error || 'Please try again from the app menu.')}
+          </span>
+          {updateActivity.phase === 'downloading' && (
+            <div className="update-toast-bar">
+              <div
+                className="update-toast-fill"
+                style={{
+                  width: `${updateActivity.total
+                    ? Math.min(100, Math.round(((updateActivity.received || 0) / updateActivity.total) * 100))
+                    : 100}%`
+                }}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {onboardingOpen && (
         <div className="onboarding-backdrop" role="presentation" onClick={completeOnboarding}>

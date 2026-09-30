@@ -485,6 +485,23 @@ Everything that remains is optional:
     longer performs the request, so the drives-footer button, its state, its CSS
     and the `openExternalUrl` bridge method were removed.
   - New test: `update_versions_compare_numerically`.
+- **r28** — In-app update download (no browser, and no notarization needed):
+  - “Check for Updates…” no longer opens the releases page. It downloads the
+    release DMG itself (system `curl`, into `~/Downloads`), streaming progress via
+    the `update-download` event that the renderer shows as a bottom-right toast
+    (`.update-toast`).
+  - When the download finishes the DMG is mounted (`hdiutil attach -nobrowse`) and
+    its Finder window is opened, so the user drags the app onto the Applications
+    alias that the DMG already provides. A native dialog explains the last step.
+  - Because the download is performed by the app, and its Info.plist has no
+    `LSFileQuarantineEnabled`, neither the DMG nor the app inside carries a
+    `com.apple.quarantine` attribute — verified — so the copied app launches
+    without a Gatekeeper prompt. That is why no notarization and no
+    `.command`/README quarantine helper are needed; Tauri’s DMG config can only
+    set window layout, not add files to the volume.
+  - Trade-off versus `tauri-plugin-updater`: the DMG is not signature-verified
+    (trust rests on TLS to github.com plus repository access), and nothing is
+    installed automatically — the user always performs the drag.
 
 ## Terminal security model
 

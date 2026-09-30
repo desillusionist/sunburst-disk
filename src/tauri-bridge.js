@@ -94,6 +94,7 @@ if (tauri?.core?.invoke) {
 
     onScanProgress: callback => on('scan-progress', callback),
     onScanComplete: callback => on('scan-complete', callback),
+    onUpdateProgress: callback => on('update-download', callback),
 
     onFolderWatchChange: callback => on('folder-watch-change', callback),
     onFolderWatchStatus: callback => on('folder-watch-status', callback),

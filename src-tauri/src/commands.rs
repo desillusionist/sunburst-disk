@@ -758,9 +758,18 @@ fn is_newer_version(candidate: &str, current: &str) -> bool {
     false
 }
 
-/// Newest release as `(version, html_url)`. Fetched with the system `curl` so the
-/// core keeps its dependency-free, CLI-driven approach.
-fn fetch_latest_release() -> Result<(String, String), String> {
+/// Newest release from the GitHub API, including its DMG asset.
+struct LatestRelease {
+    version: String,
+    page_url: String,
+    dmg_url: Option<String>,
+    dmg_name: Option<String>,
+    dmg_size: u64,
+}
+
+/// Newest release. Fetched with the system `curl` so the core keeps its
+/// dependency-free, CLI-driven approach.
+fn fetch_latest_release() -> Result<LatestRelease, String> {
     let output = std::process::Command::new("/usr/bin/curl")
         .args([
             "--silent",
@@ -796,17 +805,230 @@ fn fetch_latest_release() -> Result<(String, String), String> {
         return Err("The latest release has no version tag".to_string());
     }
     let version = tag.trim_start_matches(['v', 'V']).to_string();
-    let url = payload
+    let page_url = payload
         .get("html_url")
         .and_then(|value| value.as_str())
         .filter(|value| !value.is_empty())
         .unwrap_or(RELEASES_PAGE)
         .to_string();
-    Ok((version, url))
+    let dmg = payload
+        .get("assets")
+        .and_then(|value| value.as_array())
+        .and_then(|assets| {
+            assets.iter().find_map(|asset| {
+                let name = asset.get("name").and_then(|value| value.as_str())?;
+                if !name.to_lowercase().ends_with(".dmg") {
+                    return None;
+                }
+                let url = asset
+                    .get("browser_download_url")
+                    .and_then(|value| value.as_str())?;
+                let size = asset
+                    .get("size")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0);
+                Some((url.to_string(), name.to_string(), size))
+            })
+        });
+    let (dmg_url, dmg_name, dmg_size) = match dmg {
+        Some((url, name, size)) => (Some(url), Some(name), size),
+        None => (None, None, 0),
+    };
+    Ok(LatestRelease {
+        version,
+        page_url,
+        dmg_url,
+        dmg_name,
+        dmg_size,
+    })
+}
+
+fn emit_update(app: &AppHandle, payload: serde_json::Value) {
+    let _ = app.emit("update-download", payload);
+}
+
+fn info_dialog(app: &AppHandle, title: &str, message: &str) {
+    app.dialog()
+        .message(message)
+        .title(title)
+        .kind(MessageDialogKind::Info)
+        .buttons(MessageDialogButtons::Ok)
+        .show(|_| {});
+}
+
+fn download_directory() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let downloads = PathBuf::from(home).join("Downloads");
+    if downloads.is_dir() {
+        downloads
+    } else {
+        std::env::temp_dir()
+    }
+}
+
+/// Download the release DMG while reporting progress, then mount it and open its
+/// Finder window. The download is performed by this process, so the file carries
+/// no `com.apple.quarantine` attribute and the app the user drags into
+/// Applications launches without a Gatekeeper prompt.
+fn download_dmg(
+    url: &str,
+    destination: &Path,
+    expected: u64,
+    version: &str,
+    app: &AppHandle,
+) -> Result<PathBuf, String> {
+    let mut child = std::process::Command::new("/usr/bin/curl")
+        .args([
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--location",
+            "--retry",
+            "2",
+            "--output",
+        ])
+        .arg(destination)
+        .arg(url)
+        .spawn()
+        .map_err(|error| error.to_string())?;
+
+    emit_update(
+        app,
+        json!({ "phase": "downloading", "version": version, "received": 0, "total": expected }),
+    );
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return if status.success() {
+                    Ok(destination.to_path_buf())
+                } else {
+                    Err(format!("The download failed (curl exited with {status})"))
+                };
+            }
+            Ok(None) => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        let received = std::fs::metadata(destination)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        emit_update(
+            app,
+            json!({ "phase": "downloading", "version": version, "received": received, "total": expected }),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// Mount `dmg` (without browsing) and open its Finder window so the app and the
+/// Applications alias are visible side by side.
+fn mount_and_reveal(dmg: &Path) -> Result<String, String> {
+    let output = std::process::Command::new("/usr/sbin/hdiutil")
+        .args(["attach", "-nobrowse"])
+        .arg(dmg)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            "The installer could not be opened".to_string()
+        } else {
+            detail
+        });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mount = stdout
+        .lines()
+        .filter_map(|line| line.rsplit('\t').next())
+        .map(str::trim)
+        .find(|field| field.starts_with("/Volumes/"))
+        .map(str::to_string)
+        .ok_or_else(|| "The installer did not mount".to_string())?;
+    std::process::Command::new("/usr/bin/open")
+        .arg(&mount)
+        .status()
+        .map_err(|error| error.to_string())?;
+    Ok(mount)
+}
+
+async fn download_and_open_dmg(app: &AppHandle, release: &LatestRelease) -> serde_json::Value {
+    let (Some(url), Some(name)) = (release.dmg_url.clone(), release.dmg_name.clone()) else {
+        let _ = open_external_url(Some(release.page_url.clone())).await;
+        return json!({ "ok": false, "error": "The release has no DMG asset" });
+    };
+
+    let destination = download_directory().join(&name);
+    let version = release.version.clone();
+    let expected = release.dmg_size;
+    let emitter = app.clone();
+    let downloaded = tauri::async_runtime::spawn_blocking(move || {
+        download_dmg(&url, &destination, expected, &version, &emitter)
+    })
+    .await
+    .unwrap_or_else(|error| Err(error.to_string()));
+
+    let path = match downloaded {
+        Ok(path) => path,
+        Err(error) => {
+            emit_update(
+                app,
+                json!({ "phase": "error", "version": release.version, "error": error }),
+            );
+            let (sender, receiver) = tokio::sync::oneshot::channel::<bool>();
+            app.dialog()
+                .message(format!("The update could not be downloaded.\n\n{error}"))
+                .title("Update download failed")
+                .kind(MessageDialogKind::Warning)
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Open Releases Page".to_string(),
+                    "Close".to_string(),
+                ))
+                .show(move |confirmed| {
+                    let _ = sender.send(confirmed);
+                });
+            if receiver.await.unwrap_or(false) {
+                let _ = open_external_url(Some(release.page_url.clone())).await;
+            }
+            return json!({ "ok": false, "error": error });
+        }
+    };
+
+    emit_update(
+        app,
+        json!({ "phase": "mounting", "version": release.version }),
+    );
+    match tauri::async_runtime::spawn_blocking(move || mount_and_reveal(&path))
+        .await
+        .unwrap_or_else(|error| Err(error.to_string()))
+    {
+        Ok(mount) => {
+            emit_update(
+                app,
+                json!({ "phase": "done", "version": release.version, "mountPath": mount }),
+            );
+            info_dialog(
+                app,
+                "Update downloaded",
+                "Drag “Sunburst Disk” into the Applications folder, then quit and reopen it to use the new version.",
+            );
+            json!({ "ok": true, "mountPath": mount })
+        }
+        Err(error) => {
+            emit_update(
+                app,
+                json!({ "phase": "error", "version": release.version, "error": error }),
+            );
+            info_dialog(
+                app,
+                "Update downloaded",
+                "The disk image could not be opened. It is in your Downloads folder.",
+            );
+            json!({ "ok": false, "error": error })
+        }
+    }
 }
 
 /// App-menu action: compare the running version with the newest GitHub release
-/// and report the result in a native dialog.
+/// and, if there is one, offer to download and open it.
 pub async fn check_for_update(app: AppHandle) -> serde_json::Value {
     let current = app.package_info().version.to_string();
     let release = tauri::async_runtime::spawn_blocking(fetch_latest_release)
@@ -814,11 +1036,12 @@ pub async fn check_for_update(app: AppHandle) -> serde_json::Value {
         .unwrap_or_else(|error| Err(error.to_string()));
 
     match release {
-        Ok((latest, url)) if is_newer_version(&latest, &current) => {
+        Ok(release) if is_newer_version(&release.version, &current) => {
+            let latest = release.version.clone();
             let (sender, receiver) = tokio::sync::oneshot::channel::<bool>();
             app.dialog()
                 .message(format!(
-                    "Sunburst Disk {latest} is available. You are running {current}."
+                    "Sunburst Disk {latest} is available. You are running {current}.\n\nThe download opens in Finder: drag Sunburst Disk into the Applications folder to install it."
                 ))
                 .title("A new version is available")
                 .kind(MessageDialogKind::Info)
@@ -830,18 +1053,17 @@ pub async fn check_for_update(app: AppHandle) -> serde_json::Value {
                     let _ = sender.send(confirmed);
                 });
             if receiver.await.unwrap_or(false) {
-                let _ = open_external_url(Some(url.clone())).await;
+                return download_and_open_dmg(&app, &release).await;
             }
-            json!({ "ok": true, "updateAvailable": true, "latest": latest, "url": url })
+            json!({ "ok": true, "updateAvailable": true, "latest": latest })
         }
-        Ok((latest, _)) => {
-            app.dialog()
-                .message(format!("Sunburst Disk {current} is the newest version."))
-                .title("You’re up to date")
-                .kind(MessageDialogKind::Info)
-                .buttons(MessageDialogButtons::Ok)
-                .show(|_| {});
-            json!({ "ok": true, "updateAvailable": false, "latest": latest })
+        Ok(release) => {
+            info_dialog(
+                &app,
+                "You’re up to date",
+                &format!("Sunburst Disk {current} is the newest version."),
+            );
+            json!({ "ok": true, "updateAvailable": false, "latest": release.version })
         }
         Err(error) => {
             let (sender, receiver) = tokio::sync::oneshot::channel::<bool>();
