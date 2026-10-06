@@ -1044,6 +1044,10 @@ export default function App() {
   const [smartCleanData, setSmartCleanData] = useState(null);
   const [smartCleanSelected, setSmartCleanSelected] = useState(() => new Set());
   const [smartCleanMenuOpen, setSmartCleanMenuOpen] = useState(false);
+  const [cloudOpen, setCloudOpen] = useState(false);
+  const [cloudSurvey, setCloudSurvey] = useState(null);
+  const [cloudClientState, setCloudClientState] = useState(null);
+  const [cloudError, setCloudError] = useState(null);
   const [smartCleanScope, setSmartCleanScope] = useState('storage');
   const [smartCleanRiskFilter, setSmartCleanRiskFilter] = useState('all');
   const [smartCleanCategoryFilters, setSmartCleanCategoryFilters] = useState(() => new Set());
@@ -2010,6 +2014,32 @@ export default function App() {
       setSmartCleanData({ ok: false, error: error.message, candidates: [], roots: [] });
     } finally {
       setSmartCleanLoading(false);
+    }
+  };
+
+  // Read-only cloud footprint. The two halves are requested independently so the
+  // fast one (client state) renders while the slow provider walk is still going.
+  const openCloudStorage = () => {
+    setCloudOpen(true);
+    setCloudSurvey(null);
+    setCloudClientState(null);
+    setCloudError(null);
+    if (!window.electronAPI?.cloudStorageSurvey) {
+      setCloudError('Cloud Storage is unavailable in this build.');
+      return;
+    }
+    window.electronAPI.cloudStorageSurvey()
+      .then(result => {
+        if (result?.ok === false) setCloudError(result.error || 'The cloud survey failed.');
+        else setCloudSurvey(result);
+      })
+      .catch(error => setCloudError(error?.message || 'The cloud survey failed.'));
+    if (window.electronAPI?.cloudStorageClientState) {
+      window.electronAPI.cloudStorageClientState()
+        .then(result => setCloudClientState(result?.clientState || []))
+        .catch(() => setCloudClientState([]));
+    } else {
+      setCloudClientState([]);
     }
   };
 
@@ -3769,9 +3799,98 @@ export default function App() {
           <div className="drives-bottom-bar">
             <div className="drives-bottom-actions">
               <button className="mac-action-btn" onClick={() => { void handleScanFolder(); }}>Scan Folder...</button>
-              <button className="mac-action-btn smart-clean-launch" onClick={() => { void openSmartClean('storage'); }}>System Smart Clean</button>
+              <button className="mac-action-btn cloud-launch" onClick={openCloudStorage}>Cloud Storage</button>
             </div>
           </div>
+        </div>
+      )}
+
+      {cloudOpen && (
+        <div className="cloud-backdrop" onClick={() => setCloudOpen(false)}>
+          <section className="cloud-drawer" role="dialog" aria-modal="true" aria-labelledby="cloud-title" onClick={event => event.stopPropagation()}>
+            <div className="cloud-header">
+              <div>
+                <div id="cloud-title" className="cloud-title">Cloud Storage</div>
+                <div className="cloud-subtitle">read-only · nothing is deleted or downloaded</div>
+              </div>
+              <button className="cloud-close" title="Close Cloud Storage" aria-label="Close Cloud Storage" onClick={() => setCloudOpen(false)}>×</button>
+            </div>
+
+            {cloudError ? (
+              <div className="cloud-status cloud-error">{cloudError}</div>
+            ) : (
+              <div className="cloud-body">
+                <div className="cloud-section">
+                  <div className="cloud-section-title">Local state kept by the cloud clients</div>
+                  {cloudClientState === null ? (
+                    <div className="cloud-status">Measuring…</div>
+                  ) : cloudClientState.length === 0 ? (
+                    <div className="cloud-status">No cloud clients found on this Mac.</div>
+                  ) : (
+                    <div className="cloud-list">
+                      {cloudClientState.map(entry => (
+                        <div className="cloud-row" key={entry.id}>
+                          <div className="cloud-row-main">
+                            <span className="cloud-row-name">{entry.name}</span>
+                            <span className="cloud-row-path" title={entry.path}>{entry.path}</span>
+                          </div>
+                          <span className="cloud-row-size">{formatBytes(entry.localBytes)}</span>
+                          <button type="button" className="cloud-reveal" onClick={() => { void window.electronAPI?.revealInFinder?.(entry.path); }}>Reveal</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="cloud-hint">This is real disk space, but it is client state (indexes and caches) rather than your content — this panel never deletes it.</div>
+                </div>
+
+                <div className="cloud-section">
+                  <div className="cloud-section-title">Cloud providers</div>
+                  {cloudSurvey === null ? (
+                    <div className="cloud-status">Scanning cloud providers… streaming providers can take a few seconds.</div>
+                  ) : (cloudSurvey.providers || []).length === 0 ? (
+                    <div className="cloud-status">No cloud providers are connected on this Mac.</div>
+                  ) : (
+                    (cloudSurvey.providers || []).map(provider => (
+                      <div className="cloud-provider" key={provider.id}>
+                        <div className="cloud-provider-head">
+                          <span className="cloud-provider-name">{provider.name}</span>
+                          <button type="button" className="cloud-reveal" onClick={() => { void window.electronAPI?.revealInFinder?.(provider.path); }}>Reveal in Finder</button>
+                        </div>
+                        <div className="cloud-provider-figures">
+                          <div>
+                            <strong>{provider.truncated ? '≥ ' : ''}{formatBytes(provider.cloudBytes)}</strong>
+                            <span>in the cloud{provider.truncated ? ' (partial)' : ''}</span>
+                          </div>
+                          <div><strong>{formatBytes(provider.localBytes)}</strong><span>on this Mac</span></div>
+                          <div><strong>{provider.dataless}</strong><span>not downloaded</span></div>
+                        </div>
+                        {(provider.largest || []).length > 0 && (
+                          <div className="cloud-largest">
+                            <span className="cloud-largest-title">Largest items stored locally</span>
+                            {(provider.largest || []).map(item => (
+                              <div className="cloud-largest-row" key={item.path}>
+                                <span className="cloud-largest-name" title={item.path}>{item.name}</span>
+                                <span className="cloud-row-size">{formatBytes(item.localBytes)}</span>
+                                <button type="button" className="cloud-reveal" onClick={() => { void window.electronAPI?.revealInFinder?.(item.path); }}>Reveal</button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {!provider.readable && <div className="cloud-hint cloud-warning">Not readable — grant Full Disk Access in System Settings.</div>}
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {cloudSurvey?.sharesHomeFolders && (
+                  <div className="cloud-hint cloud-warning">iCloud is also syncing your Desktop and Documents, so those files appear both here and in the home scan — do not add the two together.</div>
+                )}
+                <div className="cloud-notes">
+                  {(cloudSurvey?.notes || []).map(note => <div key={note}>{note}</div>)}
+                </div>
+              </div>
+            )}
+          </section>
         </div>
       )}
 

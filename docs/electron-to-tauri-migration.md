@@ -335,7 +335,7 @@ Everything that remains is optional:
   folding the OS volume into `hidden space...`. The remainder is labelled
   `System (OS volume)` (path stays `/System`) to disambiguate it from the Data
   volume's `System`. Full `/System` walk: **~42 s, 1.21M items**; Data `System`
-  13.4 GB and OS volume 26.8 GB, within rounding of the Electron numbers.
+  <redacted-size> and OS volume <redacted-size>, within rounding of the Electron numbers.
   Unit tests: `startup_split_promotes_data_and_keeps_os_remainder`,
   `startup_split_without_volumes_is_a_noop`, plus `startup_split_probe` (ignored).
 - **r16** — UI + scan hardening:
@@ -405,7 +405,7 @@ Everything that remains is optional:
   volume resource values --
   `volumeAvailableCapacityForImportantUsage - volumeAvailableCapacity`, the
   Finder/DaisyDisk definition -- via `objc2-foundation` (features `NSValue` +
-  `NSError`), with the `diskutil` regex kept as a fallback. Measured 3.43 GB /.
+  `NSError`), with the `diskutil` regex kept as a fallback. Measured <redacted-size> /.
   Also fixed the Hidden Space remainder to subtract the purgeable row, so the
   children no longer sum to more than the parent `hidden space...` node.
 - **r22** — Hidden-space snapshots + Smart Clean coverage:
@@ -533,6 +533,30 @@ Everything that remains is optional:
   `measure_dir_bytes_skips_cloud_domains`; new probe `root_timing_probe` times each
   stage. Note `related.rs` still measures app-related directories with `du -sk -x`
   (stat only, no content reads) — the same pattern, left as-is for now.
+- **r32** — Cloud Storage panel (read-only). The home page's *System Smart Clean*
+  button was redundant — the drive page's Smart Clean menu offers the identical
+  "Current Storage" scope — so it is replaced by **Cloud Storage**, backed by
+  `cloud.rs`:
+  - **Cloud providers**: every FileProvider domain under `~/Library/CloudStorage`
+    plus iCloud Drive, each showing the size the content *would* take in the cloud
+    (logical bytes, dataless placeholders included), what it actually costs locally
+    (`st_blocks`), how many files are not downloaded, and the largest locally stored
+    items. Two commands (`cloud_storage_survey`, `cloud_storage_client_state`) so
+    the fast half renders while the slow provider walk is still running.
+  - **Cloud client state**: the local indexes/caches the clients keep (measured
+    here: Google Drive <redacted-size>, Dropbox <redacted-size>). Reported, never offered for
+    deletion — it is client state, not a regenerable cache.
+  - Walks are `lstat`-only (no file is ever read, so placeholders are never
+    materialised), bounded by 30k entries / depth 24 / a 5 s deadline per root, and
+    flagged `truncated` when the deadline binds — streaming providers enumerate
+    lazily, so a partial figure is shown as "≥". Symlinks are skipped and each walk
+    stays on one filesystem.
+  - iCloud "Desktop & Documents" sync is detected by comparing the *followed* inode
+    of `~/Documents` with `com~apple~CloudDocs/Documents` (a symlink) and warned
+    about, since those bytes appear in both the cloud total and the home scan.
+    No cloud APIs, no quota lookups, no deletion.
+  New tests: `known_providers_get_friendly_names`,
+  `walk_separates_cloud_and_local_bytes`; new probe `cloud_survey_probe`.
 
 ## Terminal security model
 

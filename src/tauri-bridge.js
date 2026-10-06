@@ -79,6 +79,8 @@ if (tauri?.core?.invoke) {
         folderPath: paths.folderPath ?? null,
         storagePath: paths.storagePath ?? null,
       }),
+    cloudStorageSurvey: () => invoke('cloud_storage_survey'),
+    cloudStorageClientState: () => invoke('cloud_storage_client_state'),
     scanHiddenSpace: (knownSize = 0) => invoke('scan_hidden_space', { knownSize }),
     setupAskSiri: () => invoke('setup_ask_siri'),
     askSiri: item =>

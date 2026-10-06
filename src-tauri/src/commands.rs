@@ -1354,6 +1354,24 @@ pub async fn smart_clean_preview(
     })
 }
 
+/// Read-only survey of the cloud providers reachable from this Mac. Never reads
+/// file contents. Streaming providers enumerate lazily, so this is the slow half.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn cloud_storage_survey() -> serde_json::Value {
+    tauri::async_runtime::spawn_blocking(crate::cloud::survey_providers)
+        .await
+        .unwrap_or_else(|error| json!({ "ok": false, "error": error.to_string() }))
+}
+
+/// Local disk state kept by the cloud clients (indexes and caches). Fast, because
+/// it only reads local directories.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn cloud_storage_client_state() -> serde_json::Value {
+    tauri::async_runtime::spawn_blocking(crate::cloud::client_state)
+        .await
+        .unwrap_or_else(|error| json!({ "ok": false, "error": error.to_string() }))
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub async fn setup_ask_siri() -> serde_json::Value {
     tauri::async_runtime::spawn_blocking(ask_siri::setup_ask_siri_shortcut)

@@ -7,6 +7,7 @@
 mod archive;
 mod ask_siri;
 mod capacity;
+mod cloud;
 mod commands;
 mod drives;
 mod hidden_space;
@@ -98,6 +99,8 @@ pub fn run() {
             commands::terminal_run_safe,
             commands::scan_hidden_space,
             commands::smart_clean_preview,
+            commands::cloud_storage_survey,
+            commands::cloud_storage_client_state,
             commands::setup_ask_siri,
             commands::ask_siri,
             commands::ask_siri_transform,
