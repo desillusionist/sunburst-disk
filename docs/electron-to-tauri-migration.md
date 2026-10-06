@@ -502,6 +502,14 @@ Everything that remains is optional:
   - Trade-off versus `tauri-plugin-updater`: the DMG is not signature-verified
     (trust rests on TLS to github.com plus repository access), and nothing is
     installed automatically — the user always performs the drag.
+- **r29** — Drive fullness percentage fix. The drives screen computed the startup
+  disk's percentage as `used / total`, but on APFS a volume's `total` is the
+  *volume's* size while `available` is the whole container's shared free space, so
+  a 245 GB disk with 148 MB free read as **75%** instead of ~100% (measured here:
+  75.11% instead of `df`'s 88.53%). Both `drives.rs` (new `capacity_percent`) and
+  the renderer's `syncDriveCapacityFromSnapshot` now use `used / (used + available)`
+  and round up, matching `df`'s Capacity column. New test:
+  `capacity_percent_uses_shared_free_space`.
 
 ## Terminal security model
 

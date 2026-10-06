@@ -51,6 +51,21 @@ fn fallback_drives() -> Vec<Drive> {
     }]
 }
 
+/// Fullness of a volume whose free space is shared with its APFS container.
+///
+/// `df` reports a volume `total` that is the *volume's* size while `available` is
+/// the container's shared free space, so `used / total` understates fullness badly
+/// (a 245 GB disk with 148 MB free reads as 75%). The real fraction is
+/// `used / (used + available)`, which is also what `df`'s "Capacity" column shows;
+/// like `df`, round up.
+fn capacity_percent(used: u64, free: u64, fallback: String) -> String {
+    let capacity = used.saturating_add(free);
+    if capacity == 0 {
+        return fallback;
+    }
+    format!("{}%", (used as u128 * 100).div_ceil(capacity as u128))
+}
+
 fn excluded(mount: &str) -> bool {
     EXCLUDED_MOUNTS
         .iter()
@@ -123,11 +138,7 @@ pub fn get_drives() -> DrivesResponse {
                     free = kib_to_bytes(data_row, 3);
                 }
             }
-            let percent = if total > 0 {
-                format!("{}%", (used as u128 * 100) / total as u128)
-            } else {
-                use_percent
-            };
+            let percent = capacity_percent(used, free, use_percent);
             drives.push(Drive {
                 filesystem: parts[0].clone(),
                 name: startup_name.clone(),
@@ -200,6 +211,22 @@ mod tests {
         assert!(excluded("/System/Volumes/Data/home"));
         assert!(!excluded("/"));
         assert!(!excluded("/Volumes/exAPFS"));
+    }
+
+    #[test]
+    fn capacity_percent_uses_shared_free_space() {
+        // 180.2 GB used with 27 GB of shared free space is 87%, not used/total (75%).
+        assert_eq!(
+            capacity_percent(180_230_064, 26_980_536, "0%".into()),
+            "87%"
+        );
+        // A volume with 148 MB free on a 245 GB disk is effectively full.
+        assert_eq!(
+            capacity_percent(245_000_000_000 - 148_000_000, 148_000_000, "0%".into()),
+            "100%"
+        );
+        // No usable numbers: keep whatever `df` reported.
+        assert_eq!(capacity_percent(0, 0, "42%".into()), "42%");
     }
 
     #[test]

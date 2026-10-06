@@ -107,12 +107,18 @@ function syncDriveCapacityFromSnapshot(drive, snapshot) {
   const total = Number(snapshot.df.totalBytes || drive.total || 0);
   const used = Number(snapshot.df.usedBytes || 0);
   const free = Number(snapshot.df.availableBytes || 0);
+  // APFS volumes share their container's free space, so the volume's `total` is
+  // much larger than the space actually available to it: `used / total`
+  // understates fullness (a 245 GB disk with 148 MB free reads as 75%). The real
+  // fraction is `used / (used + available)`, which is what `df`'s Capacity column
+  // shows -- and like `df`, round up.
+  const capacity = used + free;
   return {
     ...drive,
     total: total || drive.total,
     used: used || drive.used,
     free: free || drive.free,
-    usePercent: total > 0 ? `${Math.round((used / total) * 100)}%` : drive.usePercent
+    usePercent: capacity > 0 ? `${Math.ceil((used / capacity) * 100)}%` : drive.usePercent
   };
 }
 
