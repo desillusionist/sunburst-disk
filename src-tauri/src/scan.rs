@@ -120,7 +120,7 @@ fn is_skipped_name(name: &str) -> bool {
 
 /// True for cloud-provider FileProvider roots such as `Library/CloudStorage` and
 /// `Library/Mobile Documents`. Matched by exact basename, like `SKIP_NAMES`.
-fn is_cloud_domain(name: &str) -> bool {
+pub(crate) fn is_cloud_domain(name: &str) -> bool {
     CLOUD_DOMAIN_NAMES.contains(&name)
 }
 

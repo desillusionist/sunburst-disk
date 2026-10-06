@@ -516,6 +516,23 @@ Everything that remains is optional:
   directory (os error 2)” even though the DMG had arrived. The path is corrected
   and the new test `update_binaries_exist` asserts the absolute paths the update
   flow shells out to.
+- **r31** — Smart Clean hang fixed. Two unbounded operations could stall the
+  preview indefinitely:
+  - **Hashing dataless files.** The duplicate pass sampled the SHA-256 of up to 400
+    files. With iCloud “Desktop & Documents” enabled, `~/Documents/*` are dataless
+    placeholders, so reading them made macOS *download* them: the preview hung for
+    more than 13 minutes and pulled the user's data over the network. Files with
+    no allocated blocks (`st_blocks == 0`) are now skipped (`has_local_contents`),
+    which takes the full preview from minutes to **~0.8 s** here.
+  - **`du -sk -x` per directory candidate.** It has no timeout and no pruning, so a
+    cloud FileProvider domain under any candidate could be crawled and dataless
+    files materialised. It is replaced by `measure_dir_bytes`: a bounded in-process
+    walk (20k entries, depth 8) that prunes cloud domains exactly like the main
+    scanner, never follows symlinks and stays on one filesystem, like `-x`.
+  New tests: `dataless_files_have_no_local_contents`,
+  `measure_dir_bytes_skips_cloud_domains`; new probe `root_timing_probe` times each
+  stage. Note `related.rs` still measures app-related directories with `du -sk -x`
+  (stat only, no content reads) — the same pattern, left as-is for now.
 
 ## Terminal security model
 

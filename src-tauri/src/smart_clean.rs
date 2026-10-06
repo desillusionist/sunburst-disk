@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,8 +15,8 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::capacity::run_capture;
 use crate::commands::{is_filesystem_path, is_protected_system_path};
+use crate::scan::is_cloud_domain;
 
 const MAX_ENTRIES_PER_ROOT: usize = 120;
 const MAX_CANDIDATES: usize = 300;
@@ -359,16 +359,71 @@ fn make_candidate(
     }
 }
 
-fn measure_du_summary(target_path: &str) -> u64 {
-    match run_capture("/usr/bin/du", &["-sk", "-x", target_path]) {
-        Some(stdout) => stdout
-            .split_whitespace()
-            .next()
-            .and_then(|kb| kb.parse::<u64>().ok())
-            .map(|kb| kb.saturating_mul(1024))
-            .unwrap_or(0),
-        None => 0,
+/// Budget for measuring one directory, and how deep we recurse.
+///
+/// Directories used to be measured with `du -sk -x`, which has no timeout and no
+/// pruning: a single cloud FileProvider domain (or a huge cache tree) under any
+/// candidate could stall the whole preview for many minutes while `du` tried to
+/// materialise dataless files. This walk prunes cloud domains exactly like the
+/// main scanner, never follows symlinks, and stops at a hard budget. Sizes are
+/// on-disk blocks (`st_blocks * 512`), matching `scan.rs`.
+const MAX_MEASURE_ENTRIES: usize = 20_000;
+const MAX_MEASURE_DEPTH: usize = 8;
+
+fn measure_dir_bytes(root: &Path) -> u64 {
+    let Ok(root_metadata) = std::fs::symlink_metadata(root) else {
+        return 0;
+    };
+    let root_device = root_metadata.dev();
+    let mut total: u64 = 0;
+    let mut visited: usize = 0;
+    let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
+
+    while let Some((directory, depth)) = stack.pop() {
+        if visited >= MAX_MEASURE_ENTRIES {
+            break;
+        }
+        let Ok(read_dir) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in read_dir.flatten() {
+            if visited >= MAX_MEASURE_ENTRIES {
+                break;
+            }
+            visited += 1;
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() && is_cloud_domain(&entry.file_name().to_string_lossy()) {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            // Stay on one filesystem, exactly like the `du -x` this replaced.
+            if metadata.dev() != root_device {
+                continue;
+            }
+            total = total.saturating_add(metadata.blocks().saturating_mul(512));
+            if file_type.is_dir() && depth < MAX_MEASURE_DEPTH {
+                stack.push((entry.path(), depth + 1));
+            }
+        }
     }
+    total
+}
+
+/// True when a file's contents are actually on this Mac.
+///
+/// Dataless iCloud/FileProvider placeholders report their full logical size but
+/// occupy no local blocks. Reading one makes macOS download it, so they must never
+/// be hashed: doing so stalled the duplicate pass for many minutes and pulled tens
+/// of megabytes over the network.
+fn has_local_contents(metadata: &std::fs::Metadata) -> bool {
+    metadata.blocks() > 0
 }
 
 enum RootOutcome {
@@ -458,7 +513,7 @@ fn process_root(root: &Root, allowed_base: &str) -> RootOutcome {
             continue;
         }
         let size = if is_dir {
-            measure_du_summary(&canonical_item)
+            measure_dir_bytes(Path::new(&canonical_item))
         } else {
             size_field
         };
@@ -466,7 +521,7 @@ fn process_root(root: &Root, allowed_base: &str) -> RootOutcome {
             continue;
         }
         let verification = if is_dir {
-            "du -sk -x summary"
+            "disk blocks (cloud domains skipped)"
         } else {
             "filesystem stat"
         };
@@ -537,7 +592,7 @@ fn collect_duplicate_files(root_path: &str) -> Vec<DuplicateFile> {
                 continue;
             }
             if let Ok(stat) = std::fs::metadata(&item_path) {
-                if stat.is_file() && stat.len() > 0 {
+                if stat.is_file() && stat.len() > 0 && has_local_contents(&stat) {
                     files.push(DuplicateFile {
                         path: item_path,
                         size: stat.len(),
@@ -858,6 +913,45 @@ mod tests {
     }
 
     #[test]
+    fn dataless_files_have_no_local_contents() {
+        // A sparse file stands in for an iCloud placeholder: same logical size, no
+        // blocks on disk. Hashing one is what used to download the user's files.
+        let path = std::env::temp_dir().join(format!("sunburst-sparse-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let file = std::fs::File::create(&path).expect("fixture file");
+        file.set_len(1024 * 1024).expect("sparse length");
+        drop(file);
+
+        let metadata = std::fs::symlink_metadata(&path).expect("fixture metadata");
+        assert!(metadata.len() > 0);
+        assert!(
+            !has_local_contents(&metadata),
+            "a file with no allocated blocks must not be treated as local"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn measure_dir_bytes_skips_cloud_domains() {
+        let base = std::env::temp_dir().join(format!("sunburst-measure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let provider = base.join("CloudStorage").join("provider");
+        std::fs::create_dir_all(&provider).expect("fixture directory");
+        std::fs::write(provider.join("big.bin"), vec![7u8; 4 * 1024 * 1024]).expect("fixture file");
+
+        let measured = measure_dir_bytes(&base);
+        // Only the two directories' own blocks may be counted, never the 4 MiB
+        // behind the FileProvider domain (which `du` used to crawl).
+        assert!(
+            measured < 1_000_000,
+            "cloud domain contents must be skipped, measured {measured} bytes"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn new_smart_clean_roots_are_registered() {
         let roots = build_roots("storage", Some("/Users/me"), "/Users/me");
         for id in [
@@ -881,6 +975,49 @@ mod tests {
         assert_eq!(ios.risk, "review");
         let npm = roots.iter().find(|root| root.id == "npm-cache").unwrap();
         assert_eq!(npm.risk, "safe");
+    }
+
+    #[test]
+    #[ignore = "probe: times each Smart Clean stage (roots, duplicate collection, hashing)"]
+    fn root_timing_probe() {
+        let home = crate::capacity::resolve_path(&std::env::var("HOME").unwrap_or_default())
+            .to_string_lossy()
+            .into_owned();
+        for root in build_roots("storage", None, &home) {
+            let allowed_base = if root.path.starts_with(&home) {
+                home.clone()
+            } else {
+                root.path.clone()
+            };
+            let started = std::time::Instant::now();
+            let outcome = process_root(&root, &allowed_base);
+            let count = match &outcome {
+                RootOutcome::Done { candidates, .. } => candidates.len(),
+                _ => 0,
+            };
+            eprintln!(
+                "{:>8.2}s  {:<28} {:>4} candidates  {}",
+                started.elapsed().as_secs_f64(),
+                root.id,
+                count,
+                root.path
+            );
+        }
+
+        let started = std::time::Instant::now();
+        let collected = collect_duplicate_files(&home);
+        eprintln!(
+            "collect_duplicate_files: {} files in {:.2}s",
+            collected.len(),
+            started.elapsed().as_secs_f64()
+        );
+        let started = std::time::Instant::now();
+        let duplicates = find_duplicate_candidates(&home);
+        eprintln!(
+            "find_duplicate_candidates: {} candidates in {:.2}s",
+            duplicates.len(),
+            started.elapsed().as_secs_f64()
+        );
     }
 
     #[test]
