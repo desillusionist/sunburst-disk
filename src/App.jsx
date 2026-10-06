@@ -945,6 +945,10 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.3.5': [
+    'The startup disk’s fullness bar is now correct. APFS volumes share their container’s free space, so the old calculation understated how full the disk was — a 245 GB disk with 148 MB free read as 75%.',
+    'The percentage now matches the Capacity column that Terminal’s df and Finder show.'
+  ],
   '0.3.4': [
     '“Check for Updates…” now downloads the new version inside the app and opens the installer in Finder — just drag Sunburst Disk onto the Applications alias. No browser and no Terminal command.',
     'Because the app itself performs the download, the copy you install is not quarantined, so macOS opens it without the “unidentified developer” warning.'

@@ -127,7 +127,7 @@ log and the deliberate parity deltas live in
 
 ## Install
 
-Download `Sunburst Disk_0.3.4_aarch64.dmg` from
+Download `Sunburst Disk_0.3.5_aarch64.dmg` from
 [Releases](../../releases), open it and drag **Sunburst Disk** to *Applications*.
 
 > **Apple Silicon only.** The `aarch64` build runs on M-series Macs. Intel
