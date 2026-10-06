@@ -510,6 +510,12 @@ Everything that remains is optional:
   the renderer's `syncDriveCapacityFromSnapshot` now use `used / (used + available)`
   and round up, matching `df`'s Capacity column. New test:
   `capacity_percent_uses_shared_free_space`.
+- **r30** — Fixed the in-app update's mount step. It invoked `/usr/sbin/hdiutil`,
+  which does not exist — `hdiutil` lives in `/usr/bin` (`diskutil` is the one in
+  `/usr/sbin`) — so every download failed at mount time with “No such file or
+  directory (os error 2)” even though the DMG had arrived. The path is corrected
+  and the new test `update_binaries_exist` asserts the absolute paths the update
+  flow shells out to.
 
 ## Terminal security model
 

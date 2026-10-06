@@ -922,7 +922,7 @@ fn download_dmg(
 /// Mount `dmg` (without browsing) and open its Finder window so the app and the
 /// Applications alias are visible side by side.
 fn mount_and_reveal(dmg: &Path) -> Result<String, String> {
-    let output = std::process::Command::new("/usr/sbin/hdiutil")
+    let output = std::process::Command::new("/usr/bin/hdiutil")
         .args(["attach", "-nobrowse"])
         .arg(dmg)
         .output()
@@ -1499,5 +1499,17 @@ mod tests {
         assert!(is_newer_version("1.0", "0.9.9"));
         assert!(!is_newer_version("0.3.2", "0.3.2"));
         assert!(!is_newer_version("0.3.1", "0.3.2"));
+    }
+
+    /// The update flow shells out to these by absolute path; a wrong directory
+    /// (`hdiutil` is in /usr/bin, not /usr/sbin) fails only at runtime.
+    #[test]
+    fn update_binaries_exist() {
+        for program in ["/usr/bin/curl", "/usr/bin/hdiutil", "/usr/bin/open"] {
+            assert!(
+                std::path::Path::new(program).is_file(),
+                "{program} is missing"
+            );
+        }
     }
 }
