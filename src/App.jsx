@@ -945,6 +945,10 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.3.7': [
+    'Fixed the Smart Clean hang. It used to hash files to find duplicates — which made macOS *download* your iCloud documents — so it could stall for many minutes. It now only looks at files that are actually on this Mac; the preview went from minutes to under a second.',
+    'New “Cloud Storage” on the home page: see how much each cloud drive holds in the cloud versus what it costs on this Mac, which files are not downloaded, and the local space the cloud clients keep. Read-only.'
+  ],
   '0.3.6': [
     'Fixed the in-app updater. “Check for Updates…” downloaded the new version but then failed to open the installer because of a wrong system path.',
     'Download now mounts the disk image and opens its Finder window, so you can drag Sunburst Disk onto the Applications alias and reopen it.'
