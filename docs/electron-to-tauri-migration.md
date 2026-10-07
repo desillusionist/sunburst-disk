@@ -662,6 +662,20 @@ Everything that remains is optional:
   New/renamed tests: `cloud_folder_scan_is_capped_by_default_and_exact_on_demand`,
   `cloud_directory_size_is_never_its_own_lstat_size`; new renderer test
   “falls back to a lower bound when the folder cap binds, and offers Calculate exact size”.
+- **r37** — Cloud depth cap fixed. r36's three modes all still applied
+  `CLOUD_MAX_DEPTH = 8`, including `Exact`. Real content is deeper than that: on
+  this Mac `a deeply nested cloud folder`
+  bottoms out at exactly 8 levels, so the depth-8 frontier directories were marked
+  `truncated`, which propagated to the root — the parent read `>= <redacted-size>` and the
+  child `>= <redacted-size>` even after an exact walk, while drilling *into* the child
+  re-rooted the walk (depth resets) and showed exact numbers. A 12-level fixture in
+  `Exact` mode returned size 0, which is the deterministic proof. The limits are now
+  `CLOUD_MAX_DEPTH = 64` (bounded walks) and `CLOUD_EXACT_MAX_DEPTH = 1024` (exact),
+  kept only to bound `build()` recursion; entry/time caps are unchanged, so the
+  runaway protection is unaffected. Measured after: the folder is an exact
+  <redacted-bytes> B (all children) and the project an exact <redacted-bytes> B (14
+  children), both `truncated: None` in `Folder` and `Exact` mode.
+  New test: `cloud_exact_scan_is_not_capped_by_depth`.
 
 ## Terminal security model
 

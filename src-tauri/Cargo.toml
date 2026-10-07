@@ -1,6 +1,6 @@
 [package]
 name = "sunburst-disk"
-version = "0.3.8"
+version = "0.3.9"
 description = "A macOS disk usage analyzer with a visual sunburst, safe review tools and live updates."
 authors = ["Sunburst Disk"]
 license = "MIT"

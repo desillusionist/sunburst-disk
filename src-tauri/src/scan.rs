@@ -86,7 +86,11 @@ const HIDDEN_SPACE_MIN_BYTES: u64 = 1_000_000_000;
 /// the whole budget inside the first subfolder and show one deep branch instead of
 /// the provider's actual top-level shape.
 const CLOUD_ENTRY_BUDGET: usize = 4_000;
-const CLOUD_MAX_DEPTH: usize = 8;
+/// Depth limit for the *bounded* cloud walks. Generous on purpose: it is a safety
+/// valve (and bounds `build` recursion), not a routine source of `>=`. A limit of
+/// 8 made ordinary deep content (e.g. an Unreal project eight levels down) report
+/// `>=` even though it had been fully enumerated.
+const CLOUD_MAX_DEPTH: usize = 64;
 const CLOUD_DEADLINE: Duration = Duration::from_secs(12);
 
 /// A folder the user opens is walked more generously than the provider scan, but
@@ -97,6 +101,10 @@ const CLOUD_DEADLINE: Duration = Duration::from_secs(12);
 /// the navigation layer, and "cancellable" is not enough for a routine action.
 const CLOUD_FOLDER_ENTRY_BUDGET: usize = 60_000;
 const CLOUD_FOLDER_DEADLINE: Duration = Duration::from_secs(45);
+
+/// Depth limit for the *exact* (opt-in) walk: effectively uncapped for real
+/// content, while still bounding `build` recursion.
+const CLOUD_EXACT_MAX_DEPTH: usize = 1024;
 
 /// How much of a cloud tree one walk may enumerate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -323,10 +331,14 @@ pub fn scan_tree(
     // Cloud FileProvider mode has its own breadth-first walk: the local
     // depth-first scanner cannot be made to terminate quickly on a mirror whose
     // enumeration runs at ~100 entries/second (see `CLOUD_ENTRY_BUDGET`). The
-    // top-level provider scan is bounded; a folder the user opens is walked in
-    // full (`cloud_unbounded`), cancellably and with progress.
+    // top-level provider scan is bounded; a folder the user opens is capped
+    // generously (60k / 45 s); the opt-in exact walk has no budget or deadline.
     if options.cloud {
-        let max_depth = options.cloud_max_depth.unwrap_or(CLOUD_MAX_DEPTH);
+        let default_depth = match options.cloud_mode {
+            CloudScanMode::Exact => CLOUD_EXACT_MAX_DEPTH,
+            _ => CLOUD_MAX_DEPTH,
+        };
+        let max_depth = options.cloud_max_depth.unwrap_or(default_depth);
         let (entry_budget, deadline) = match options.cloud_mode {
             CloudScanMode::Exact => (None, None),
             CloudScanMode::Folder => (
@@ -1678,6 +1690,49 @@ mod tests {
             "expected the walk to visit several directories"
         );
         assert_eq!(tree.size, 4096 + 2048);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cloud_exact_scan_is_not_capped_by_depth() {
+        // An exact (opt-in) walk must reach the bottom of a deep folder: a depth
+        // cap that marks deep nodes partial makes the whole tree report `>=` and
+        // the "Calculate exact size" action useless.
+        let base = std::env::temp_dir().join(format!("sunburst-cloud-deep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let mut deep = base.clone();
+        for level in 0..12 {
+            deep = deep.join(format!("level{level:02}"));
+        }
+        std::fs::create_dir_all(&deep).expect("deep fixture");
+        std::fs::write(deep.join("bottom.bin"), vec![9u8; 4096]).expect("fixture file");
+
+        let cancel = AtomicBool::new(false);
+        let tree = scan_tree(
+            &base,
+            ScanOptions {
+                cloud: true,
+                cloud_mode: CloudScanMode::Exact,
+                ..ScanOptions::default()
+            },
+            &cancel,
+            |_| {},
+        )
+        .expect("exact scan of a deep folder");
+
+        assert_eq!(tree.size, 4096, "the bottom file must be counted");
+        assert_eq!(
+            tree.truncated, None,
+            "an exact walk must not be depth-capped"
+        );
+
+        // The bottom file must be present 12 levels down.
+        let mut node = &tree;
+        for _ in 0..12 {
+            node = node.children.first().expect("each level must have a child");
+        }
+        assert!(node.children.iter().any(|child| child.name == "bottom.bin"));
 
         let _ = std::fs::remove_dir_all(&base);
     }

@@ -883,6 +883,9 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.3.9': [
+    'Fixed cloud folders that still showed an approximate size (≥) even after “Calculate exact size”. Folders deeper than 8 levels stopped being measured at that depth, so a folder could read exact while you were inside it and approximate one level up. The limit is now far beyond real content, so an exact walk really is exact.'
+  ],
   '0.3.8': [
     'Cloud Storage can now be explored. “Scan” a provider from the Cloud Storage panel to open its contents as a read-only sunburst and content tree, so you can see how a cloud drive is laid out before you open Finder.',
     'Cloud views measure the size each item takes in the cloud (what the provider reports — including items you have not downloaded), not the space it uses on this Mac, and never read a cloud file, so browsing downloads nothing.',
