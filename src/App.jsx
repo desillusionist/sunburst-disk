@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ChevronDown, PanelRight, PanelRightClose, RefreshCw, ShieldCheck, ShieldAlert, LockKeyhole, AlertTriangle, Folder, FileText, Trash2, X, RotateCcw, Copy, Eye, Maximize2, Minimize2, Sparkles, List, ListFilter } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ChevronDown, PanelRight, PanelRightClose, RefreshCw, Folder, FileText, Trash2, X, RotateCcw, Copy, Eye, Maximize2, Minimize2, Sparkles, List, ListFilter } from 'lucide-react';
 import SunburstChart from './components/SunburstChart';
 import DetailsSidebar from './components/DetailsSidebar';
 import DebugDownbar from './components/DebugDownbar';
+import { getRiskInfo, canCollect } from './lib/risk';
+import { recomputeAncestorSizes, nodeSizeLabel } from './lib/cloudTree';
 import { recordPerfEvent, recordPerfInstant } from './debug/perfTelemetry';
 import shortcutGuideText from './Sunburst-Disk-Ask-Siri-Shortcut-Guide.txt?raw';
 
@@ -141,70 +143,6 @@ function pathFromDataTransfer(dataTransfer) {
   }
   const plain = dataTransfer.getData('text/plain').trim();
   return plain.startsWith('/') ? plain : '';
-}
-
-function isStartupDataCategory(node) {
-  const parts = (node?.path || '').replace(/\/+$/, '').split('/').filter(Boolean);
-  return parts.length === 4 && parts[0] === 'System' && parts[1] === 'Volumes' && parts[2] === 'Data';
-}
-
-function getRiskInfo(node) {
-  if (!node) {
-    return {
-      level: 'review',
-      label: 'Review before deleting',
-      description: 'Select an item to inspect its deletion risk.',
-      canDelete: false,
-      Icon: AlertTriangle
-    };
-  }
-
-  const normalizedPath = (node.path || '').replace(/\/+$/, '');
-  const protectedCategory = ['System', 'private', 'usr'].includes(node.name) && isStartupDataCategory(node);
-  const protectedDataBranch = /^\/System\/Volumes\/Data\/(System|private|usr)(\/|$)/.test(normalizedPath);
-  const protectedSystem = node.type === 'special'
-    || normalizedPath === '/System'
-    || (normalizedPath.startsWith('/System/') && !normalizedPath.startsWith('/System/Volumes/Data/'))
-    || protectedCategory
-    || protectedDataBranch;
-
-  if (protectedSystem) {
-    return {
-      level: 'protected',
-      label: 'Protected system item',
-      description: 'This item is part of macOS system data or filesystem accounting. It cannot be added to the deletion collector.',
-      canDelete: false,
-      Icon: LockKeyhole
-    };
-  }
-
-  if (node.type === 'directory' && ['Applications', 'Library', 'Users'].includes(node.name)) {
-    return {
-      level: 'high',
-      label: 'High deletion risk',
-      description: 'Deleting this category can affect installed software, shared services, or user accounts. Review the contents carefully before moving anything to Trash.',
-      canDelete: true,
-      Icon: ShieldAlert
-    };
-  }
-
-  if (node.type === 'directory') {
-    return {
-      level: 'review',
-      label: 'Review before deleting',
-      description: 'This is a directory. Review its contents and dependencies before moving it to Trash.',
-      canDelete: true,
-      Icon: AlertTriangle
-    };
-  }
-
-  return {
-    level: 'safe',
-    label: 'Safe to review',
-    description: 'This is an ordinary file entry. Review its location and contents before deleting it.',
-    canDelete: true,
-    Icon: ShieldCheck
-  };
 }
 
 function getCategoryDescription(node) {
@@ -945,6 +883,11 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.3.8': [
+    'Cloud Storage can now be explored. “Scan” a provider from the Cloud Storage panel to open its contents as a read-only sunburst and content tree, so you can see how a cloud drive is laid out before you open Finder.',
+    'Cloud views measure the size each item takes in the cloud (what the provider reports — including items you have not downloaded), not the space it uses on this Mac, and never read a cloud file, so browsing downloads nothing.',
+    'Cloud browsing is deliberately partial: streaming providers list slowly, so a snapshot stops at a time limit and says so. Nothing in a cloud view can be collected or deleted.'
+  ],
   '0.3.7': [
     'Fixed the Smart Clean hang. It used to hash files to find duplicates — which made macOS *download* your iCloud documents — so it could stall for many minutes. It now only looks at files that are actually on this Mac; the preview went from minutes to under a second.',
     'New “Cloud Storage” on the home page: see how much each cloud drive holds in the cloud versus what it costs on this Mac, which files are not downloaded, and the local space the cloud clients keep. Read-only.'
@@ -1016,6 +959,14 @@ export default function App() {
   const pendingScanCompletionRef = useRef(null);
   const activeScanRequestRef = useRef(null);
   const scanRequestSequenceRef = useRef(0);
+  // Mirrors `cloudView` for callbacks (enrichNode, navigateTo) that must forward
+  // the cloud flag to `scanSubdir` without being re-created on every render.
+  const cloudModeRef = useRef(false);
+  // Request id of an in-flight folder-level cloud drill-down, so it can be
+  // cancelled (a full folder walk is unbounded, unlike the provider scan).
+  const nodeScanRequestRef = useRef(null);
+  // Monotonic token so a superseded (long) folder walk cannot hijack the view.
+  const nodeScanTokenRef = useRef(0);
   const [collector, setCollector]           = useState([]);
   const [isDragOver, setIsDragOver]         = useState(false);
   const [collectorExpanded, setCollectorExpanded] = useState(false);
@@ -1052,6 +1003,9 @@ export default function App() {
   const [cloudSurvey, setCloudSurvey] = useState(null);
   const [cloudClientState, setCloudClientState] = useState(null);
   const [cloudError, setCloudError] = useState(null);
+  // True while the scan view is showing a cloud provider tree rather than local
+  // disk usage: it switches the loading UI, the read-only banner and the legend.
+  const [cloudView, setCloudView] = useState(false);
   const [smartCleanScope, setSmartCleanScope] = useState('storage');
   const [smartCleanRiskFilter, setSmartCleanRiskFilter] = useState('all');
   const [smartCleanCategoryFilters, setSmartCleanCategoryFilters] = useState(() => new Set());
@@ -1139,14 +1093,14 @@ export default function App() {
   const collectedPaths = useMemo(() => new Set(collector.map(i => i.path)), [collector]);
 
   const addToCollector = useCallback((item) => {
-    if (!item || !item.path || item.path.startsWith('__') || !getRiskInfo(item).canDelete) return;
+    if (!canCollect(item)) return;
     setCollector(current => current.some(existing => existing.path === item.path)
       ? current
       : [...current, item]);
   }, []);
 
   const collectItem = useCallback(async (item) => {
-    if (!item || !item.path || item.path.startsWith('__') || !getRiskInfo(item).canDelete) return;
+    if (!canCollect(item)) return;
     if (!isAppBundleNode(item) || !window.electronAPI?.inspectAppRelated) {
       addToCollector(item);
       return;
@@ -1816,9 +1770,11 @@ export default function App() {
     }).catch(() => {});
   }, [currentDrive, drives, scannedTree]);
 
-  const handleScanDrive = async (drive) => {
+  const handleScanDrive = async (drive, { cloud = false } = {}) => {
     const requestId = `scan-${Date.now()}-${++scanRequestSequenceRef.current}`;
     activeScanRequestRef.current = requestId;
+    cloudModeRef.current = cloud;
+    setCloudView(cloud);
     setDriveMenuKey(null);
     setScanError(null);
     setScanNotice(null);
@@ -1841,7 +1797,9 @@ export default function App() {
     setViewState('scan');
     setScanProgress({ percent: -1, currentDir: 'Preparing…', itemsScanned: 0 });
     const scanPath = drive.scanPath || drive.mount;
-    if (window.electronAPI?.getCapacitySnapshot) {
+    // A cloud provider has no meaningful local capacity -- `statfs` there reports
+    // the boot disk -- so the capacity snapshot is local-disk-only.
+    if (!cloud && window.electronAPI?.getCapacitySnapshot) {
       void window.electronAPI.getCapacitySnapshot(scanPath).then(snapshot => {
         const syncedDrive = syncDriveCapacityFromSnapshot(drive, snapshot);
         setDrives(current => current.map(item => getDriveKey(item) === getDriveKey(drive) ? syncedDrive : item));
@@ -1863,7 +1821,7 @@ export default function App() {
         // process; detail (children) is returned for the first 10 levels and
         // lazy-loaded beyond that. No timeout, no mock fallback.
         const scanStartedAt = performance.now();
-        const data = await window.electronAPI.scanDirectory(scanPath, 10, requestId);
+        const data = await window.electronAPI.scanDirectory(scanPath, 10, requestId, cloud);
         if (activeScanRequestRef.current !== requestId) return;
         recordPerfEvent('ipc.scan-directory', performance.now() - scanStartedAt, { path: scanPath, requestId });
         if (data?.canceled) {
@@ -1873,7 +1831,7 @@ export default function App() {
         }
         if (data?.tree) {
           data.tree.name = drive.name;
-          if (window.electronAPI?.getCapacitySnapshot) {
+          if (!cloud && window.electronAPI?.getCapacitySnapshot) {
       void window.electronAPI.getCapacitySnapshot(scanPath).then(snapshot => {
         const syncedDrive = syncDriveCapacityFromSnapshot(drive, snapshot);
         setDrives(current => current.map(item => getDriveKey(item) === getDriveKey(drive) ? syncedDrive : item));
@@ -1915,7 +1873,7 @@ export default function App() {
             currentDir: 'Complete',
             itemsScanned: data.tree.itemCount || 0
           });
-          pendingScanCompletionRef.current = {
+          pendingScanCompletionRef.current = cloud ? null : {
             scanPath,
             itemCount: data.tree.itemCount || 0
           };
@@ -1942,6 +1900,8 @@ export default function App() {
     if (!requestId) return;
     activeScanRequestRef.current = null;
     pendingScanCompletionRef.current = null;
+    cloudModeRef.current = false;
+    setCloudView(false);
     try {
       await window.electronAPI?.cancelScan?.(requestId);
     } catch {}
@@ -2047,6 +2007,26 @@ export default function App() {
     }
   };
 
+  // Turn a surveyed provider into a synthetic drive so its read-only tree flows
+  // through the normal scan view. The Rust walk is bounded (entries/depth/time)
+  // and flags itself as partial, so this always terminates instead of hanging.
+  const openCloudScan = (provider) => {
+    if (!provider?.path) return;
+    setCloudOpen(false);
+    void handleScanDrive({
+      filesystem: `cloud:${provider.id || provider.path}`,
+      name: provider.name || 'Cloud Storage',
+      mount: provider.path,
+      scanPath: provider.path,
+      total: 0,
+      used: 0,
+      free: 0,
+      usePercent: '0%',
+      isStartup: false,
+      isCloudDrive: true
+    }, { cloud: true });
+  };
+
   const toggleSmartCleanCandidate = (candidatePath) => {
     setSmartCleanSelected(previous => {
       const next = new Set(previous);
@@ -2108,6 +2088,8 @@ export default function App() {
 
     setDriveMenuKey(null);
     setScanError(null);
+    cloudModeRef.current = false;
+    setCloudView(false);
     setHistoryBack([]);
     setHistoryForward([]);
     setCurrentDrive(drive);
@@ -2140,14 +2122,17 @@ export default function App() {
     if (isPackageContainerNode(node) && !packageContentsShown[node.path]) return;
     try {
       const scanStartedAt = performance.now();
-      const result = await window.electronAPI.scanSubdir(node.path);
+      const result = await window.electronAPI.scanSubdir(node.path, false, cloudModeRef.current);
       recordPerfEvent('ipc.scan-subdir', performance.now() - scanStartedAt, { path: node.path });
       if (!result?.tree?.children || result.tree.children.length === 0) return;
       const enriched = {
         ...node,
         children: result.tree.children,
         size: result.tree.size ?? node.size,
-        itemCount: Number.isFinite(result.tree.itemCount) ? result.tree.itemCount : result.tree.children.length
+        itemCount: Number.isFinite(result.tree.itemCount) ? result.tree.itemCount : result.tree.children.length,
+        // A cloud sub-walk reports whether it finished; the node inherits that so
+        // ancestors can be marked partial too.
+        truncated: result.tree.truncated
       };
       dbg('enriched', {
         path: node.path,
@@ -2156,7 +2141,13 @@ export default function App() {
         prevSize: node.size,
         prevChildren: node.children?.length ?? 0
       });
-      setScannedTree(prev => prev ? updateNodeInTree(prev, node.path, enriched) : prev);
+      setScannedTree(prev => {
+        if (!prev) return prev;
+        const next = updateNodeInTree(prev, node.path, enriched);
+        // Cloud: recompute ancestors so the enriched child can never exceed them
+        // and the shown total stays equal to the sum of the shown children.
+        return cloudModeRef.current ? recomputeAncestorSizes(next, node.path) : next;
+      });
       setNavStack(prev => prev.map(n => {
         if (n.path === node.path) return enriched;
         if (n.children?.some(c => c.path === node.path)) {
@@ -2466,33 +2457,50 @@ export default function App() {
     // full path so center-click always has the real parent available.
     let updatedTree = scannedTree;
     let targetStack = getNodeChain(updatedTree, node.path);
+    // A cloud folder whose subtree was only partially walked (the bounded
+    // provider scan leaves many children "partial") is re-walked in full when
+    // the user opens it, even though it already has children -- that is what
+    // gives every child a real size instead of "partial".
+    const cloudNeedsFullScan = cloudModeRef.current && Boolean(node.truncated);
     const needsLazyScan = (
       window.electronAPI?.scanSubdir &&
-      node.children &&
-      node.children.length === 0 &&
       node.path &&
       !node.path.startsWith('__') &&
-      !node.archiveVirtual
+      !node.archiveVirtual &&
+      ((node.children && node.children.length === 0) || cloudNeedsFullScan)
     );
 
     if (needsLazyScan) {
       setNodeLoading(true);
+      const token = ++nodeScanTokenRef.current;
+      const requestId = cloudModeRef.current
+        ? `subdir-${Date.now()}-${++scanRequestSequenceRef.current}`
+        : null;
+      nodeScanRequestRef.current = requestId;
       try {
-        const result = await window.electronAPI.scanSubdir(node.path);
+        const result = await window.electronAPI.scanSubdir(node.path, false, cloudModeRef.current, requestId);
+        // A newer navigation or a cancel superseded this walk: drop the result.
+        if (token !== nodeScanTokenRef.current) return;
+        if (result?.canceled) return;
         if (result?.tree?.children?.length > 0) {
           const enrichedNode = {
             ...node,
             children: result.tree.children,
-            size: result.tree.size ?? node.size
+            size: result.tree.size ?? node.size,
+            truncated: result.tree.truncated
           };
-          updatedTree = updateNodeInTree(scannedTree, node.path, enrichedNode);
+          const updated = updateNodeInTree(scannedTree, node.path, enrichedNode);
+          updatedTree = cloudModeRef.current ? recomputeAncestorSizes(updated, node.path) : updated;
           setScannedTree(updatedTree);
           targetStack = getNodeChain(updatedTree, node.path);
         }
       } catch (error) {
         console.error('Navigation scan error:', error);
       } finally {
-        setNodeLoading(false);
+        if (token === nodeScanTokenRef.current) {
+          nodeScanRequestRef.current = null;
+          setNodeLoading(false);
+        }
       }
     }
 
@@ -2505,6 +2513,58 @@ export default function App() {
       commitNavigation(navStack.slice(0, -1));
     } else {
       setViewState('drives');
+    }
+  };
+
+  // Stop a long folder-level cloud walk and keep whatever partial tree we have.
+  const cancelNodeScan = async () => {
+    const requestId = nodeScanRequestRef.current;
+    nodeScanRequestRef.current = null;
+    nodeScanTokenRef.current += 1;
+    if (requestId) {
+      try {
+        await window.electronAPI?.cancelScan?.(requestId);
+      } catch {}
+    }
+    setNodeLoading(false);
+  };
+
+  // Opt-in Finder Get-Info parity: a folder whose bounded walk hit the cap can be
+  // walked in full, on demand. Visible (progress + cancel) and user-initiated, so
+  // a routine folder open never runs a runaway walk.
+  const calculateExactSize = async (node) => {
+    if (!window.electronAPI?.scanSubdir || !node?.path || node.path.startsWith('__')) return;
+    const token = ++nodeScanTokenRef.current;
+    const requestId = `exact-${Date.now()}-${++scanRequestSequenceRef.current}`;
+    nodeScanRequestRef.current = requestId;
+    setNodeLoading(true);
+    try {
+      const result = await window.electronAPI.scanSubdir(node.path, false, true, requestId, true);
+      if (token !== nodeScanTokenRef.current) return;
+      if (result?.canceled) return;
+      if (result?.tree) {
+        const live = resolveByPath(scannedTree, node.path) || node;
+        const enriched = {
+          ...live,
+          children: result.tree.children,
+          size: result.tree.size ?? live.size,
+          itemCount: Number.isFinite(result.tree.itemCount) ? result.tree.itemCount : live.itemCount,
+          truncated: result.tree.truncated
+        };
+        const updated = updateNodeInTree(scannedTree, node.path, enriched);
+        const next = cloudModeRef.current ? recomputeAncestorSizes(updated, node.path) : updated;
+        setScannedTree(next);
+        setNavStack(previous => previous.map(entry => (
+          entry.path === node.path ? resolveByPath(next, node.path) || entry : entry
+        )));
+      }
+    } catch (error) {
+      console.error('Exact-size scan error:', error);
+    } finally {
+      if (token === nodeScanTokenRef.current) {
+        nodeScanRequestRef.current = null;
+        setNodeLoading(false);
+      }
     }
   };
 
@@ -2660,8 +2720,8 @@ export default function App() {
       const includePackageContents = Boolean(packageContentsShown[currentPath]);
       const refreshStartedAt = performance.now();
       const result = isFullDriveRefresh
-        ? await window.electronAPI.scanDirectory(scanPath, 10)
-        : await window.electronAPI.scanSubdir(scanPath, includePackageContents);
+        ? await window.electronAPI.scanDirectory(scanPath, 10, null, cloudModeRef.current)
+        : await window.electronAPI.scanSubdir(scanPath, includePackageContents, cloudModeRef.current);
       recordPerfEvent('ipc.refresh', performance.now() - refreshStartedAt, { path: scanPath, fullDrive: isFullDriveRefresh });
       if (!result?.tree) throw new Error(result?.error || 'Refresh returned no tree');
 
@@ -3339,6 +3399,8 @@ export default function App() {
   // reports allocated directory blocks and hidden/excluded entries separately.
   const currentTotalSize = previewNode?.size || 0;
   const liveHeaderNode = isFileHover ? liveHoveredNode : previewNode;
+  // Lower-bound treatment for a partially-walked cloud folder's total.
+  const headerSizeLabel = nodeSizeLabel(isFileHover ? liveHoveredNode : previewNode, formatBytes);
   // Drive-root only: leave a proportional gap for free space in the root ring.
   // Disabled for folder scans and any drilled-in / virtual view (path differs).
   const driveRootPath = currentDrive?.scanPath || currentDrive?.mount || null;
@@ -3524,6 +3586,7 @@ export default function App() {
             >
               <RefreshCw size={13} />
             </button>
+            {!cloudView && (
             <div className="smart-clean-menu-wrap">
               <button
                 className={`smart-clean-toolbar-btn ${smartCleanMenuOpen ? 'active' : ''}`}
@@ -3556,6 +3619,7 @@ export default function App() {
                 </div>
               )}
             </div>
+            )}
             <div className="themes-menu-wrap">
               <button
                 className={`themes-toggle ${themesOpen ? 'active' : ''}`}
@@ -3858,7 +3922,10 @@ export default function App() {
                       <div className="cloud-provider" key={provider.id}>
                         <div className="cloud-provider-head">
                           <span className="cloud-provider-name">{provider.name}</span>
-                          <button type="button" className="cloud-reveal" onClick={() => { void window.electronAPI?.revealInFinder?.(provider.path); }}>Reveal in Finder</button>
+                          <span className="cloud-provider-actions">
+                            <button type="button" className="cloud-scan-btn" onClick={() => openCloudScan(provider)}>Scan</button>
+                            <button type="button" className="cloud-reveal" onClick={() => { void window.electronAPI?.revealInFinder?.(provider.path); }}>Reveal in Finder</button>
+                          </span>
                         </div>
                         <div className="cloud-provider-figures">
                           <div>
@@ -4004,10 +4071,20 @@ export default function App() {
       {/* ── Screen 2: Scan View ─────────────────────────────────────────────── */}
       {viewState === 'scan' && (
         <div className="scan-screen">
-          {scanNotice && (
+          {scanNotice && !cloudView && (
             <div className="scan-complete-toast" role="status" aria-live="polite">
               <strong>{scanNotice.title || 'Disk scan complete'}</strong>
               <span>{scanNotice.body}</span>
+            </div>
+          )}
+
+          {cloudView && (
+            <div className="cloud-view-banner" role="status">
+              <strong>Cloud content · read-only</strong>
+              <span>
+                Sizes are the size each item takes in the cloud — what {currentDrive?.name || 'the provider'} reports — not the space it uses on this Mac. Items you have not downloaded still count at full size here, and nothing is read or downloaded. This view can never collect or delete anything.
+                {scannedTree?.truncated ? ' This snapshot stopped at its scan limit, so the sizes are lower bounds — open a folder to load more of it.' : ''}
+              </span>
             </div>
           )}
 
@@ -4016,29 +4093,49 @@ export default function App() {
             {loading ? (
               <div className="scan-loading-status" role="status" aria-live="polite">
                 <div className="scan-loading-header">
-                  <div className="scan-loading-text">Scanning disk…</div>
+                  <div className="scan-loading-text">{cloudView ? 'Scanning cloud provider…' : 'Scanning disk…'}</div>
                   <button className="scan-cancel-btn" type="button" title="Cancel scan and return Home" aria-label="Cancel scan and return Home" onClick={() => { void cancelActiveScan(); }}>
                     <X size={15} />
                   </button>
                 </div>
                 <div className="scan-progress-bar-bg">
                   <div
-                    className="scan-progress-bar-fill"
-                    style={{ width: scanProgress.percent < 0 ? '4%' : `${Math.max(4, scanProgress.percent)}%` }}
+                    className={`scan-progress-bar-fill ${cloudView ? 'cloud-indeterminate' : ''}`}
+                    style={cloudView ? undefined : { width: scanProgress.percent < 0 ? '4%' : `${Math.max(4, scanProgress.percent)}%` }}
                   />
                 </div>
                 <div className="scan-progress-status">
                   <span className="scan-current-file">
-                    {scanProgress.currentDir || 'Indexing folders…'}
+                    {scanProgress.currentDir || (cloudView ? 'Listing folders…' : 'Indexing folders…')}
                   </span>
                   <span className="scan-percent-text">
-                    {scanProgress.percent >= 0 ? `${Math.round(scanProgress.percent)}%` : 'Preparing…'}
+                    {cloudView
+                      ? `${scanProgress.itemsScanned || 0} items`
+                      : scanProgress.percent >= 0 ? `${Math.round(scanProgress.percent)}%` : 'Preparing…'}
                   </span>
                 </div>
               </div>
             ) : nodeLoading ? (
               <div className="scan-loading-status" role="status" aria-live="polite">
-                <div className="scan-loading-text">Loading folder…</div>
+                <div className="scan-loading-header">
+                  <div className="scan-loading-text">{cloudView ? 'Calculating folder size…' : 'Loading folder…'}</div>
+                  {cloudView && (
+                    <button className="scan-cancel-btn" type="button" title="Stop and keep what has been measured" aria-label="Stop calculating folder size" onClick={() => { void cancelNodeScan(); }}>
+                      <X size={15} />
+                    </button>
+                  )}
+                </div>
+                {cloudView && (
+                  <div className="scan-progress-bar-bg">
+                    <div className="scan-progress-bar-fill cloud-indeterminate" />
+                  </div>
+                )}
+                {cloudView && (
+                  <div className="scan-progress-status">
+                    <span className="scan-current-file">{scanProgress.currentDir || 'Listing folders…'}</span>
+                    <span className="scan-percent-text">{scanProgress.itemsScanned || 0} items</span>
+                  </div>
+                )}
               </div>
             ) : scanError ? (
               <div className="scan-error-status" role="alert">
@@ -4331,8 +4428,18 @@ export default function App() {
                 )}
               </div>
               <div className="legend-header-actions">
-                <div className="legend-total">
-                                        {loading ? '' : formatBytes(isFileHover ? liveHoveredNode.size : currentTotalSize)}
+                {cloudView && currentViewNode?.type === 'directory' && currentViewNode?.truncated && !loading && !nodeLoading && (
+                  <button
+                    type="button"
+                    className="cloud-exact-btn"
+                    title="Walk this folder completely to get an exact size (like Finder’s Get Info). May take a while on a large cloud folder."
+                    onClick={() => { void calculateExactSize(currentViewNode); }}
+                  >
+                    Calculate exact size
+                  </button>
+                )}
+                <div className={`legend-total ${headerSizeLabel.partial ? 'partial' : ''}`} title={headerSizeLabel.title || undefined}>
+                                        {loading ? '' : headerSizeLabel.text}
 
                 </div>
                 <button
@@ -4427,6 +4534,7 @@ export default function App() {
               {visibleChildren.map((item, idx) => {
                 const color = colorAssignments[item.path] || getNodeColor(item, idx, matrixTheme);
                 const isHigh = highlightedPath === item.path;
+                const sizeLabel = nodeSizeLabel(item, formatBytes);
                 return (
                   <div
                     key={idx}
@@ -4474,7 +4582,7 @@ export default function App() {
                       />
                     </div>
                     <div className="legend-right">
-                      <span className="legend-val">{formatBytes(item.size)}</span>
+                      <span className={`legend-val ${sizeLabel.partial ? 'partial' : ''}`} title={sizeLabel.title || undefined}>{sizeLabel.text}</span>
                       <button
                         className="legend-add-btn"
                         title="Add to collector"
@@ -4487,7 +4595,19 @@ export default function App() {
               })}
 
               <div className="legend-divider" />
-              {currentDrive && (
+              {cloudView && (
+                <div className="legend-row static">
+                  <div className="legend-left">
+                    <div className="dot" style={{ backgroundColor: '#38bdf8' }} />
+                    <span className="legend-label dim">cloud content (not on-disk)</span>
+                  </div>
+                  <span
+                    className={`legend-val ${headerSizeLabel.partial ? 'partial' : ''}`}
+                    title={headerSizeLabel.title || undefined}
+                  >{headerSizeLabel.text}</span>
+                </div>
+              )}
+              {currentDrive && !cloudView && (
                 <>
                   <div className="legend-row static">
                     <div className="legend-left">

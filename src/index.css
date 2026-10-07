@@ -1810,6 +1810,17 @@ body {
 .cloud-provider-head { display: flex; align-items: center; gap: 8px; }
 .cloud-provider-name { color: #f1f5f9; font-size: 12px; font-weight: 600; }
 .cloud-provider-head .cloud-reveal { margin-left: auto; }
+.cloud-provider-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.cloud-provider-actions .cloud-reveal { margin-left: 0; }
+.cloud-scan-btn { padding: 3px 11px; border: 1px solid #3f6f52; border-radius: 4px; background: #1c3a28; color: #c6f6d5; font-size: 10px; font-weight: 600; cursor: pointer; }
+.cloud-scan-btn:hover { background: #265138; color: #fff; }
+.cloud-view-banner { position: absolute; top: 10px; left: 12px; z-index: 150; display: flex; flex-direction: column; gap: 3px; max-width: min(460px, calc(100% - 24px)); padding: 8px 12px; border: 1px solid rgba(96, 165, 250, .3); border-radius: 7px; background: rgba(17, 24, 39, .94); box-shadow: 0 10px 26px rgba(0, 0, 0, .4); color: #c7d6ea; font-size: 10px; line-height: 1.5; }
+.cloud-view-banner strong { color: #93c5fd; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+.legend-val.partial, .legend-total.partial { color: #e8ce7e; }
+.cloud-exact-btn { padding: 3px 9px; border: 1px solid #3f6f52; border-radius: 4px; background: #1c3a28; color: #c6f6d5; font-size: 9px; font-weight: 600; letter-spacing: .02em; cursor: pointer; white-space: nowrap; }
+.cloud-exact-btn:hover { background: #265138; color: #fff; }
+.scan-progress-bar-fill.cloud-indeterminate { width: 35%; animation: cloud-indeterminate 1.15s ease-in-out infinite; }
+@keyframes cloud-indeterminate { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
 .cloud-provider-figures { display: flex; gap: 22px; margin-top: 7px; }
 .cloud-provider-figures > div { display: flex; flex-direction: column; gap: 2px; }
 .cloud-provider-figures strong { color: #f8fafc; font-size: 13px; }

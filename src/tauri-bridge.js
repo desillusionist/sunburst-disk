@@ -36,11 +36,11 @@ if (tauri?.core?.invoke) {
     // ── Migrated (see src-tauri/src/commands.rs) ──────────────────────────
     getDrives: () => invoke('get_drives'),
     getCapacitySnapshot: targetPath => invoke('get_capacity_snapshot', { targetPath }),
-    scanDirectory: (targetPath, detailDepth, requestId = null) =>
-      invoke('scan_directory', { targetPath, detailDepth, requestId }),
+    scanDirectory: (targetPath, detailDepth, requestId = null, cloud = false) =>
+      invoke('scan_directory', { targetPath, detailDepth, requestId, cloud }),
     cancelScan: (requestId = null) => invoke('cancel_scan', { requestId }),
-    scanSubdir: (targetPath, includePackageContents = false) =>
-      invoke('scan_subdir', { targetPath, includePackageContents }),
+    scanSubdir: (targetPath, includePackageContents = false, cloud = false, requestId = null, exact = false) =>
+      invoke('scan_subdir', { targetPath, includePackageContents, cloud, requestId, exact }),
     setWindowLayout: (layout, driveCount = 0) =>
       invoke('set_window_layout', { layout, driveCount }),
     chooseFolder: () => invoke('choose_folder'),

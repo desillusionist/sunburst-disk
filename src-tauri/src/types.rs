@@ -18,6 +18,15 @@ pub struct TreeNode {
     pub children: Vec<TreeNode>,
     /// Number of descendants (files and directories), excluding `self`.
     pub item_count: u64,
+    /// Presence marks a node that belongs to a cloud FileProvider tree. The
+    /// renderer treats every such node as read-only: it can never be added to the
+    /// deletion collector and never appears in Smart Clean.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_managed: Option<bool>,
+    /// Presence marks a cloud snapshot that stopped at its entry/time budget, so
+    /// every size below it is a lower bound rather than a total.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
     /// Present only on the synthetic `hidden space...` reconciliation node.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hidden_space_aggregate_size: Option<u64>,

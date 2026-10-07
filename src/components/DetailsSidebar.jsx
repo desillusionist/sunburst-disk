@@ -131,7 +131,7 @@ export default function DetailsSidebar({ node, metadata, loading, risk, category
             <DetailRow label="Type" value={getTypeLabel(node, metadata)} />
             {metadata?.classification && <DetailRow label="Class" value={prettifyClassification(metadata.classification)} />}
             {metadata?.extension && <DetailRow label="Extension" value={metadata.extension} mono />}
-            <DetailRow label="Size" value={formatBytes(node.size)} />
+            <DetailRow label="Size" value={node.truncated ? (Number(node.size) > 0 ? `≥ ${formatBytes(node.size)}` : 'partial') : formatBytes(node.size)} />
             {mediaRows.map(([label, value]) => <DetailRow key={label} label={label} value={value} />)}
             {(node.type === 'directory' || isArchiveContainer) && <DetailRow label="Objects inside" value={objectCountLabel} />}
             <DetailRow label="Created" value={loading ? 'Reading…' : formatDate(metadata?.createdAt)} />

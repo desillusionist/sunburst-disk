@@ -557,6 +557,111 @@ Everything that remains is optional:
     No cloud APIs, no quota lookups, no deletion.
   New tests: `known_providers_get_friendly_names`,
   `walk_separates_cloud_and_local_bytes`; new probe `cloud_survey_probe`.
+- **r33** — Cloud tree + sunburst (v2a, read-only). The Cloud Storage panel gains a
+  per-provider **Scan** action that opens the provider as a read-only sunburst and
+  content tree, measured in the same **logical** bytes as the panel ($st_size$:
+  a dataless placeholder reports its full size while occupying no blocks).
+  - The local scanner's depth-first walk cannot serve this: a FileProvider mirror
+    enumerates at roughly 100 entries/second here (a Google Drive `find` needed
+    **6m25s for 60k entries and had not finished**), so an unbounded walk would
+    look exactly like the hang r31 fixed. Cloud mode therefore takes a separate
+    **bounded breadth-first** path in `scan.rs` (`scan_cloud_tree`, dispatched from
+    `scan_tree` when `ScanOptions::cloud`), capped at 4 000 entries / depth 8 /
+    12 s per root. Breadth-first matters: depth-first would spend the whole budget
+    inside the first subfolder and show one deep branch instead of the provider's
+    actual shape. Measured here: iCloud Drive completes in **0.1 s** (<redacted-size>,
+    complete); Google Drive stops at the deadline in **~12.6 s** (<redacted-size>, flagged
+    partial).
+  - Every cloud node carries `cloudManaged`, and the new `truncated` flag marks a
+    snapshot that stopped at its budget. `getRiskInfo` refuses `cloudManaged`
+    nodes, which disables the legend “+”, the context menu action, the sidebar
+    button and Smart Clean export in one place; the Smart Clean toolbar menu and
+    the drive-capacity legend rows are hidden in cloud view, which also shows an
+    indeterminate progress bar with a running entry count and a read-only banner.
+    The walk still never reads a file, so browsing never downloads content.
+    Lazy drill-down (`scan_subdir`) and folder refresh forward the same cloud flag.
+  - Renderer: `cloudView` state + `cloudModeRef`; `handleScanDrive(drive, { cloud })`
+    skips the (local-disk) capacity snapshot in cloud mode and never persists a
+    cloud pseudo-drive to the drives list. iCloud Desktop/Documents double-counting
+    is avoided by not descending the `com~apple~CloudDocs` symlinks at all
+    (`scan_cloud_tree` skips every symlink, matching the local scanner).
+  New tests: `cloud_scan_is_read_only_breadth_first_and_size_ordered`,
+  `cloud_scan_stops_at_the_entry_budget_and_flags_truncation`; new probe
+  `cloud_tree_probe`.
+- **r34** — Cloud size accounting fixed. A real Google Drive folder (`My Drive/::
+  a folder ::`) showed a **<redacted-size>** total while a visible child showed **<redacted-size>**, and
+  several siblings all showed an identical **<sentinel-size>**. Diagnosis: the walk counted
+  each **directory's own `st_size`**, and on a cloud FileProvider that is neither
+  meaningful nor stable -- while macOS is still hydrating a folder it reports a
+  `<sentinel-bytes>`-byte (~2 MiB) sentinel, then settles to a few hundred bytes (the same
+  nine directories read `<sentinel-bytes>` during enumeration and `96`–`608` afterwards).
+  So un-descended directories were priced at that sentinel, the parent total summed
+  only shallow entries, and a later `scan_subdir` enrichment raised a child
+  to <redacted-size> without touching its stale ancestors.
+  - **Directories size from children only.** `scan_cloud_tree` now contributes
+    `0` for a directory and its `st_size` only for a file, so a directory's size is
+    exactly the sum of its children and a parent can never be smaller than a child.
+    Measured on the real folder: root went `<redacted-bytes>` ->
+    `<redacted-bytes>` (-<redacted-size> of directory-inode/sentinel bytes), and `a large child`
+    `<redacted-bytes>` -> `<redacted-bytes>` (a small difference).
+  - **Truncation is first-class and propagates upward.** Any directory the walk did
+    not fully enumerate -- cut by the entry budget, the deadline, or the depth cap
+    -- is flagged `truncated`, and so is every ancestor. A test/override seam
+    (`ScanOptions::cloud_entry_budget` / `cloud_max_depth`) makes the cut
+    deterministic in tests.
+  - **Renderer honours the lower bound.** New `src/lib/cloudTree.js`
+    (`recomputeAncestorSizes`, `nodeSizeLabel`): after a lazy drill-down the
+    ancestor sizes are recomputed from their children (so an enriched child can
+    never exceed its parent, and the header total equals the sum of the displayed
+    children), and a partial node is shown as `≥ <size>`, or `partial` when nothing
+    has been loaded yet, instead of a misleading precise number.
+  New tests: `cloud_directories_size_from_children_only`,
+  `cloud_truncation_propagates_and_unwalked_directories_are_zero`;
+  `src/lib/cloudTree.test.js`.
+- **r35** — Opening a cloud folder now fills in its sizes. r34 made truncation
+  honest, but it exposed the real UX problem: the **top-level provider scan is
+  bounded**, so the subtree it materialises for a folder (e.g. `a shared cloud folder
+  ` — only `a large child` walked before the budget ran out) is mostly `partial`, and
+  opening that folder did **not** re-walk it. `navigateTo` only triggered a scan
+  when `children.length === 0`, so a folder that already had (starved) children was
+  shown as-is and the user had to open each child by hand to get a number.
+  - **A partial folder is re-walked when opened.** `navigateTo` treats a cloud node
+    flagged `truncated` as needing a scan even when it has children.
+  - **The opened folder is walked in full.** New `ScanOptions::cloud_unbounded`
+    (set by `scan_subdir` for cloud) drops the entry budget *and* the deadline, so
+    the walk is the cloud equivalent of Finder's Get Info: every child gets a real
+    size. The top-level provider scan stays bounded -- walking all of Google Drive
+    unbounded would look exactly like the hang this feature exists to avoid.
+  - **Cancellable and visible.** `scan_subdir` now registers in `ScanJobs`
+    (`register`/`release`, which do not supersede one another like `begin` does, so
+    concurrent lazy drill-downs cannot cancel each other), emits `scan-progress`,
+    and returns `ScanResult::Cancelled`; the node-loading UI shows an indeterminate
+    bar, a live item count and a Cancel button. A monotonic token drops the result
+    of a superseded walk so it cannot hijack the view.
+  New test: `cloud_folder_scan_can_be_unbounded`; new renderer test
+  “re-walks a partially-scanned cloud folder in full when it is opened”.
+- **r36** — Cloud folder-open is **capped**, with an opt-in exact walk. r35 made
+  opening a folder walk it in full, uncapped. That reintroduced the 0.3.7 hang class
+  at the *navigation* layer: opening `My Drive` walked the whole Drive, and
+  "cancellable" is not enough when the trigger is a routine action the user must
+  then police. The policy is now three explicit modes (`scan::CloudScanMode`):
+  - `Provider` (default, `scan_directory`): 4 000 entries / 12 s, so the chart
+    appears at once; the provider-level chart stays partial-with-`>=`.
+  - `Folder` (`scan_subdir`, i.e. opening a folder): a generous **60 000 entries /
+    45 s** cap. Most folders finish and show real sizes with no `>=`
+    (`a shared cloud folder` -> <redacted-size> across its children); one that binds the cap
+    stops and falls back to a `>=` lower bound. Never uncapped by default.
+  - `Exact` (opt-in): no cap at all, still cancellable, only when the user presses
+    **Calculate exact size** -- shown per-folder next to the size whenever the opened
+    folder is `truncated`.
+  The directory-own-size invariant is now asserted **in code** (`debug_assert_eq!`
+  in `build()`: a directory's size is the sum of its children) as well as in tests,
+  so the earlier `<sentinel-bytes>`-byte "<sentinel-size>" placeholder can never reappear as a
+  directory's size -- an un-walked directory is `0` + `truncated`, never its own
+  `lstat`/`st_size`.
+  New/renamed tests: `cloud_folder_scan_is_capped_by_default_and_exact_on_demand`,
+  `cloud_directory_size_is_never_its_own_lstat_size`; new renderer test
+  “falls back to a lower bound when the folder cap binds, and offers Calculate exact size”.
 
 ## Terminal security model
 

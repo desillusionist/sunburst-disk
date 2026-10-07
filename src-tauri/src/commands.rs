@@ -21,7 +21,7 @@ use crate::inspect;
 use crate::openwith;
 use crate::quick_look;
 use crate::related;
-use crate::scan::{self, ScanError, ScanOptions};
+use crate::scan::{self, CloudScanMode, ScanError, ScanOptions};
 use crate::smart_clean;
 use crate::terminal;
 use crate::types::{
@@ -81,6 +81,22 @@ impl ScanJobs {
             }
         }
         target
+    }
+
+    /// Register a *cancellable* job without superseding the window's current one.
+    /// Used by `scan_subdir`, which the renderer may call several times in a row
+    /// (lazy drill-downs) and must not have cancel each other.
+    fn register(&self, request_id: String) -> Arc<AtomicBool> {
+        let mut state = self.state.lock().expect("scan job registry poisoned");
+        let flag = Arc::new(AtomicBool::new(false));
+        state.flags.insert(request_id, flag.clone());
+        flag
+    }
+
+    /// Release a job registered by [`ScanJobs::register`].
+    fn release(&self, request_id: &str) {
+        let mut state = self.state.lock().expect("scan job registry poisoned");
+        state.flags.remove(request_id);
     }
 }
 
@@ -144,6 +160,7 @@ pub async fn scan_directory(
     target_path: String,
     detail_depth: Option<usize>,
     request_id: Option<String>,
+    cloud: Option<bool>,
 ) -> Result<ScanResponse, String> {
     if !target_path.starts_with('/') || target_path.starts_with("__") {
         return Ok(ScanResponse::error("Invalid filesystem path"));
@@ -164,6 +181,12 @@ pub async fn scan_directory(
         } else {
             Vec::new()
         },
+        // A cloud scan is read-only and logical-sized; it descends the provider
+        // domain instead of refusing it. The top-level provider scan is bounded.
+        cloud: cloud.unwrap_or(false) && !startup,
+        cloud_entry_budget: None,
+        cloud_max_depth: None,
+        cloud_mode: CloudScanMode::Provider,
     };
 
     let target = PathBuf::from(&target_path);
@@ -211,11 +234,16 @@ pub async fn scan_directory(
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn scan_subdir(
+    app: AppHandle,
+    state: State<'_, ScanJobs>,
     target_path: String,
     include_package_contents: Option<bool>,
-) -> ScanResponse {
+    cloud: Option<bool>,
+    request_id: Option<String>,
+    exact: Option<bool>,
+) -> Result<ScanResponse, String> {
     if !target_path.starts_with('/') || target_path.starts_with("__") {
-        return ScanResponse::error("Invalid filesystem path");
+        return Ok(ScanResponse::error("Invalid filesystem path"));
     }
 
     let allow_package_contents = include_package_contents.unwrap_or(false)
@@ -224,23 +252,47 @@ pub async fn scan_subdir(
             .map(|name| scan::is_package_name(&name.to_string_lossy()))
             .unwrap_or(false);
 
-    let target = PathBuf::from(&target_path);
+    let is_cloud = cloud.unwrap_or(false);
     let options = ScanOptions {
         detail_depth: 10,
         include_package_contents: allow_package_contents,
+        cloud: is_cloud,
+        // Opening a cloud folder walks it under a generous cap: most folders
+        // complete and show real sizes, and one that hits the cap falls back to a
+        // `>=` lower bound plus the explicit "Calculate exact size" action
+        // (`exact`), which removes the cap. It is never uncapped by default.
+        cloud_mode: if !is_cloud {
+            CloudScanMode::Provider
+        } else if exact.unwrap_or(false) {
+            CloudScanMode::Exact
+        } else {
+            CloudScanMode::Folder
+        },
         ..ScanOptions::default()
     };
-    let cancel = AtomicBool::new(false);
+
+    // Registered (not `begin`) so a lazy drill-down does not cancel another one.
+    let job_id = request_id
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(next_request_id);
+    let cancel = state.register(job_id.clone());
+    let emit_app = app.clone();
+    let target = PathBuf::from(&target_path);
 
     let result = tauri::async_runtime::spawn_blocking(move || {
-        scan::scan_tree(&target, options, &cancel, |_| {})
+        scan::scan_tree(&target, options, &cancel, |progress| {
+            let _ = emit_app.emit("scan-progress", progress);
+        })
     })
     .await;
 
+    state.release(&job_id);
+
     match result {
-        Ok(Ok(tree)) => ScanResponse::tree(tree),
-        Ok(Err(error)) => ScanResponse::error(error.to_string()),
-        Err(_) => ScanResponse::error("Scan task failed"),
+        Ok(Ok(tree)) => Ok(ScanResponse::tree(tree)),
+        Ok(Err(ScanError::Cancelled)) => Ok(ScanResponse::cancelled(Some(job_id))),
+        Ok(Err(error)) => Ok(ScanResponse::error(error.to_string())),
+        Err(_) => Ok(ScanResponse::error("Scan task failed")),
     }
 }
 

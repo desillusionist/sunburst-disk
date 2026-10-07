@@ -28,7 +28,7 @@
 //! shallow nodes that can be materialised. This keeps a full-disk scan (millions
 //! of entries) from allocating gigabytes and stalling.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -72,6 +72,45 @@ const CANCEL_CHECK_EVERY: u32 = 512;
 /// Emit the synthetic `hidden space...` node only for gaps above 1 GB.
 const HIDDEN_SPACE_MIN_BYTES: u64 = 1_000_000_000;
 
+/// Budget for a cloud FileProvider walk (entries, depth, wall clock).
+///
+/// FileProvider mirrors (`Library/CloudStorage`, iCloud Drive) enumerate through
+/// `fileproviderd`, which is orders of magnitude slower than local disk: a Google
+/// Drive folder measured here resolves roughly 100 entries/second, and a single
+/// `read_dir` of a large directory can block for a second. An unbounded walk of a
+/// <redacted-size> provider would run for tens of minutes and look exactly like the hang
+/// this project already fixed once. A cloud scan is therefore always a **bounded
+/// breadth-first partial snapshot**: it terminates on its own, flags itself as
+/// `truncated`, and is labelled as approximate in the renderer. Breadth-first (not
+/// the local scanner's depth-first) matters here -- a depth-first walk would spend
+/// the whole budget inside the first subfolder and show one deep branch instead of
+/// the provider's actual top-level shape.
+const CLOUD_ENTRY_BUDGET: usize = 4_000;
+const CLOUD_MAX_DEPTH: usize = 8;
+const CLOUD_DEADLINE: Duration = Duration::from_secs(12);
+
+/// A folder the user opens is walked more generously than the provider scan, but
+/// is still **capped**. Most folders complete and show real sizes; one that hits
+/// the cap stops, falls back to a `>=` lower bound, and offers an explicit exact
+/// walk. Opening a folder must never be an *uncapped* walk -- opening `My Drive`
+/// would then enumerate the whole Drive, which is the 0.3.7 hang class moved to
+/// the navigation layer, and "cancellable" is not enough for a routine action.
+const CLOUD_FOLDER_ENTRY_BUDGET: usize = 60_000;
+const CLOUD_FOLDER_DEADLINE: Duration = Duration::from_secs(45);
+
+/// How much of a cloud tree one walk may enumerate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CloudScanMode {
+    /// Top-level provider scan: a small budget so the chart appears quickly.
+    #[default]
+    Provider,
+    /// A folder the user opened: a generous cap, falling back to `>=` if it binds.
+    Folder,
+    /// An explicit "Calculate exact size": no cap at all (still cancellable).
+    Exact,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanOptions {
     pub detail_depth: usize,
@@ -82,6 +121,31 @@ pub struct ScanOptions {
     /// build where it reports a `st_dev` distinct from `/System`'s.
     #[serde(default)]
     pub protected_roots: Vec<PathBuf>,
+    /// Cloud FileProvider mode. Instead of pruning `Library/CloudStorage` and
+    /// `Library/Mobile Documents` (and refusing roots inside them), the walk
+    /// descends and measures **logical** bytes (`st_size`) rather than allocated
+    /// blocks: dataless placeholders occupy no blocks, so block accounting would
+    /// draw an all-zero chart. Contents are still never read -- `readdir` and
+    /// `lstat` only -- which is what keeps this from ever hanging.
+    #[serde(default)]
+    pub cloud: bool,
+    /// Override for the cloud walk's entry budget (`CLOUD_ENTRY_BUDGET`).
+    /// A test/override seam; the renderer leaves it unset.
+    #[serde(default)]
+    pub cloud_entry_budget: Option<usize>,
+    /// Walk a cloud root **in full**, with no entry budget and no deadline.
+    ///
+    /// Used for the folder the user explicitly opens (the drill-down): that is
+    /// the cloud equivalent of Finder's Get Info, and the whole point is to
+    /// produce a real size for every child rather than a tree of "partial"
+    /// rows. It stays cancellable and reports progress. The top-level provider
+    /// scan stays bounded -- walking all of Google Drive unbounded would look
+    /// exactly like the multi-minute hang this feature exists to avoid.
+    #[serde(default)]
+    pub cloud_mode: CloudScanMode,
+    /// Override for the cloud walk's depth limit (`CLOUD_MAX_DEPTH`).
+    #[serde(default)]
+    pub cloud_max_depth: Option<usize>,
 }
 
 impl Default for ScanOptions {
@@ -90,6 +154,10 @@ impl Default for ScanOptions {
             detail_depth: 10,
             include_package_contents: false,
             protected_roots: Vec::new(),
+            cloud: false,
+            cloud_entry_budget: None,
+            cloud_max_depth: None,
+            cloud_mode: CloudScanMode::Provider,
         }
     }
 }
@@ -251,12 +319,40 @@ pub fn scan_tree(
     mut progress: impl FnMut(ScanProgress),
 ) -> Result<TreeNode, ScanError> {
     let root = normalize_root(root);
+
+    // Cloud FileProvider mode has its own breadth-first walk: the local
+    // depth-first scanner cannot be made to terminate quickly on a mirror whose
+    // enumeration runs at ~100 entries/second (see `CLOUD_ENTRY_BUDGET`). The
+    // top-level provider scan is bounded; a folder the user opens is walked in
+    // full (`cloud_unbounded`), cancellably and with progress.
+    if options.cloud {
+        let max_depth = options.cloud_max_depth.unwrap_or(CLOUD_MAX_DEPTH);
+        let (entry_budget, deadline) = match options.cloud_mode {
+            CloudScanMode::Exact => (None, None),
+            CloudScanMode::Folder => (
+                Some(
+                    options
+                        .cloud_entry_budget
+                        .unwrap_or(CLOUD_FOLDER_ENTRY_BUDGET),
+                ),
+                Some(Instant::now() + CLOUD_FOLDER_DEADLINE),
+            ),
+            CloudScanMode::Provider => (
+                Some(options.cloud_entry_budget.unwrap_or(CLOUD_ENTRY_BUDGET)),
+                Some(Instant::now() + CLOUD_DEADLINE),
+            ),
+        };
+        return scan_cloud_tree(&root, cancel, progress, entry_budget, deadline, max_depth);
+    }
+
     let root_display = root.to_string_lossy().into_owned();
 
     // A scan rooted inside a cloud domain cannot be walked cheaply: enumerating
     // the mirror is pathologically slow and it is not local disk usage. Refuse
     // explicitly (before any I/O on the domain) rather than appearing to hang.
-    if root_within_cloud_domain(&root) {
+    // Cloud mode (`options.cloud`) is the deliberate exception: the caller asked
+    // for exactly this walk, read-only and logical-sized.
+    if !options.cloud && root_within_cloud_domain(&root) {
         return Err(ScanError::Io(format!(
             "{root_display} is a cloud storage location; its remote contents are not scanned"
         )));
@@ -321,7 +417,7 @@ pub fn scan_tree(
         // dropped without descending, mirroring `du -x` plus the `SKIP_NAMES` and
         // cloud-domain filters.
         if !is_root {
-            let junk = is_skipped_name(&name) || is_cloud_domain(&name);
+            let junk = is_skipped_name(&name) || (!options.cloud && is_cloud_domain(&name));
             let crosses_device = should_prune_dir(
                 &options.protected_roots,
                 entry.path(),
@@ -351,7 +447,13 @@ pub fn scan_tree(
         };
         let visible = !is_symlink && !inside_here;
 
-        let own = metadata.blocks().saturating_mul(512);
+        // Cloud mode sums logical bytes: a dataless placeholder reports its full
+        // `st_size` while occupying no blocks, so block accounting would be zero.
+        let own = if options.cloud {
+            metadata.len()
+        } else {
+            metadata.blocks().saturating_mul(512)
+        };
         let index = nodes.len() as u32;
         let package_here = is_dir && is_package_name(&name);
         let stored_name = if depth <= options.detail_depth {
@@ -440,6 +542,244 @@ fn percent_of(seen: u64, total: u64) -> i64 {
         return -1;
     }
     (((seen as u128 * 100) / total as u128).min(99)) as i64
+}
+
+/// True when a bounded cloud walk has consumed its entry budget. `None` means the
+/// walk is unbounded (a folder the user opened in full).
+fn budget_exhausted(entries_seen: u64, entry_budget: Option<usize>) -> bool {
+    entry_budget.is_some_and(|budget| entries_seen >= budget as u64)
+}
+
+/// True when a bounded cloud walk has passed its deadline. `None` means the walk
+/// is unbounded; cancellation is still polled separately.
+fn deadline_passed(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|deadline| Instant::now() > deadline)
+}
+
+/// One node of the cloud walk arena. `size` starts at the entry's own logical
+/// bytes (zero for directories -- see `scan_cloud_tree`) and becomes the
+/// cumulative subtree size after the reverse pass. `partial` marks a subtree
+/// that was not fully enumerated, either directly or through a descendant.
+struct CloudNode {
+    parent: Option<usize>,
+    name: String,
+    path: String,
+    is_dir: bool,
+    size: u64,
+    children: Vec<usize>,
+    item_count: u64,
+    partial: bool,
+}
+
+/// Bounded breadth-first walk of a cloud FileProvider domain.
+///
+/// Reads directory entries and `lstat`s them -- never their contents -- so a
+/// dataless placeholder is measured without being downloaded. Sizes are logical
+/// bytes (`st_size`), which is what the provider reports for a placeholder.
+///
+/// Two accounting rules make the numbers trustworthy:
+///   * a **directory's own `st_size` is never counted** -- it is the size of the
+///     directory inode, not its contents, and on a cloud FileProvider it is not
+///     even stable (while macOS is still hydrating a folder it can report a
+///     ~2 MiB sentinel, then settle to a few hundred bytes). A directory's size
+///     is therefore, by construction, exactly the sum of its children, so a
+///     parent can never be smaller than a child.
+///   * **truncation is first-class and propagates upward.** Any directory the
+///     walk did not fully enumerate -- cut by the entry budget, the deadline, or
+///     the depth cap -- is flagged `truncated`, and so is every ancestor. Its
+///     size is then a lower bound, and the renderer shows it as such.
+fn scan_cloud_tree(
+    root: &Path,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(ScanProgress),
+    entry_budget: Option<usize>,
+    deadline: Option<Instant>,
+    max_depth: usize,
+) -> Result<TreeNode, ScanError> {
+    let root_display = root.to_string_lossy().into_owned();
+    if !root.is_dir() {
+        return Err(ScanError::Io(format!(
+            "{} is not a directory",
+            root.display()
+        )));
+    }
+    let root_name = root
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| root_display.clone());
+    let root_dev = std::fs::symlink_metadata(root)
+        .map(|metadata| metadata.dev())
+        .unwrap_or(0);
+
+    let mut nodes: Vec<CloudNode> = vec![CloudNode {
+        parent: None,
+        name: root_name,
+        path: root_display.clone(),
+        is_dir: true,
+        size: 0,
+        children: Vec::new(),
+        item_count: 0,
+        partial: false,
+    }];
+    let mut queue: VecDeque<(usize, PathBuf, usize)> = VecDeque::new();
+    queue.push_back((0, root.to_path_buf(), 0));
+    // Which directories were actually read. Anything else stays un-walked and
+    // therefore partial.
+    let mut processed: Vec<bool> = vec![false];
+
+    let mut entries_seen: u64 = 0;
+    let mut last_emit = Instant::now();
+
+    while let Some((index, directory, depth)) = queue.pop_front() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ScanError::Cancelled);
+        }
+        if budget_exhausted(entries_seen, entry_budget) || deadline_passed(deadline) {
+            // This directory is popped but not read; the queue might hold more.
+            // `processed` stays false for it, so it is flagged partial below.
+            break;
+        }
+        processed[index] = true;
+        let Ok(read_dir) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        let mut child_indices: Vec<usize> = Vec::new();
+        let mut cut_dir = false;
+        for entry in read_dir.flatten() {
+            if budget_exhausted(entries_seen, entry_budget) || deadline_passed(deadline) {
+                // Cut mid-directory: it has *some* children, not all.
+                nodes[index].partial = true;
+                cut_dir = true;
+                break;
+            }
+            if cancel.load(Ordering::Relaxed) {
+                return Err(ScanError::Cancelled);
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if is_skipped_name(&name) {
+                continue;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            // Symlinks are never followed, matching the local scanner.
+            if file_type.is_symlink() {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            // Stay on the root's filesystem so a mount inside a provider domain
+            // cannot pull in unrelated volumes.
+            if root_dev != 0 && metadata.dev() != root_dev {
+                continue;
+            }
+            let is_dir = file_type.is_dir();
+            let path = if directory.as_os_str() == "/" {
+                format!("/{name}")
+            } else {
+                format!("{}/{name}", directory.to_string_lossy())
+            };
+            entries_seen += 1;
+            let child_index = nodes.len();
+            nodes.push(CloudNode {
+                parent: Some(index),
+                name,
+                path: path.clone(),
+                is_dir,
+                // Directory inode size is meaningless as contents size, and on a
+                // FileProvider it is unstable: never count it.
+                size: if is_dir { 0 } else { metadata.len() },
+                children: Vec::new(),
+                item_count: 0,
+                partial: false,
+            });
+            processed.push(false);
+            child_indices.push(child_index);
+            if is_dir && depth + 1 < max_depth {
+                queue.push_back((child_index, PathBuf::from(path), depth + 1));
+            }
+        }
+        nodes[index].children = child_indices;
+        if last_emit.elapsed() >= PROGRESS_INTERVAL {
+            last_emit = Instant::now();
+            progress(ScanProgress {
+                current_dir: directory.to_string_lossy().into_owned(),
+                items_scanned: entries_seen,
+                // The total is unknowable up front (and `statfs` reports the local
+                // disk), so the renderer shows an indeterminate bar with a count.
+                percent: -1,
+            });
+        }
+        if cut_dir {
+            break;
+        }
+    }
+
+    // A directory that was never read -- left on the queue, or never enqueued
+    // because it sits at the depth cap -- is not fully enumerated.
+    for (index, node) in nodes.iter_mut().enumerate() {
+        if node.is_dir && !processed.get(index).copied().unwrap_or(false) {
+            node.partial = true;
+        }
+    }
+
+    // Breadth-first assigns every child a larger index than its parent, so a
+    // single reverse pass accumulates sizes, descendant counts, and the partial
+    // flag upward. `size` therefore equals the sum of the subtree's children.
+    for index in (1..nodes.len()).rev() {
+        let (parent, size, item_count, partial) = {
+            let node = &nodes[index];
+            (node.parent, node.size, node.item_count, node.partial)
+        };
+        if let Some(parent) = parent {
+            nodes[parent].size = nodes[parent].size.saturating_add(size);
+            nodes[parent].item_count += 1 + item_count;
+            if partial {
+                nodes[parent].partial = true;
+            }
+        }
+    }
+
+    fn build(index: usize, nodes: &[CloudNode]) -> TreeNode {
+        let node = &nodes[index];
+        let mut children: Vec<TreeNode> = node
+            .children
+            .iter()
+            .map(|&child| build(child, nodes))
+            .collect();
+        children.sort_by_key(|child| std::cmp::Reverse(child.size));
+        // Invariant, asserted in code: a directory's size is the sum of its
+        // children -- **never** its own `lstat`/`st_size`. A directory inode size
+        // is meaningless as contents size, and on a FileProvider it is not even
+        // stable (it can be a ~2 MiB sentinel mid-hydration). An un-walked
+        // directory has no children here, so its size is 0 (a lower bound).
+        if node.is_dir {
+            let child_sum: u64 = children.iter().map(|child| child.size).sum();
+            debug_assert_eq!(
+                node.size, child_sum,
+                "directory {} size must be the sum of its children",
+                node.path
+            );
+        }
+        TreeNode {
+            name: node.name.clone(),
+            path: node.path.clone(),
+            size: node.size,
+            node_type: if node.is_dir {
+                NodeType::Directory
+            } else {
+                NodeType::File
+            },
+            children,
+            item_count: node.item_count,
+            cloud_managed: Some(true),
+            truncated: if node.partial { Some(true) } else { None },
+            ..Default::default()
+        }
+    }
+
+    Ok(build(0, &nodes))
 }
 
 fn materialize(
@@ -882,6 +1222,464 @@ mod tests {
         let root = split_startup_system(tree);
         assert_eq!(root.path, "/System");
         assert!(root.children.is_empty());
+    }
+
+    #[test]
+    fn cloud_mode_measures_logical_bytes_and_descends_domains() {
+        let base = std::env::temp_dir().join(format!("sunburst-scan-cloud-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("nested")).expect("fixture directory");
+        std::fs::write(base.join("nested").join("real.bin"), vec![2u8; 4096])
+            .expect("fixture file");
+        // A sparse file stands in for a dataless placeholder: it reports a logical
+        // size but occupies no blocks.
+        let placeholder = base.join("placeholder.bin");
+        let file = std::fs::File::create(&placeholder).expect("fixture placeholder");
+        file.set_len(8 * 1024 * 1024).expect("sparse length");
+        drop(file);
+        // A domain-named directory must be descended in cloud mode.
+        let provider = base.join("CloudStorage").join("provider");
+        std::fs::create_dir_all(&provider).expect("fixture provider");
+        std::fs::write(provider.join("remote.bin"), vec![3u8; 2048]).expect("fixture remote file");
+
+        let cancel = AtomicBool::new(false);
+        let tree = scan_tree(
+            &base,
+            ScanOptions {
+                detail_depth: 10,
+                cloud: true,
+                ..ScanOptions::default()
+            },
+            &cancel,
+            |_| {},
+        )
+        .expect("a cloud-mode scan must succeed");
+
+        assert!(
+            tree.size >= 8 * 1024 * 1024,
+            "logical sizes must be summed, got {}",
+            tree.size
+        );
+        assert!(
+            tree.children
+                .iter()
+                .any(|child| child.name == "CloudStorage"),
+            "cloud domains must be walked in cloud mode"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cloud_scan_is_read_only_breadth_first_and_size_ordered() {
+        let base = std::env::temp_dir().join(format!("sunburst-cloud-bfs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("alpha").join("beta")).expect("fixture directory");
+        std::fs::write(
+            base.join("alpha").join("beta").join("deep.bin"),
+            vec![1u8; 4096],
+        )
+        .expect("fixture deep file");
+        std::fs::write(base.join("small.bin"), vec![2u8; 2048]).expect("fixture small file");
+
+        let cancel = AtomicBool::new(false);
+        let tree = scan_tree(
+            &base,
+            ScanOptions {
+                cloud: true,
+                ..ScanOptions::default()
+            },
+            &cancel,
+            |_| {},
+        )
+        .expect("cloud scan");
+
+        fn assert_read_only(node: &TreeNode) {
+            assert_eq!(
+                node.cloud_managed,
+                Some(true),
+                "{} must be marked cloud-managed",
+                node.path
+            );
+            for child in &node.children {
+                assert_read_only(child);
+            }
+        }
+        assert_read_only(&tree);
+        assert_eq!(tree.truncated, None, "a tiny fixture must not truncate");
+
+        // Breadth-first: `alpha`'s child `beta` is materialised in the same pass,
+        // unlike the local scanner where children stop at `detail_depth`.
+        let alpha = tree
+            .children
+            .iter()
+            .find(|child| child.name == "alpha")
+            .expect("alpha must be a child");
+        assert!(
+            alpha.children.iter().any(|child| child.name == "beta"),
+            "breadth-first must materialise nested directories"
+        );
+        // Children are ordered largest-first, matching the local scanner.
+        let sizes: Vec<u64> = tree.children.iter().map(|child| child.size).collect();
+        let mut sorted = sizes.clone();
+        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(sizes, sorted, "children must be size-ordered");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cloud_scan_stops_at_the_entry_budget_and_flags_truncation() {
+        let base =
+            std::env::temp_dir().join(format!("sunburst-cloud-budget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("fixture directory");
+        for index in 0..(CLOUD_ENTRY_BUDGET + 32) {
+            std::fs::write(base.join(format!("entry-{index}.bin")), b"x").expect("fixture file");
+        }
+
+        let cancel = AtomicBool::new(false);
+        let tree = scan_tree(
+            &base,
+            ScanOptions {
+                cloud: true,
+                ..ScanOptions::default()
+            },
+            &cancel,
+            |_| {},
+        )
+        .expect("cloud scan");
+
+        assert_eq!(
+            tree.truncated,
+            Some(true),
+            "exceeding the entry budget must flag the snapshot as partial"
+        );
+        assert!(
+            tree.children.len() <= CLOUD_ENTRY_BUDGET,
+            "the walk must stop at the budget, got {}",
+            tree.children.len()
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    #[ignore = "probe: real bounded cloud walk over the user's providers"]
+    fn cloud_tree_probe() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        for path in [
+            format!("{home}/Library/CloudStorage/GoogleDrive-alex@example.com"),
+            format!("{home}/Library/Mobile Documents/com~apple~CloudDocs"),
+        ] {
+            let cancel = AtomicBool::new(false);
+            let started = std::time::Instant::now();
+            match scan_tree(
+                Path::new(&path),
+                ScanOptions {
+                    cloud: true,
+                    ..ScanOptions::default()
+                },
+                &cancel,
+                |_| {},
+            ) {
+                Ok(tree) => eprintln!(
+                    "{path}: root={} size={} children={} items={} truncated={:?} in {:.1}s",
+                    tree.name,
+                    tree.size,
+                    tree.children.len(),
+                    tree.item_count,
+                    tree.truncated,
+                    started.elapsed().as_secs_f64()
+                ),
+                Err(error) => eprintln!("{path}: error {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn cloud_directories_size_from_children_only() {
+        let base =
+            std::env::temp_dir().join(format!("sunburst-cloud-dirsize-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("a")).expect("fixture directory");
+        std::fs::create_dir_all(base.join("b")).expect("fixture directory");
+        std::fs::write(base.join("top.bin"), vec![1u8; 1024]).expect("fixture file");
+        std::fs::write(base.join("a").join("one.bin"), vec![2u8; 4096]).expect("fixture file");
+        std::fs::write(base.join("a").join("two.bin"), vec![3u8; 512]).expect("fixture file");
+        std::fs::write(base.join("b").join("three.bin"), vec![4u8; 2048]).expect("fixture file");
+
+        // Directory inode sizes differ from the sums below, so counting them
+        // would break the exact equalities asserted here.
+        let cancel = AtomicBool::new(false);
+        let tree = scan_tree(
+            &base,
+            ScanOptions {
+                cloud: true,
+                ..ScanOptions::default()
+            },
+            &cancel,
+            |_| {},
+        )
+        .expect("cloud scan");
+
+        assert_eq!(tree.truncated, None, "a tiny fixture is fully walked");
+        assert_eq!(
+            tree.size,
+            1024 + 4096 + 512 + 2048,
+            "root size is the sum of contents, no directory inodes"
+        );
+        // Invariant 4: the shown total equals the sum of the shown children.
+        let shown: u64 = tree.children.iter().map(|child| child.size).sum();
+        assert_eq!(
+            tree.size, shown,
+            "root total must equal the sum of its displayed children"
+        );
+        let a = tree
+            .children
+            .iter()
+            .find(|child| child.name == "a")
+            .expect("a");
+        let b = tree
+            .children
+            .iter()
+            .find(|child| child.name == "b")
+            .expect("b");
+        assert_eq!(a.size, 4096 + 512);
+        assert_eq!(b.size, 2048);
+
+        fn assert_no_inversion(node: &TreeNode) {
+            let max_child = node
+                .children
+                .iter()
+                .map(|child| child.size)
+                .max()
+                .unwrap_or(0);
+            assert!(
+                node.size >= max_child,
+                "{} (size {}) < child {}",
+                node.path,
+                node.size,
+                max_child
+            );
+            for child in &node.children {
+                assert_no_inversion(child);
+            }
+        }
+        assert_no_inversion(&tree);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cloud_truncation_propagates_and_unwalked_directories_are_zero() {
+        // Budget 4 forces the walk to stop partway through `a`, so `b` and `c`
+        // are created but never read.
+        let base =
+            std::env::temp_dir().join(format!("sunburst-cloud-trunc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        for dir in ["a", "b", "c"] {
+            std::fs::create_dir_all(base.join(dir)).expect("fixture directory");
+        }
+        std::fs::write(base.join("a").join("a1.bin"), b"x").expect("fixture file");
+        std::fs::write(base.join("a").join("a2.bin"), b"x").expect("fixture file");
+        std::fs::write(base.join("b").join("b1.bin"), b"x").expect("fixture file");
+        std::fs::write(base.join("b").join("b2.bin"), b"x").expect("fixture file");
+        std::fs::write(base.join("c").join("c1.bin"), b"x").expect("fixture file");
+
+        let cancel = AtomicBool::new(false);
+        let tree = scan_tree(
+            &base,
+            ScanOptions {
+                cloud: true,
+                cloud_entry_budget: Some(4),
+                cloud_max_depth: None,
+                ..ScanOptions::default()
+            },
+            &cancel,
+            |_| {},
+        )
+        .expect("cloud scan");
+
+        assert_eq!(tree.truncated, Some(true), "a cut walk must flag the root");
+
+        // Un-walked directories must read as zero + partial, never as their own
+        // (meaningless, provider-unstable) directory st_size.
+        for name in ["b", "c"] {
+            let dir = tree
+                .children
+                .iter()
+                .find(|child| child.name == name)
+                .expect(name);
+            assert_eq!(
+                dir.size, 0,
+                "{name} was never walked, so it must not report a size"
+            );
+            assert_eq!(
+                dir.truncated,
+                Some(true),
+                "{name} was never walked, so it must be partial"
+            );
+        }
+        // `a` was cut mid-read, so it is partial too, and keeps what it saw.
+        let a = tree
+            .children
+            .iter()
+            .find(|child| child.name == "a")
+            .expect("a");
+        assert_eq!(a.truncated, Some(true));
+
+        fn assert_no_inversion_and_leaf_dirs_are_partial(node: &TreeNode, is_root: bool) {
+            let max_child = node
+                .children
+                .iter()
+                .map(|child| child.size)
+                .max()
+                .unwrap_or(0);
+            assert!(
+                node.size >= max_child,
+                "{} (size {}) < child {}",
+                node.path,
+                node.size,
+                max_child
+            );
+            if !is_root && node.node_type == NodeType::Directory && node.children.is_empty() {
+                assert_eq!(
+                    node.size, 0,
+                    "un-walked directory {} must be zero",
+                    node.path
+                );
+                assert_eq!(
+                    node.truncated,
+                    Some(true),
+                    "un-walked directory {} must be partial",
+                    node.path
+                );
+            }
+            for child in &node.children {
+                assert_no_inversion_and_leaf_dirs_are_partial(child, false);
+            }
+        }
+        assert_no_inversion_and_leaf_dirs_are_partial(&tree, true);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cloud_folder_scan_is_capped_by_default_and_exact_on_demand() {
+        // A folder with more entries than a (tiny, test) cap: `Folder` mode stops
+        // and falls back to a lower bound; `Exact` (the opt-in action) completes.
+        let base = std::env::temp_dir().join(format!("sunburst-cloud-full-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("fixture directory");
+        for index in 0..64 {
+            std::fs::write(base.join(format!("f{index:02}.bin")), vec![1u8; 1024])
+                .expect("fixture file");
+        }
+        let cancel = AtomicBool::new(false);
+
+        let capped = scan_tree(
+            &base,
+            ScanOptions {
+                cloud: true,
+                cloud_mode: CloudScanMode::Folder,
+                cloud_entry_budget: Some(8),
+                ..ScanOptions::default()
+            },
+            &cancel,
+            |_| {},
+        )
+        .expect("capped folder scan");
+        assert_eq!(
+            capped.truncated,
+            Some(true),
+            "hitting the cap marks a lower bound"
+        );
+        assert!(capped.children.len() < 64);
+
+        let exact = scan_tree(
+            &base,
+            ScanOptions {
+                cloud: true,
+                cloud_mode: CloudScanMode::Exact,
+                cloud_entry_budget: Some(8),
+                ..ScanOptions::default()
+            },
+            &cancel,
+            |_| {},
+        )
+        .expect("exact cloud scan");
+        assert_eq!(exact.truncated, None, "an exact walk completes");
+        assert_eq!(exact.children.len(), 64);
+        assert_eq!(exact.size, 64 * 1024);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cloud_directory_size_is_never_its_own_lstat_size() {
+        // A directory's own st_size must never become its size -- directly or as
+        // the "0" of an un-walked folder. Directory size is always the sum of
+        // children (or 0 when not walked at all).
+        let base =
+            std::env::temp_dir().join(format!("sunburst-cloud-ownsize-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("walked").join("deep")).expect("fixture");
+        std::fs::write(base.join("walked").join("a.bin"), vec![7u8; 4096]).expect("fixture file");
+        std::fs::write(
+            base.join("walked").join("deep").join("b.bin"),
+            vec![7u8; 2048],
+        )
+        .expect("fixture file");
+
+        let cancel = AtomicBool::new(false);
+        let tree = scan_tree(
+            &base,
+            ScanOptions {
+                cloud: true,
+                ..ScanOptions::default()
+            },
+            &cancel,
+            |_| {},
+        )
+        .expect("cloud scan");
+
+        // Every directory anywhere in the tree: size == sum of its children. The
+        // raw lstat size of any of these directories is small but non-zero (64+),
+        // so counting it would break these equalities.
+        let mut dirs_checked = 0;
+        fn assert_dir_sizes(node: &TreeNode, dirs_checked: &mut usize) {
+            if node.node_type == NodeType::Directory {
+                *dirs_checked += 1;
+                let child_sum: u64 = node.children.iter().map(|child| child.size).sum();
+                assert_eq!(
+                    node.size, child_sum,
+                    "directory {} size {} must equal its children's sum {}",
+                    node.path, node.size, child_sum
+                );
+                let raw_own = std::fs::symlink_metadata(&node.path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                if !node.children.is_empty() {
+                    assert_ne!(
+                        node.size, raw_own,
+                        "directory {} must not report its own st_size ({raw_own})",
+                        node.path
+                    );
+                }
+            }
+            for child in &node.children {
+                assert_dir_sizes(child, dirs_checked);
+            }
+        }
+        assert_dir_sizes(&tree, &mut dirs_checked);
+        assert!(
+            dirs_checked >= 3,
+            "expected the walk to visit several directories"
+        );
+        assert_eq!(tree.size, 4096 + 2048);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
