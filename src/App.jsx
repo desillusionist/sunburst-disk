@@ -4,7 +4,7 @@ import SunburstChart from './components/SunburstChart';
 import DetailsSidebar from './components/DetailsSidebar';
 import DebugDownbar from './components/DebugDownbar';
 import { getRiskInfo, canCollect, canCloudBasket } from './lib/risk';
-import { recomputeAncestorSizes, nodeSizeLabel, isAvailableOffline, isAvailableOnline } from './lib/cloudTree';
+import { recomputeAncestorSizes, nodeSizeLabel, isAvailableOffline, isAvailableOnline, googleDriveTrashUrl } from './lib/cloudTree';
 import { recordPerfEvent, recordPerfInstant } from './debug/perfTelemetry';
 import shortcutGuideText from './Sunburst-Disk-Ask-Siri-Shortcut-Guide.txt?raw';
 
@@ -3555,6 +3555,8 @@ export default function App() {
   // "On this Mac": bytes actually stored locally for the same node. Rolls up the
   // same way as the cloud size, and reads as a lower bound for a partial folder.
   const headerLocalBytes = Number(liveHeaderNode?.localBytes) || 0;
+  // Google Drive Trash for the account behind the provider being viewed.
+  const cloudTrashUrl = googleDriveTrashUrl(currentDrive?.scanPath || scannedTree?.path);
   // Drive-root only: leave a proportional gap for free space in the root ring.
   // Disabled for folder scans and any drilled-in / virtual view (path differs).
   const driveRootPath = currentDrive?.scanPath || currentDrive?.mount || null;
@@ -4542,7 +4544,7 @@ export default function App() {
                       </div>
                     )}
                     <div className="cloud-basket-result-actions">
-                      <button onClick={() => { void window.electronAPI?.openExternalUrl?.('https://drive.google.com/drive/trash'); }}>Open Google Drive Trash</button>
+                      <button onClick={() => { void window.electronAPI?.openExternalUrl?.(cloudTrashUrl); }}>Open Google Drive Trash</button>
                       <button onClick={() => setCloudTrashResult(null)}>Dismiss</button>
                     </div>
                   </div>

@@ -68,3 +68,17 @@ export function isAvailableOffline(node) {
 export function isAvailableOnline(node) {
   return (Number(node?.localBytes) || 0) === 0;
 }
+
+// The Google Drive Trash URL for the account behind a CloudStorage provider
+// folder. The provider folder is named `GoogleDrive-<email>`, and Google honours
+// `?authuser=<email>` (an account email, not a positional /u/N index), so the
+// button follows whichever Drive is being viewed and stays correct when accounts
+// are added or removed. Non-Google providers fall back to the account-agnostic URL.
+export function googleDriveTrashUrl(providerPath) {
+  const name = String(providerPath || '').replace(/\/+$/, '').split('/').pop() || '';
+  const match = /^GoogleDrive-(.+)$/.exec(name);
+  if (match) {
+    return `https://drive.google.com/drive/trash?authuser=${encodeURIComponent(match[1])}`;
+  }
+  return 'https://drive.google.com/drive/trash';
+}

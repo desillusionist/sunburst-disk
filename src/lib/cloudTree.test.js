@@ -6,7 +6,7 @@
 // that equals the sum of the children actually shown, with partial sub-trees
 // labelled as lower bounds.
 import { describe, it, expect } from 'vitest';
-import { recomputeAncestorSizes, nodeSizeLabel, isAvailableOffline, isAvailableOnline } from './cloudTree';
+import { recomputeAncestorSizes, nodeSizeLabel, isAvailableOffline, isAvailableOnline, googleDriveTrashUrl } from './cloudTree';
 
 const formatBytes = bytes => `${bytes} B`;
 
@@ -156,5 +156,21 @@ describe('cloud availability filters', () => {
     for (const node of [{ localBytes: 0 }, { localBytes: 4096 }, {}, { localBytes: 1 }]) {
       expect(isAvailableOffline(node)).toBe(!isAvailableOnline(node));
     }
+  });
+});
+
+describe('google drive trash url', () => {
+  it('targets the account from a GoogleDrive provider folder via authuser', () => {
+    expect(googleDriveTrashUrl('/Users/x/Library/CloudStorage/GoogleDrive-alex@example.com'))
+      .toBe('https://drive.google.com/drive/trash?authuser=alex%40example.com');
+  });
+
+  it('falls back to the account-agnostic url for non-Google providers and unknown paths', () => {
+    expect(googleDriveTrashUrl('/Users/x/Library/CloudStorage/OneDrive-Personal'))
+      .toBe('https://drive.google.com/drive/trash');
+    expect(googleDriveTrashUrl('/Users/x/Library/Mobile Documents/com~apple~CloudDocs'))
+      .toBe('https://drive.google.com/drive/trash');
+    expect(googleDriveTrashUrl(undefined)).toBe('https://drive.google.com/drive/trash');
+    expect(googleDriveTrashUrl('')).toBe('https://drive.google.com/drive/trash');
   });
 });
