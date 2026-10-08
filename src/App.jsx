@@ -4,7 +4,7 @@ import SunburstChart from './components/SunburstChart';
 import DetailsSidebar from './components/DetailsSidebar';
 import DebugDownbar from './components/DebugDownbar';
 import { getRiskInfo, canCollect } from './lib/risk';
-import { recomputeAncestorSizes, nodeSizeLabel } from './lib/cloudTree';
+import { recomputeAncestorSizes, nodeSizeLabel, isAvailableOffline, isAvailableOnline } from './lib/cloudTree';
 import { recordPerfEvent, recordPerfInstant } from './debug/perfTelemetry';
 import shortcutGuideText from './Sunburst-Disk-Ask-Siri-Shortcut-Guide.txt?raw';
 
@@ -397,7 +397,10 @@ const DEFAULT_VIEW_OPTIONS = {
   typeFilter: [],
   sizeFilter: 'all',
   dateFilter: 'all',
-  nameQuery: ''
+  nameQuery: '',
+  // Cloud view only: independent availability filters (pure display filters).
+  cloudOffline: false,
+  cloudOnline: false
 };
 
 function getNodeDate(node, metadataByPath) {
@@ -431,6 +434,16 @@ function matchesViewFilters(node, options, metadataByPath) {
     const days = Number(options.dateFilter);
     const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
     if (!nodeDate || nodeDate < cutoff) return false;
+  }
+
+  // Cloud availability: independent of the type list. Selecting exactly one of
+  // "available offline" / "available online" restricts to that side; selecting
+  // both (or neither) adds no constraint. Pure predicates -- never any I/O.
+  const wantOffline = options.cloudOffline === true;
+  const wantOnline = options.cloudOnline === true;
+  if (wantOffline !== wantOnline) {
+    if (wantOffline && !isAvailableOffline(node)) return false;
+    if (wantOnline && !isAvailableOnline(node)) return false;
   }
   return true;
 }
@@ -883,6 +896,10 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.3.10': [
+    'Cloud views now show how much of each item is actually on this Mac, alongside its cloud size — an “on this Mac” total for the folder you are viewing and a small badge on every row that has local bytes. The figures come from the same read-only filesystem check the scan already makes (on-disk blocks), so nothing is read or downloaded.',
+    'New availability filters in Sort & Filter: “Available Offline” and “Available Online” limit the list to what is stored on this Mac, or to cloud-only items. They are display filters and never download anything.'
+  ],
   '0.3.9': [
     'Fixed cloud folders that still showed an approximate size (≥) even after “Calculate exact size”. Folders deeper than 8 levels stopped being measured at that depth, so a folder could read exact while you were inside it and approximate one level up. The limit is now far beyond real content, so an exact walk really is exact.'
   ],
@@ -1009,6 +1026,9 @@ export default function App() {
   // True while the scan view is showing a cloud provider tree rather than local
   // disk usage: it switches the loading UI, the read-only banner and the legend.
   const [cloudView, setCloudView] = useState(false);
+  // The read-only cloud notice is an onboarding tip; it can be dismissed and is
+  // shown again for each new cloud scan.
+  const [cloudBannerDismissed, setCloudBannerDismissed] = useState(false);
   const [smartCleanScope, setSmartCleanScope] = useState('storage');
   const [smartCleanRiskFilter, setSmartCleanRiskFilter] = useState('all');
   const [smartCleanCategoryFilters, setSmartCleanCategoryFilters] = useState(() => new Set());
@@ -1185,7 +1205,7 @@ export default function App() {
     .filter(path => packageContentsShown[path])
     .sort()
     .join('\u001f');
-  const displayOptionsKey = `${viewOptions.sortBy}|${viewOptions.sortDirection}|${viewOptions.typeFilter}|${viewOptions.sizeFilter}|${viewOptions.dateFilter}|${viewOptions.nameQuery}|packages:${packageContentsKey}`;
+  const displayOptionsKey = `${viewOptions.sortBy}|${viewOptions.sortDirection}|${viewOptions.typeFilter}|${viewOptions.sizeFilter}|${viewOptions.dateFilter}|${viewOptions.nameQuery}|avail:${viewOptions.cloudOffline ? 1 : 0}${viewOptions.cloudOnline ? 1 : 0}|packages:${packageContentsKey}`;
   const previewNode = useMemo(() => {
     const startedAt = performance.now();
     const isHoverPreview = previewSource?.path !== currentViewNode?.path;
@@ -1778,6 +1798,7 @@ export default function App() {
     activeScanRequestRef.current = requestId;
     cloudModeRef.current = cloud;
     setCloudView(cloud);
+    setCloudBannerDismissed(false);
     setDriveMenuKey(null);
     setScanError(null);
     setScanNotice(null);
@@ -2135,7 +2156,9 @@ export default function App() {
         itemCount: Number.isFinite(result.tree.itemCount) ? result.tree.itemCount : result.tree.children.length,
         // A cloud sub-walk reports whether it finished; the node inherits that so
         // ancestors can be marked partial too.
-        truncated: result.tree.truncated
+        truncated: result.tree.truncated,
+        // On-this-Mac bytes roll up with the same sum-of-children rule as size.
+        localBytes: result.tree.localBytes
       };
       dbg('enriched', {
         path: node.path,
@@ -2490,7 +2513,8 @@ export default function App() {
             ...node,
             children: result.tree.children,
             size: result.tree.size ?? node.size,
-            truncated: result.tree.truncated
+            truncated: result.tree.truncated,
+            localBytes: result.tree.localBytes
           };
           const updated = updateNodeInTree(scannedTree, node.path, enrichedNode);
           updatedTree = cloudModeRef.current ? recomputeAncestorSizes(updated, node.path) : updated;
@@ -2552,7 +2576,8 @@ export default function App() {
           children: result.tree.children,
           size: result.tree.size ?? live.size,
           itemCount: Number.isFinite(result.tree.itemCount) ? result.tree.itemCount : live.itemCount,
-          truncated: result.tree.truncated
+          truncated: result.tree.truncated,
+          localBytes: result.tree.localBytes
         };
         const updated = updateNodeInTree(scannedTree, node.path, enriched);
         const next = cloudModeRef.current ? recomputeAncestorSizes(updated, node.path) : updated;
@@ -3131,7 +3156,8 @@ export default function App() {
   const filtersActive = selectedTypeFilters.length > 0
     || viewOptions.sizeFilter !== 'all'
     || viewOptions.dateFilter !== 'all'
-    || Boolean(viewOptions.nameQuery.trim());
+    || Boolean(viewOptions.nameQuery.trim())
+    || (cloudView && (Boolean(viewOptions.cloudOffline) || Boolean(viewOptions.cloudOnline)));
   const toggleTypeFilter = value => setViewOptions(options => {
     const current = Array.isArray(options.typeFilter)
       ? options.typeFilter
@@ -3404,6 +3430,9 @@ export default function App() {
   const liveHeaderNode = isFileHover ? liveHoveredNode : previewNode;
   // Lower-bound treatment for a partially-walked cloud folder's total.
   const headerSizeLabel = nodeSizeLabel(isFileHover ? liveHoveredNode : previewNode, formatBytes);
+  // "On this Mac": bytes actually stored locally for the same node. Rolls up the
+  // same way as the cloud size, and reads as a lower bound for a partial folder.
+  const headerLocalBytes = Number(liveHeaderNode?.localBytes) || 0;
   // Drive-root only: leave a proportional gap for free space in the root ring.
   // Disabled for folder scans and any drilled-in / virtual view (path differs).
   const driveRootPath = currentDrive?.scanPath || currentDrive?.mount || null;
@@ -4081,9 +4110,20 @@ export default function App() {
             </div>
           )}
 
-          {cloudView && (
+          {cloudView && !cloudBannerDismissed && (
             <div className="cloud-view-banner" role="status">
-              <strong>Cloud content · read-only</strong>
+              <div className="cloud-view-banner-head">
+                <strong>Cloud content · read-only</strong>
+                <button
+                  className="cloud-view-banner-close"
+                  type="button"
+                  title="Dismiss"
+                  aria-label="Dismiss cloud content notice"
+                  onClick={() => setCloudBannerDismissed(true)}
+                >
+                  <X size={13} />
+                </button>
+              </div>
               <span>
                 Sizes are the size each item takes in the cloud — what {currentDrive?.name || 'the provider'} reports — not the space it uses on this Mac. Items you have not downloaded still count at full size here, and nothing is read or downloaded. This view can never collect or delete anything.
                 {scannedTree?.truncated ? ' This snapshot stopped at its scan limit, so the sizes are lower bounds — open a folder to load more of it.' : ''}
@@ -4093,6 +4133,16 @@ export default function App() {
 
           {/* Chart Area */}
           <div className="chart-area">
+            {cloudView && currentViewNode?.type === 'directory' && currentViewNode?.truncated && !loading && !nodeLoading && (
+              <button
+                type="button"
+                className="cloud-exact-btn chart-exact-btn"
+                title="Walk this folder completely to get an exact size (like Finder’s Get Info). May take a while on a large cloud folder."
+                onClick={() => { void calculateExactSize(currentViewNode); }}
+              >
+                Calculate exact size
+              </button>
+            )}
             {loading ? (
               <div className="scan-loading-status" role="status" aria-live="polite">
                 <div className="scan-loading-header">
@@ -4431,16 +4481,6 @@ export default function App() {
                 )}
               </div>
               <div className="legend-header-actions">
-                {cloudView && currentViewNode?.type === 'directory' && currentViewNode?.truncated && !loading && !nodeLoading && (
-                  <button
-                    type="button"
-                    className="cloud-exact-btn"
-                    title="Walk this folder completely to get an exact size (like Finder’s Get Info). May take a while on a large cloud folder."
-                    onClick={() => { void calculateExactSize(currentViewNode); }}
-                  >
-                    Calculate exact size
-                  </button>
-                )}
                 <div className={`legend-total ${headerSizeLabel.partial ? 'partial' : ''}`} title={headerSizeLabel.title || undefined}>
                                         {loading ? '' : headerSizeLabel.text}
 
@@ -4496,6 +4536,27 @@ export default function App() {
                           <span>{label}</span>
                         </label>
                       ))}
+                      {cloudView && (
+                        <>
+                          <div className="view-type-separator" aria-hidden="true" />
+                          <label className="view-type-option">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(viewOptions.cloudOffline)}
+                              onChange={event => setViewOptions(options => ({ ...options, cloudOffline: event.target.checked }))}
+                            />
+                            <span>Available Offline</span>
+                          </label>
+                          <label className="view-type-option">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(viewOptions.cloudOnline)}
+                              onChange={event => setViewOptions(options => ({ ...options, cloudOnline: event.target.checked }))}
+                            />
+                            <span>Available Online</span>
+                          </label>
+                        </>
+                      )}
                     </div>
                   </div>
                   <label>Minimum size
@@ -4585,6 +4646,14 @@ export default function App() {
                       />
                     </div>
                     <div className="legend-right">
+                      {cloudView && Number(item.localBytes) > 0 && (
+                        <span
+                          className="legend-local-badge"
+                          title={`${formatBytes(Number(item.localBytes))} stored on this Mac — not the cloud size`}
+                        >
+                          {formatBytes(Number(item.localBytes))}
+                        </span>
+                      )}
                       <span className={`legend-val ${sizeLabel.partial ? 'partial' : ''}`} title={sizeLabel.title || undefined}>{sizeLabel.text}</span>
                       <button
                         className="legend-add-btn"
@@ -4596,19 +4665,37 @@ export default function App() {
                   </div>
                 );
               })}
+            </div>
 
+            {/* Summary footer: pinned to the bottom so the legend totals stay on
+                screen while the list scrolls. */}
+            <div className="legend-footer">
               <div className="legend-divider" />
               {cloudView && (
-                <div className="legend-row static">
-                  <div className="legend-left">
-                    <div className="dot" style={{ backgroundColor: '#38bdf8' }} />
-                    <span className="legend-label dim">cloud content (not on-disk)</span>
+                <>
+                  <div className="legend-row static">
+                    <div className="legend-left">
+                      <div className="dot" style={{ backgroundColor: '#38bdf8' }} />
+                      <span className="legend-label dim">cloud content (not on-disk)</span>
+                    </div>
+                    <span
+                      className={`legend-val ${headerSizeLabel.partial ? 'partial' : ''}`}
+                      title={headerSizeLabel.title || undefined}
+                    >{headerSizeLabel.text}</span>
                   </div>
-                  <span
-                    className={`legend-val ${headerSizeLabel.partial ? 'partial' : ''}`}
-                    title={headerSizeLabel.title || undefined}
-                  >{headerSizeLabel.text}</span>
-                </div>
+                  {headerLocalBytes > 0 && (
+                    <div className="legend-row static legend-local-total">
+                      <div className="legend-left">
+                        <div className="dot" style={{ backgroundColor: '#60a5fa' }} />
+                        <span className="legend-label dim">on this Mac</span>
+                      </div>
+                      <span
+                        className={`legend-val ${headerSizeLabel.partial ? 'partial' : ''}`}
+                        title="Bytes of this view actually stored on this Mac — not the cloud size"
+                      >{headerSizeLabel.partial ? '≥ ' : ''}{formatBytes(headerLocalBytes)}</span>
+                    </div>
+                  )}
+                </>
               )}
               {currentDrive && !cloudView && (
                 <>

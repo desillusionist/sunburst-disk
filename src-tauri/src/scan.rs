@@ -570,14 +570,18 @@ fn deadline_passed(deadline: Option<Instant>) -> bool {
 
 /// One node of the cloud walk arena. `size` starts at the entry's own logical
 /// bytes (zero for directories -- see `scan_cloud_tree`) and becomes the
-/// cumulative subtree size after the reverse pass. `partial` marks a subtree
-/// that was not fully enumerated, either directly or through a descendant.
+/// cumulative subtree size after the reverse pass. `local_bytes` starts at the
+/// entry's own on-disk blocks (`st_blocks * 512`, zero for directories) and is
+/// accumulated the same way, so a directory's local bytes are the sum of its
+/// children's. `partial` marks a subtree that was not fully enumerated, either
+/// directly or through a descendant.
 struct CloudNode {
     parent: Option<usize>,
     name: String,
     path: String,
     is_dir: bool,
     size: u64,
+    local_bytes: u64,
     children: Vec<usize>,
     item_count: u64,
     partial: bool,
@@ -595,7 +599,9 @@ struct CloudNode {
 ///     even stable (while macOS is still hydrating a folder it can report a
 ///     ~2 MiB sentinel, then settle to a few hundred bytes). A directory's size
 ///     is therefore, by construction, exactly the sum of its children, so a
-///     parent can never be smaller than a child.
+///     parent can never be smaller than a child. The same rule applies to
+///     `local_bytes`: a directory contributes zero of its own and sums its
+///     children, so the "on this Mac" figure rolls up identically.
 ///   * **truncation is first-class and propagates upward.** Any directory the
 ///     walk did not fully enumerate -- cut by the entry budget, the deadline, or
 ///     the depth cap -- is flagged `truncated`, and so is every ancestor. Its
@@ -629,6 +635,7 @@ fn scan_cloud_tree(
         path: root_display.clone(),
         is_dir: true,
         size: 0,
+        local_bytes: 0,
         children: Vec::new(),
         item_count: 0,
         partial: false,
@@ -702,6 +709,14 @@ fn scan_cloud_tree(
                 // Directory inode size is meaningless as contents size, and on a
                 // FileProvider it is unstable: never count it.
                 size: if is_dir { 0 } else { metadata.len() },
+                // On-disk bytes come from the same `lstat`, so observing them
+                // never reads or downloads the file. Directories contribute none
+                // of their own; their local bytes are summed from children below.
+                local_bytes: if is_dir {
+                    0
+                } else {
+                    metadata.blocks().saturating_mul(512)
+                },
                 children: Vec::new(),
                 item_count: 0,
                 partial: false,
@@ -737,15 +752,23 @@ fn scan_cloud_tree(
     }
 
     // Breadth-first assigns every child a larger index than its parent, so a
-    // single reverse pass accumulates sizes, descendant counts, and the partial
-    // flag upward. `size` therefore equals the sum of the subtree's children.
+    // single reverse pass accumulates sizes, local bytes, descendant counts, and
+    // the partial flag upward. `size` therefore equals the sum of the subtree's
+    // children, and `local_bytes` the sum of the subtree's children's local bytes.
     for index in (1..nodes.len()).rev() {
-        let (parent, size, item_count, partial) = {
+        let (parent, size, local_bytes, item_count, partial) = {
             let node = &nodes[index];
-            (node.parent, node.size, node.item_count, node.partial)
+            (
+                node.parent,
+                node.size,
+                node.local_bytes,
+                node.item_count,
+                node.partial,
+            )
         };
         if let Some(parent) = parent {
             nodes[parent].size = nodes[parent].size.saturating_add(size);
+            nodes[parent].local_bytes = nodes[parent].local_bytes.saturating_add(local_bytes);
             nodes[parent].item_count += 1 + item_count;
             if partial {
                 nodes[parent].partial = true;
@@ -773,6 +796,17 @@ fn scan_cloud_tree(
                 "directory {} size must be the sum of its children",
                 node.path
             );
+            // Same invariant for the on-this-Mac figure: a directory's local
+            // bytes are the sum of its children's, never its own inode blocks.
+            let child_local_sum: u64 = children
+                .iter()
+                .map(|child| child.local_bytes.unwrap_or(0))
+                .sum();
+            debug_assert_eq!(
+                node.local_bytes, child_local_sum,
+                "directory {} local bytes must be the sum of its children",
+                node.path
+            );
         }
         TreeNode {
             name: node.name.clone(),
@@ -787,6 +821,7 @@ fn scan_cloud_tree(
             item_count: node.item_count,
             cloud_managed: Some(true),
             truncated: if node.partial { Some(true) } else { None },
+            local_bytes: Some(node.local_bytes),
             ..Default::default()
         }
     }
@@ -1372,6 +1407,83 @@ mod tests {
             "the walk must stop at the budget, got {}",
             tree.children.len()
         );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cloud_local_bytes_come_from_blocks_and_roll_up() {
+        let base =
+            std::env::temp_dir().join(format!("sunburst-cloud-local-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("folder")).expect("fixture directory");
+        // A real file: occupies on-disk blocks.
+        let real = base.join("folder").join("real.bin");
+        std::fs::write(&real, vec![7u8; 20_000]).expect("fixture real file");
+        // A sparse file stands in for a dataless placeholder: a large logical size
+        // but no blocks on disk, so its local bytes must be far below its size.
+        let sparse = base.join("remote.bin");
+        let file = std::fs::File::create(&sparse).expect("fixture sparse file");
+        file.set_len(9 * 1024 * 1024).expect("sparse length");
+        drop(file);
+
+        let cancel = AtomicBool::new(false);
+        let tree = scan_tree(
+            &base,
+            ScanOptions {
+                cloud: true,
+                ..ScanOptions::default()
+            },
+            &cancel,
+            |_| {},
+        )
+        .expect("cloud scan");
+
+        fn find<'a>(node: &'a TreeNode, name: &str) -> Option<&'a TreeNode> {
+            if node.name == name {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| find(child, name))
+        }
+
+        // On-this-Mac bytes are `st_blocks * 512` observed from the same lstat the
+        // walk already does -- never from `st_size`, and never by reading the file.
+        let expect_real = std::fs::metadata(&real).expect("real stat").blocks() * 512;
+        let real_node = find(&tree, "real.bin").expect("real.bin must be in the tree");
+        assert_eq!(real_node.local_bytes, Some(expect_real));
+
+        // The sparse placeholder reports a multi-megabyte logical size but no
+        // blocks: the local figure tracks blocks, not size.
+        let expect_sparse = std::fs::metadata(&sparse).expect("sparse stat").blocks() * 512;
+        let sparse_node = find(&tree, "remote.bin").expect("remote.bin must be in the tree");
+        assert_eq!(sparse_node.local_bytes, Some(expect_sparse));
+        assert!(
+            expect_sparse < sparse_node.size,
+            "a sparse placeholder must cost fewer local bytes than its logical size"
+        );
+
+        // Rollup invariant: a directory's local bytes are the sum of its children's
+        // -- never the directory's own inode blocks.
+        fn assert_local_rollup(node: &TreeNode) {
+            if node.node_type == NodeType::Directory {
+                let child_sum: u64 = node
+                    .children
+                    .iter()
+                    .map(|child| child.local_bytes.unwrap_or(0))
+                    .sum();
+                assert_eq!(
+                    node.local_bytes,
+                    Some(child_sum),
+                    "{} local bytes must be the sum of its children",
+                    node.path
+                );
+            }
+            for child in &node.children {
+                assert_local_rollup(child);
+            }
+        }
+        assert_local_rollup(&tree);
+        assert_eq!(tree.local_bytes, Some(expect_real + expect_sparse));
 
         let _ = std::fs::remove_dir_all(&base);
     }

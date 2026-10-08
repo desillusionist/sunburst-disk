@@ -676,6 +676,40 @@ Everything that remains is optional:
   <redacted-bytes> B (all children) and the project an exact <redacted-bytes> B (14
   children), both `truncated: None` in `Folder` and `Exact` mode.
   New test: `cloud_exact_scan_is_not_capped_by_depth`.
+- **r38** — Cloud "on this Mac" accounting + an offline filter (v2a, read-only). A
+  cloud tree now carries, per node, the bytes the item actually occupies on this Mac
+  beside its cloud (logical) size, so the two are never conflated:
+  - **Carried from the same `lstat`.** `scan_cloud_tree` already stats each entry to
+    read `st_size`; it now also records `st_blocks * 512` as `localBytes` (zero for a
+    directory). The local figure therefore costs no extra I/O and never reads,
+    downloads or pins a placeholder -- the no-download guarantee is unchanged.
+  - **Rolls up exactly like the cloud size.** The reverse pass accumulates
+    `local_bytes` bottom-up with the same sum-of-children rule, and `build()` asserts
+    it (`debug_assert_eq!`) just as it does for `size`: a directory's local bytes are
+    the sum of its children's, never its own inode blocks. The renderer mirrors this
+    in `recomputeAncestorSizes`, which now recomputes `localBytes` on every ancestor
+    of an enriched child. A partial folder's figure is a lower bound (`>=`), matching
+    its cloud size.
+  - **Shown, not hidden.** The content tree's pinned summary footer carries an
+    "on this Mac" total beside the cloud-size total (the footer is fixed at the
+    bottom so the totals stay on screen while the list scrolls), and every
+    content-tree / legend row that has local bytes carries a small badge with just
+    that item's local figure. `TreeNode.localBytes` is an optional field
+    (`skip_serializing_if` none), so local-disk scans are unaffected. The
+    read-only cloud notice is now dismissible (an `x`), and the per-folder
+    **Calculate exact size** action moved to the sunburst pane's top-right corner.
+  - **Availability filters.** Two toggles in the Sort & Filter pane's **Type**
+    section -- `isAvailableOffline` (`localBytes > 0`) and `isAvailableOnline`
+    (`localBytes == 0`, its exact complement) -- restrict the tree to what is
+    genuinely stored locally or to cloud-only placeholders. Selecting exactly one
+    constrains the list; selecting both (or neither) adds no constraint. They are
+    pure display predicates over the already-measured tree and never touch the
+    filesystem -- the only sense in which this feature relates to "offline";
+    nothing is materialised or pinned.
+  New tests: `cloud_local_bytes_come_from_blocks_and_roll_up` (a sparse placeholder
+  proves the figure tracks blocks, not `st_size`, and every directory's local bytes
+  equal the sum of its children); renderer tests for the local-byte rollup and the
+  availability filters (unit + an end-to-end flow test).
 
 ## Terminal security model
 

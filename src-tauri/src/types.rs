@@ -27,6 +27,13 @@ pub struct TreeNode {
     /// every size below it is a lower bound rather than a total.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated: Option<bool>,
+    /// Bytes this cloud item actually occupies on this Mac: `st_blocks * 512`,
+    /// observed from the same `lstat` as `size` (never by reading the file, which
+    /// would download a placeholder). `None` for local-disk scans. For a
+    /// directory it is the sum of its children's local bytes -- never the
+    /// directory's own inode allocation -- mirroring `size`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_bytes: Option<u64>,
     /// Present only on the synthetic `hidden space...` reconciliation node.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hidden_space_aggregate_size: Option<u64>,

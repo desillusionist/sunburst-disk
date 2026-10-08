@@ -6,7 +6,7 @@
 // that equals the sum of the children actually shown, with partial sub-trees
 // labelled as lower bounds.
 import { describe, it, expect } from 'vitest';
-import { recomputeAncestorSizes, nodeSizeLabel } from './cloudTree';
+import { recomputeAncestorSizes, nodeSizeLabel, isAvailableOffline, isAvailableOnline } from './cloudTree';
 
 const formatBytes = bytes => `${bytes} B`;
 
@@ -77,6 +77,47 @@ describe('cloud tree size accounting', () => {
     const tree = truncatedTree();
     expect(recomputeAncestorSizes(tree, '/elsewhere')).toBe(tree);
   });
+
+  it('rolls local bytes up from the children, never from the node itself', () => {
+    // The root carries a bogus "own" localBytes (as a directory inode would);
+    // the recomputed value must be the sum of the children instead.
+    const tree = {
+      name: 'root',
+      path: '/root',
+      type: 'directory',
+      size: 300,
+      localBytes: 999_999,
+      children: [
+        { name: 'a', path: '/root/a', type: 'directory', size: 100, localBytes: 40, children: [] },
+        { name: 'b', path: '/root/b', type: 'file', size: 200, localBytes: 60, children: [] }
+      ]
+    };
+    const next = recomputeAncestorSizes(tree, '/root/a');
+    expect(next.localBytes).toBe(100);
+  });
+
+  it('recomputes local bytes on every ancestor of a deep target', () => {
+    const tree = {
+      name: 'root',
+      path: '/r',
+      type: 'directory',
+      size: 0,
+      localBytes: 0,
+      children: [{
+        name: 'mid',
+        path: '/r/mid',
+        type: 'directory',
+        size: 0,
+        localBytes: 0,
+        children: [
+          { name: 'leaf', path: '/r/mid/leaf', type: 'file', size: 10, localBytes: 10, children: [] }
+        ]
+      }]
+    };
+    const next = recomputeAncestorSizes(tree, '/r/mid/leaf');
+    expect(next.children[0].localBytes).toBe(10);
+    expect(next.localBytes).toBe(10);
+  });
 });
 
 describe('partial size labels', () => {
@@ -89,5 +130,31 @@ describe('partial size labels', () => {
     const label = nodeSizeLabel({ size: 42, type: 'file' }, formatBytes);
     expect(label.partial).toBe(false);
     expect(label.text).toBe('42 B');
+  });
+});
+
+describe('cloud availability filters', () => {
+  it('treats any on-disk bytes as available offline', () => {
+    expect(isAvailableOffline({ localBytes: 1 })).toBe(true);
+    expect(isAvailableOffline({ localBytes: 4096 })).toBe(true);
+  });
+
+  it('excludes a dataless placeholder, which has no local bytes', () => {
+    expect(isAvailableOffline({ localBytes: 0 })).toBe(false);
+    expect(isAvailableOffline({ localBytes: '0' })).toBe(false);
+    expect(isAvailableOffline({})).toBe(false);
+  });
+
+  it('treats no local bytes as available online', () => {
+    expect(isAvailableOnline({ localBytes: 0 })).toBe(true);
+    expect(isAvailableOnline({ localBytes: '0' })).toBe(true);
+    expect(isAvailableOnline({})).toBe(true);
+    expect(isAvailableOnline({ localBytes: 4096 })).toBe(false);
+  });
+
+  it('offline and online are exact complements', () => {
+    for (const node of [{ localBytes: 0 }, { localBytes: 4096 }, {}, { localBytes: 1 }]) {
+      expect(isAvailableOffline(node)).toBe(!isAvailableOnline(node));
+    }
   });
 });

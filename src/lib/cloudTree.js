@@ -31,8 +31,13 @@ export function recomputeAncestorSizes(tree, targetPath) {
   if (!touched) return tree;
 
   const size = children.reduce((sum, child) => sum + (Number(child.size) || 0), 0);
+  // The on-this-Mac figure rolls up exactly like the size: a directory's local
+  // bytes are the sum of its children's, recomputed here so an enriched child
+  // never leaves a stale ancestor behind. It is never read from the directory's
+  // own lstat, matching the Rust walk's invariant.
+  const localBytes = children.reduce((sum, child) => sum + (Number(child.localBytes) || 0), 0);
   const truncated = Boolean(tree.truncated) || children.some(child => Boolean(child.truncated));
-  return { ...tree, children, size, truncated: truncated || undefined };
+  return { ...tree, children, size, localBytes, truncated: truncated || undefined };
 }
 
 // A node's size for display. Partial (un-fully-walked) cloud directories must
@@ -49,4 +54,17 @@ export function nodeSizeLabel(node, formatBytes) {
     return { text: `≥ ${formatBytes(size)}`, partial: true, title: 'Lower bound — the cloud scan stopped before finishing this folder' };
   }
   return { text: formatBytes(size), partial: false, title: undefined };
+}
+
+// "Available offline"/"available online": a cloud item is available offline when
+// some of its bytes are actually on this Mac (`st_blocks > 0`), and available
+// online when they are not (a dataless placeholder that lives only in the
+// provider). These are pure display predicates -- testing them never triggers a
+// download, and they are the only sense in which this feature touches "offline".
+export function isAvailableOffline(node) {
+  return (Number(node?.localBytes) || 0) > 0;
+}
+
+export function isAvailableOnline(node) {
+  return (Number(node?.localBytes) || 0) === 0;
 }

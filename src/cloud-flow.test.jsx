@@ -28,6 +28,7 @@ function makeCloudTree() {
     itemCount: 1907,
     cloudManaged: true,
     truncated: true,
+    localBytes: 2_000_000_000,
     children: [
       {
         name: 'My Drive',
@@ -37,6 +38,7 @@ function makeCloudTree() {
         itemCount: 1800,
         cloudManaged: true,
         truncated: true,
+        localBytes: 2_000_000_000,
         children: []
       },
       {
@@ -46,6 +48,7 @@ function makeCloudTree() {
         size: 5_000_000_000,
         itemCount: 107,
         cloudManaged: true,
+        localBytes: 0,
         children: []
       }
     ]
@@ -149,6 +152,56 @@ describe('cloud view flow', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0][0]).toBe(PROVIDER_PATH);
     expect(calls[0][3]).toBe(true);
+  });
+
+  it('lets the read-only notice be dismissed', async () => {
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    await user.click(screen.getByRole('button', { name: /dismiss cloud content notice/i }));
+    await waitFor(() => {
+      expect(screen.queryByText(/Cloud content · read-only/i)).toBeNull();
+    });
+  });
+
+  it('shows an on-this-Mac total and per-row badges for locally-stored items', async () => {
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    // The header carries an "on this Mac" total beside the cloud size.
+    const headerLocal = document.querySelector('.legend-local-total');
+    expect(headerLocal).toBeTruthy();
+    expect(headerLocal.textContent).toMatch(/on this Mac/i);
+    // Only the child with local bytes gets a per-row badge; the cloud-only one
+    // does not.
+    const myDriveRow = screen.getByText('My Drive').closest('.legend-row');
+    expect(myDriveRow.querySelector('.legend-local-badge')).toBeTruthy();
+    const sharedRow = screen.getByText('Shared drives').closest('.legend-row');
+    expect(sharedRow.querySelector('.legend-local-badge')).toBeNull();
+  });
+
+  it('filters the list by availability from the Type section', async () => {
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    // Both rows show before filtering.
+    expect(screen.getByText('My Drive')).toBeTruthy();
+    expect(screen.getByText('Shared drives')).toBeTruthy();
+
+    // "Available Offline" (in the Type section) hides the cloud-only row.
+    await user.click(screen.getByRole('button', { name: /sort and filter/i }));
+    await user.click(await screen.findByRole('checkbox', { name: /available offline/i }));
+    await waitFor(() => expect(screen.queryByText('Shared drives')).toBeNull());
+    expect(screen.getByText('My Drive')).toBeTruthy();
+
+    // Switch to "Available Online": the locally-stored row is hidden instead.
+    await user.click(screen.getByRole('checkbox', { name: /available offline/i }));
+    await user.click(screen.getByRole('checkbox', { name: /available online/i }));
+    await waitFor(() => expect(screen.queryByText('My Drive')).toBeNull());
+    expect(screen.getByText('Shared drives')).toBeTruthy();
   });
 
   it('disables Collector for every cloud item and shows the read-only risk', async () => {
