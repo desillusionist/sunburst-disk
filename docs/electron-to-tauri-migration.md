@@ -743,6 +743,33 @@ Everything that remains is optional:
   `cancellation_stops_before_the_first_item`; renderer boundary tests in
   `src/lib/risk.test.js` (local deletion refused, cloud basket allowed) and the
   cloud-flow basket + typed-confirmation flow.
+- **r40** — Provider-aware cloud-trash labels, an account-aware Trash URL, and a
+  staging undo (0.4.1).
+  - **Labels follow the provider.** `cloudProviderLabel` derives the provider name
+    from the provider folder (`GoogleDrive-<email>`, `OneDrive-…`, `Mobile
+    Documents`), so the cloud basket, its confirmation and the result wording name
+    the actual provider (Google Drive, iCloud Drive, …) instead of hard-coded
+    "Google Drive". The "Open … Trash" action is shown for Google Drive only.
+  - **Account-aware Trash URL.** `googleDriveTrashUrl` opens
+    `https://drive.google.com/drive/trash?authuser=<email>` for the viewed account
+    (the email form, not a positional `/u/N` index), so it follows whichever Drive
+    is scanned and survives account add/remove. Google preserves the `authuser`
+    parameter through its sign-in redirect (verified with `curl`).
+  - **⌘Z staging undo.** A snapshot stack (`cloudBasketUndoRef`) records the basket
+    before each add/remove/clear and ⌘Z pops it in cloud view. It only edits the
+    staged list -- it can never trash or restore -- and the stack is dropped when a
+    trash run completes, so ⌘Z can never resurrect trashed items.
+- **r41 (spike only — not shipped)** — Un-trash feasibility. Moving an item from
+  the provider trash (the `resultingItemURL` that `trashItem` returns) back to its
+  original path restores the **same provider object** on **both Google Drive and
+  iCloud Drive**: `isTrashed` flips `1 -> 0`, the item identifier is unchanged, the
+  move is instant (~0 ms) and downloads nothing, and the state is stable after 20 s.
+  Google's trash is `<provider>/.Trash`; iCloud's is
+  `~/Library/Mobile Documents/.Trash`. Cloud-side propagation to other devices was
+  not directly observed (no web UI / second device in the spike). Deliberately not
+  built: if pursued it must be an explicit, time-boxed "Undo last Move to Trash"
+  tied to the last batch (never a global ⌘Z), capturing `originalPath ->
+  trashedURL` per item and reporting partial-restore failures.
 
 ## Terminal security model
 

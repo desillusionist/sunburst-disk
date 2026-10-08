@@ -4,7 +4,7 @@ import SunburstChart from './components/SunburstChart';
 import DetailsSidebar from './components/DetailsSidebar';
 import DebugDownbar from './components/DebugDownbar';
 import { getRiskInfo, canCollect, canCloudBasket } from './lib/risk';
-import { recomputeAncestorSizes, nodeSizeLabel, isAvailableOffline, isAvailableOnline, googleDriveTrashUrl } from './lib/cloudTree';
+import { recomputeAncestorSizes, nodeSizeLabel, isAvailableOffline, isAvailableOnline, googleDriveTrashUrl, cloudProviderLabel } from './lib/cloudTree';
 import { recordPerfEvent, recordPerfInstant } from './debug/perfTelemetry';
 import shortcutGuideText from './Sunburst-Disk-Ask-Siri-Shortcut-Guide.txt?raw';
 
@@ -896,6 +896,10 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.4.1': [
+    'Cloud-trash labels now name the provider you are viewing (Google Drive, iCloud Drive, …) instead of always saying “Google Drive”, and “Open Google Drive Trash” targets the account you actually scanned rather than a fixed account slot.',
+    'Items staged in the cloud basket can be un-staged with ⌘Z — a local list undo that only edits the basket and never trashes or restores anything.'
+  ],
   '0.4.0': [
     'Cloud items can now be moved to your provider’s Trash — staged in a separate cloud basket and removed only after you type the item count to confirm. This deletes from the cloud account and every synced device, so it is the one place the app changes remote data; local scans stay review-only.',
     'The cloud basket shows the batch (count and total) and makes clear that recovery is via Google Drive Trash for ~30 days — not an in-app undo and not local Trash — and that it does not free local disk space.'
@@ -997,6 +1001,12 @@ export default function App() {
   // Cloud basket: a SEPARATE container for cloud-only items. Never mixed with the
   // local Collector, and the only place a cloud item may be staged for removal.
   const [cloudBasket, setCloudBasket] = useState([]);
+  // Staging-undo history: snapshots of the basket BEFORE each add/remove, so ⌘Z
+  // can walk them back. This is purely local list state -- it can never trash or
+  // restore anything.
+  const cloudBasketRef = useRef([]);
+  const cloudBasketUndoRef = useRef([]);
+  cloudBasketRef.current = cloudBasket;
   const [cloudBasketOpen, setCloudBasketOpen] = useState(false);
   const [cloudBasketDragOver, setCloudBasketDragOver] = useState(false);
   const [cloudTrashConfirm, setCloudTrashConfirm] = useState(null);
@@ -1156,15 +1166,31 @@ export default function App() {
 
   // Cloud basket entry points. Guarded by `canCloudBasket`, the single explicit
   // cloud allowance -- which also keeps local items out of the cloud basket.
+  const recordCloudBasketUndo = useCallback(() => {
+    const stack = cloudBasketUndoRef.current;
+    stack.push(cloudBasketRef.current);
+    if (stack.length > 50) stack.shift();
+  }, []);
+
   const addToCloudBasket = useCallback((item) => {
     if (!canCloudBasket(item)) return;
+    if (cloudBasketRef.current.some(existing => existing.path === item.path)) return;
+    recordCloudBasketUndo();
     setCloudBasket(current => current.some(existing => existing.path === item.path)
       ? current
       : [...current, item]);
-  }, []);
+  }, [recordCloudBasketUndo]);
 
   const removeFromCloudBasket = useCallback((itemPath) => {
+    if (!cloudBasketRef.current.some(item => item.path === itemPath)) return;
+    recordCloudBasketUndo();
     setCloudBasket(current => current.filter(item => item.path !== itemPath));
+  }, [recordCloudBasketUndo]);
+
+  // ⌘Z target: restore the previous staged list. Never touches the filesystem.
+  const undoCloudBasket = useCallback(() => {
+    const previous = cloudBasketUndoRef.current.pop();
+    if (previous) setCloudBasket(previous);
   }, []);
 
   // ── Debug instrumentation (enable in DevTools console: __DISK_DEBUG = true) ──
@@ -2894,6 +2920,9 @@ export default function App() {
       });
       // Only confirmed removals leave the basket; failures stay staged for review.
       const succeededPaths = results.filter(entry => entry.success).map(entry => entry.path);
+      // Staging undo does not cross a trash: once a batch runs, the pre-trash
+      // snapshots are dropped so ⌘Z can never resurrect trashed items.
+      cloudBasketUndoRef.current = [];
       setCloudBasket(current => current.filter(item => !succeededPaths.includes(item.path)));
       if (succeededPaths.length) removeCloudTrashedFromTree(succeededPaths, scannedTree);
       // NB: this deliberately does NOT recompute localBytes. Trashing does not free
@@ -2920,6 +2949,25 @@ export default function App() {
     });
     return () => { unsubscribe?.(); };
   }, []);
+
+  // ⌘Z / Ctrl+Z in cloud view only edits the staged list -- it can NEVER trigger a
+  // trash or a restore. Skipped inside inputs and while the confirm dialog is up.
+  useEffect(() => {
+    if (!cloudView) return undefined;
+    const onUndoKey = event => {
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) return;
+      if (String(event.key).toLowerCase() !== 'z') return;
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable) return;
+      if (cloudTrashRunning || cloudTrashConfirm) return;
+      if (!cloudBasketUndoRef.current.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      undoCloudBasket();
+    };
+    window.addEventListener('keydown', onUndoKey, true);
+    return () => window.removeEventListener('keydown', onUndoKey, true);
+  }, [cloudView, cloudTrashRunning, cloudTrashConfirm, undoCloudBasket]);
 
   // ── Countdown & Move to Trash ───────────────────────────────────────────────
   const startPurgeCountdown = () => {
@@ -3555,8 +3603,11 @@ export default function App() {
   // "On this Mac": bytes actually stored locally for the same node. Rolls up the
   // same way as the cloud size, and reads as a lower bound for a partial folder.
   const headerLocalBytes = Number(liveHeaderNode?.localBytes) || 0;
-  // Google Drive Trash for the account behind the provider being viewed.
-  const cloudTrashUrl = googleDriveTrashUrl(currentDrive?.scanPath || scannedTree?.path);
+  // Provider shown in the cloud-trash UI, and Google Drive Trash for the account
+  // behind the provider being viewed.
+  const cloudProviderSource = currentDrive?.scanPath || scannedTree?.path;
+  const cloudProviderName = cloudProviderLabel(cloudProviderSource);
+  const cloudTrashUrl = googleDriveTrashUrl(cloudProviderSource);
   // Drive-root only: leave a proportional gap for free space in the root ring.
   // Disabled for folder scans and any drilled-in / virtual view (path differs).
   const driveRootPath = currentDrive?.scanPath || currentDrive?.mount || null;
@@ -4471,7 +4522,7 @@ export default function App() {
                   <div className="cloud-basket-drawer">
                     <div className="cloud-basket-drawer-header">
                       <span>Cloud basket ({cloudBasket.length})</span>
-                      <button className="cloud-basket-clear" onClick={() => setCloudBasket([])}>Clear all</button>
+                      <button className="cloud-basket-clear" onClick={() => { if (cloudBasketRef.current.length) recordCloudBasketUndo(); setCloudBasket([]); }}>Clear all</button>
                     </div>
                     <div className="cloud-basket-hint">
                       {cloudBasketDownloaded > 0
@@ -4504,12 +4555,12 @@ export default function App() {
                   <span className={`cloud-basket-text ${cloudBasket.length ? 'has-items' : ''}`}>
                     {cloudBasket.length > 0
                       ? `${cloudBasket.length} item${cloudBasket.length > 1 ? 's' : ''} (${formatBytes(totalCloudBasketSize)}) ${cloudBasketOpen ? '▲' : '▼'}`
-                      : 'Add cloud items here to move to Google Drive Trash'}
+                      : `Add cloud items here to move to ${cloudProviderName} Trash`}
                   </span>
                   {cloudBasket.length > 0 && (
                     <div className="cloud-basket-actions" onClick={e => e.stopPropagation()}>
                       <button className="cloud-basket-trash-btn" onClick={openCloudTrashConfirm}>
-                        <Trash2 size={12} /> Move to Google Drive Trash
+                        <Trash2 size={12} /> Move to {cloudProviderName} Trash
                       </button>
                     </div>
                   )}
@@ -4534,7 +4585,7 @@ export default function App() {
                     </div>
                     {cloudTrashResult.succeeded > 0 && (
                       <div className="cloud-basket-result-note">
-                        Recover from Google Drive Trash for ~30 days — not an in-app undo, and not local Trash. This does not free local disk space.
+                        Recover from {cloudProviderName} Trash for ~30 days — not an in-app undo, and not local Trash. This does not free local disk space.
                       </div>
                     )}
                     {cloudTrashResult.failed > 0 && (
@@ -4544,7 +4595,9 @@ export default function App() {
                       </div>
                     )}
                     <div className="cloud-basket-result-actions">
-                      <button onClick={() => { void window.electronAPI?.openExternalUrl?.(cloudTrashUrl); }}>Open Google Drive Trash</button>
+                      {cloudProviderName === 'Google Drive' && (
+                        <button onClick={() => { void window.electronAPI?.openExternalUrl?.(cloudTrashUrl); }}>Open Google Drive Trash</button>
+                      )}
                       <button onClick={() => setCloudTrashResult(null)}>Dismiss</button>
                     </div>
                   </div>
@@ -4873,7 +4926,7 @@ export default function App() {
                       <span className={`legend-val ${sizeLabel.partial ? 'partial' : ''}`} title={sizeLabel.title || undefined}>{sizeLabel.text}</span>
                       <button
                         className="legend-add-btn"
-                        title={cloudView ? 'Add to Google Drive Trash basket' : 'Add to collector'}
+                        title={cloudView ? `Add to ${cloudProviderName} Trash basket` : 'Add to collector'}
                         disabled={cloudView ? !canCloudBasket(item) : !getRiskInfo(item).canDelete}
                         onClick={e => {
                           e.stopPropagation();
@@ -5052,7 +5105,7 @@ export default function App() {
                 setContextMenu(null);
               }}
             >
-              {canCloudBasket(contextMenu.item) ? '+ Add to Google Drive Trash basket' : '⊘ Not a cloud item'}
+              {canCloudBasket(contextMenu.item) ? `+ Add to ${cloudProviderName} Trash basket` : '⊘ Not a cloud item'}
             </div>
           ) : (
             <div
@@ -5079,10 +5132,10 @@ export default function App() {
             onClick={event => event.stopPropagation()}
           >
             <div className="cloud-trash-confirm-title" id="cloud-trash-title">
-              Move {cloudBasket.length} item{cloudBasket.length > 1 ? 's' : ''} ({formatBytes(totalCloudBasketSize)}) to Google Drive Trash?
+              Move {cloudBasket.length} item{cloudBasket.length > 1 ? 's' : ''} ({formatBytes(totalCloudBasketSize)}) to {cloudProviderName} Trash?
             </div>
             <p className="cloud-trash-confirm-body">
-              This removes them from Google Drive and every synced device. Recoverable from Google Drive Trash for ~30 days. This does NOT free local disk space. Shared files: items you own are removed for collaborators; items you don’t own may only lose your access.
+              This removes them from {cloudProviderName} and every synced device. Recoverable from {cloudProviderName} Trash for ~30 days. This does NOT free local disk space. Shared files: items you own are removed for collaborators; items you don’t own may only lose your access.
             </p>
             <label className="cloud-trash-confirm-typed">
               Type <strong>{cloudBasket.length}</strong> to confirm

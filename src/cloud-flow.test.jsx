@@ -260,6 +260,25 @@ describe('cloud view flow', () => {
     expect(items[0].path).toBe(`${PROVIDER_PATH}/My Drive`);
   });
 
+  it('undoes basket staging with ⌘Z and never trashes', async () => {
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    await user.click(screen.getAllByTitle('Add to Google Drive Trash basket')[0]);
+    await user.click(screen.getAllByTitle('Add to Google Drive Trash basket')[1]);
+    expect(await screen.findByText(/2 items/i)).toBeTruthy();
+
+    // ⌘Z walks the staging history back, one step per press.
+    await user.keyboard('{Meta>}z{/Meta}');
+    await waitFor(() => expect(screen.getByText(/1 item/i)).toBeTruthy());
+    await user.keyboard('{Meta>}z{/Meta}');
+    await waitFor(() => expect(screen.queryByText(/\d+ items?/i)).toBeNull());
+
+    // Staging undo is local-only: nothing was ever sent to trash.
+    expect(window.electronAPI.trashCloudItems).not.toHaveBeenCalled();
+  });
+
   it('re-walks a partially-scanned cloud folder in full when it is opened', async () => {
     const user = userEvent.setup();
     // The bounded provider scan leaves `My Drive` partial, with a partial child.

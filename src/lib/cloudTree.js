@@ -69,6 +69,27 @@ export function isAvailableOnline(node) {
   return (Number(node?.localBytes) || 0) === 0;
 }
 
+// The short provider name shown in the cloud-trash UI, derived from the provider
+// folder (so an iCloud or Dropbox view never says "Google Drive").
+const PROVIDER_LABELS = [
+  ['GoogleDrive', 'Google Drive'],
+  ['OneDrive', 'OneDrive'],
+  ['Dropbox', 'Dropbox'],
+  ['Box', 'Box'],
+  ['pCloud', 'pCloud'],
+  ['SharePoint', 'SharePoint']
+];
+
+export function cloudProviderLabel(source) {
+  const path = String(source || '');
+  const name = path.replace(/\/+$/, '').split('/').pop() || '';
+  for (const [prefix, label] of PROVIDER_LABELS) {
+    if (name.startsWith(prefix)) return label;
+  }
+  if (path.includes('/Mobile Documents/') || name === 'com~apple~CloudDocs') return 'iCloud Drive';
+  return name || 'your provider';
+}
+
 // The Google Drive Trash URL for the account behind a CloudStorage provider
 // folder. The provider folder is named `GoogleDrive-<email>`, and Google honours
 // `?authuser=<email>` (an account email, not a positional /u/N index), so the

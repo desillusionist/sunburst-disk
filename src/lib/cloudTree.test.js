@@ -6,7 +6,7 @@
 // that equals the sum of the children actually shown, with partial sub-trees
 // labelled as lower bounds.
 import { describe, it, expect } from 'vitest';
-import { recomputeAncestorSizes, nodeSizeLabel, isAvailableOffline, isAvailableOnline, googleDriveTrashUrl } from './cloudTree';
+import { recomputeAncestorSizes, nodeSizeLabel, isAvailableOffline, isAvailableOnline, googleDriveTrashUrl, cloudProviderLabel } from './cloudTree';
 
 const formatBytes = bytes => `${bytes} B`;
 
@@ -172,5 +172,19 @@ describe('google drive trash url', () => {
       .toBe('https://drive.google.com/drive/trash');
     expect(googleDriveTrashUrl(undefined)).toBe('https://drive.google.com/drive/trash');
     expect(googleDriveTrashUrl('')).toBe('https://drive.google.com/drive/trash');
+  });
+});
+
+describe('provider labels', () => {
+  it('names the provider from its folder, so labels never lie about the provider', () => {
+    expect(cloudProviderLabel('/Users/x/Library/CloudStorage/GoogleDrive-a@example.com')).toBe('Google Drive');
+    expect(cloudProviderLabel('/Users/x/Library/CloudStorage/OneDrive-Personal')).toBe('OneDrive');
+    expect(cloudProviderLabel('/Users/x/Library/CloudStorage/Dropbox')).toBe('Dropbox');
+    expect(cloudProviderLabel('/Users/x/Library/Mobile Documents/com~apple~CloudDocs')).toBe('iCloud Drive');
+  });
+
+  it('falls back to the folder name or a generic label', () => {
+    expect(cloudProviderLabel('/Users/x/Library/CloudStorage/SomeApp-1')).toBe('SomeApp-1');
+    expect(cloudProviderLabel(undefined)).toBe('your provider');
   });
 });
