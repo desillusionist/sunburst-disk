@@ -710,6 +710,39 @@ Everything that remains is optional:
   proves the figure tracks blocks, not `st_size`, and every directory's local bytes
   equal the sum of its children); renderer tests for the local-byte rollup and the
   availability filters (unit + an end-to-end flow test).
+- **r39** — Cloud "Move to Google Drive Trash" (the one cloud write path, v2b). The
+  Phase 0/A spikes showed evict is unavailable to a third-party app
+  (`NSFileProviderManager.evictItem` is denied, `-2001`) while trash is not, so the
+  app gained exactly one cloud write operation:
+  - **One explicit allowance, one place.** `getRiskInfo` keeps refusing local
+    deletion for every cloud node (`canDelete: false`) and adds a single,
+    separately-tested `canTrashCloud: true`, consumed only by the new cloud basket
+    (`canCloudBasket`). The local Collector, Smart Clean export and the local
+    `delete_items` path are untouched and still refuse cloud nodes.
+  - **Separate container.** A cloud-only basket (`src/App.jsx`) mirrors the
+    Collector but never mixes local and cloud items; items are staged via the row
+    `+`, the context menu or drag, shown with per-item size and a running count and
+    total.
+  - **Typed confirmation.** Nothing runs until the user types the exact item count;
+    the copy states the cloud-wide effect, ~30-day recovery via Google Drive Trash,
+    and that it does not free local disk space.
+  - **Sequential, cancellable, per-item.** `cloud_trash::trash_items` runs one
+    `FileManager.trashItem` at a time via the `trash` crate's `NsFileManager`
+    method (not its Finder/osascript default), emitting `cloud-trash-progress` and
+    honouring the cancel flag registered by `trash_cloud_items` (cancelled with
+    `cancel_scan`). Failed items stay staged. The tree is refreshed so trashed
+    items leave the view; cloud size drops and `localBytes` is deliberately left
+    unchanged (trashing does not reclaim local disk).
+  - **Guardrails.** `trash_cloud_items` refuses any path not inside a File Provider
+    cloud domain (`/Library/CloudStorage/` or `/Library/Mobile Documents/`) and any
+    protected system path, dedupes nested staging, and never reads, downloads,
+    pins or materialises content. Phase A proved with a 1 ms `st_blocks` sampler
+    that trashing a **dataless placeholder** does not download it.
+  New tests: `cloud_path_detection_is_narrow`, `refuses_non_cloud_and_protected_paths`,
+  `nested_duplicates_are_dropped`, `non_cloud_items_fail_before_the_filesystem_is_touched`,
+  `cancellation_stops_before_the_first_item`; renderer boundary tests in
+  `src/lib/risk.test.js` (local deletion refused, cloud basket allowed) and the
+  cloud-flow basket + typed-confirmation flow.
 
 ## Terminal security model
 

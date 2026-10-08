@@ -45,6 +45,8 @@ if (tauri?.core?.invoke) {
       invoke('set_window_layout', { layout, driveCount }),
     chooseFolder: () => invoke('choose_folder'),
     deleteItems: items => invoke('delete_items', { items }),
+    trashCloudItems: (items, requestId = null) =>
+      invoke('trash_cloud_items', { items, requestId }),
     inspectItem: itemPath => invoke('inspect_item', { itemPath }),
     inspectItems: itemPaths => invoke('inspect_items', { itemPaths }),
     revealInFinder: itemPath => invoke('reveal_in_finder', { itemPath }),
@@ -81,6 +83,7 @@ if (tauri?.core?.invoke) {
       }),
     cloudStorageSurvey: () => invoke('cloud_storage_survey'),
     cloudStorageClientState: () => invoke('cloud_storage_client_state'),
+    openExternalUrl: url => invoke('open_external_url', { url }),
     scanHiddenSpace: (knownSize = 0) => invoke('scan_hidden_space', { knownSize }),
     setupAskSiri: () => invoke('setup_ask_siri'),
     askSiri: item =>
@@ -96,6 +99,7 @@ if (tauri?.core?.invoke) {
 
     onScanProgress: callback => on('scan-progress', callback),
     onScanComplete: callback => on('scan-complete', callback),
+    onCloudTrashProgress: callback => on('cloud-trash-progress', callback),
     onUpdateProgress: callback => on('update-download', callback),
 
     onFolderWatchChange: callback => on('folder-watch-change', callback),

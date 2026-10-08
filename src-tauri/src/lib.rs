@@ -8,6 +8,7 @@ mod archive;
 mod ask_siri;
 mod capacity;
 mod cloud;
+mod cloud_trash;
 mod commands;
 mod drives;
 mod hidden_space;
@@ -75,6 +76,7 @@ pub fn run() {
             commands::set_window_layout,
             commands::choose_folder,
             commands::delete_items,
+            commands::trash_cloud_items,
             commands::inspect_item,
             commands::inspect_items,
             commands::reveal_in_finder,

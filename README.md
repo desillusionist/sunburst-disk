@@ -1,7 +1,7 @@
 # Sunburst Disk
 
 **A fast, safety-first macOS disk-space analyzer with an interactive sunburst.**
-Rust + [Tauri v2](https://v2.tauri.app) backend, React interface. Inspects, previews and plans — never deletes on its own.
+Rust + [Tauri v2](https://v2.tauri.app) backend, React interface. **Local scans are review-only — nothing is deleted automatically.** Cloud items can be moved to your provider's Trash only on explicit confirmation.
 
 **Platform:** macOS 11+ · **Apple Silicon (arm64) only** — Intel Macs are not supported in this release.
 
@@ -22,8 +22,13 @@ of the Electron main process.
 Nothing is removed, moved or modified automatically. Every action is explicit and
 review-oriented:
 
-- Deleted items go to the macOS Trash (after a short confirmation delay), never
-  unlinked in place.
+- **Local content** is never deleted on its own; reviewed items go to the macOS
+  Trash after a short confirmation delay, never unlinked in place.
+- **Cloud content** (Google Drive and other File Provider domains) can be moved to
+  your provider's Trash from a separate **cloud basket** — and only after you type
+  the item count to confirm. This removes the items from the cloud account and
+  every synced device, is recoverable from the provider's Trash for ~30 days, and
+  does **not** free local disk space.
 - Protected system paths (`/`, `/System`, the Data volume's `System`, `private`
   and `usr` branches) are refused outright.
 - Hidden Space and the admin Terminal mode require an explicit, per-session
@@ -52,6 +57,9 @@ review-oriented:
   bounded re-scan and a debounce window.
 - **Collector**: drag items from the chart or tree (or use `+`) and review them
   before acting.
+- **Cloud Storage** (read-only survey) and a **read-only cloud sunburst/tree**,
+  with a separate **cloud basket** that moves reviewed items to the provider's
+  Trash on explicit, typed confirmation.
 - **Themes** (Classic / Matrix) and a saved-folder list with per-drive scan cache.
 
 ## Hidden Space
@@ -109,7 +117,7 @@ React renderer ──► window.electronAPI (src/tauri-bridge.js)
                         ▼
    Rust core (scan · capacity · drives · inspect · related · openwith ·
               watcher · archive · smart_clean · hidden_space · terminal ·
-              ask_siri · quick_look)  ──► macOS CLIs + one bundled Swift helper
+              cloud · cloud_trash · ask_siri · quick_look)  ──► macOS CLIs + one bundled Swift helper
 ```
 
 `src/tauri-bridge.js` maps `window.electronAPI.*` onto Tauri `invoke`/`listen`,
@@ -127,7 +135,7 @@ log and the deliberate parity deltas live in
 
 ## Install
 
-Download `Sunburst Disk_0.3.7_aarch64.dmg` from
+Download `Sunburst Disk_0.4.0_aarch64.dmg` from
 [Releases](../../releases), open it and drag **Sunburst Disk** to *Applications*.
 
 > **Apple Silicon only.** The `aarch64` build runs on M-series Macs. Intel
@@ -196,8 +204,9 @@ outputs are committed, so a normal build does not need Xcode.
 
 **Быстрый и безопасный анализатор дискового пространства macOS с интерактивной
 sunburst-диаграммой.** Бэкенд на Rust + [Tauri v2](https://v2.tauri.app),
-интерфейс на React. Приложение только анализирует, показывает предпросмотр и
-планирует — само ничего не удаляет.
+интерфейс на React. **Локальные сканы — только для просмотра, ничего не удаляется
+автоматически.** Облачные элементы можно переместить в Корзину провайдера только
+после явного подтверждения.
 
 Sunburst Disk сканирует диск или отдельную папку и рисует результат как
 интерактивную sunburst-диаграмму рядом с тем же деревом каталогов, поэтому
@@ -210,6 +219,11 @@ Electron-приложения на Rust/Tauri: исходный React-интер
 Ничего не удаляется и не изменяется автоматически:
 
 - удаление — только в системную Корзину (после короткой задержки-подтверждения);
+- облачные элементы (Google Drive и другие FileProvider-домены) можно переместить
+  в Корзину провайдера из отдельной **cloud basket** — и только после ввода
+  количества элементов для подтверждения. Это удаляет их из облачной учётной
+  записи и со всех синхронизированных устройств (восстановление из Корзины
+  провайдера ~30 дней) и **не** освобождает локальное место;
 - защищённые системные пути (`/`, `/System`, ветви `System`, `private`, `usr`
   Data-тома) отклоняются;
 - Hidden Space и admin-режим Терминала требуют явной авторизации на сессию и, при

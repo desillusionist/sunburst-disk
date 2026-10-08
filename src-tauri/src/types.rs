@@ -214,3 +214,49 @@ pub struct ScanProgress {
     /// `-1` means "indeterminate", matching the renderer's expectation.
     pub percent: i64,
 }
+
+/// One cloud item staged in the renderer's cloud basket for trashing.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudTrashItem {
+    pub path: String,
+    pub name: String,
+    #[serde(default)]
+    pub size: u64,
+}
+
+/// Per-item outcome of a cloud-trash run.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudTrashResult {
+    pub path: String,
+    pub name: String,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Result of `trash_cloud_items`; one entry per requested item (minus any whose
+/// ancestor was also staged and therefore removed by the parent's trash).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudTrashResponse {
+    pub results: Vec<CloudTrashResult>,
+    pub canceled: bool,
+    pub total: u64,
+    pub succeeded: u64,
+    pub failed: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Payload emitted on the `cloud-trash-progress` event.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudTrashProgress {
+    pub done: u64,
+    pub total: u64,
+    pub current_path: String,
+    pub current_name: String,
+    pub failed: u64,
+}

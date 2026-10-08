@@ -15,6 +15,7 @@ use tauri_plugin_notification::NotificationExt;
 use crate::archive;
 use crate::ask_siri;
 use crate::capacity;
+use crate::cloud_trash;
 use crate::drives;
 use crate::hidden_space;
 use crate::inspect;
@@ -25,8 +26,8 @@ use crate::scan::{self, CloudScanMode, ScanError, ScanOptions};
 use crate::smart_clean;
 use crate::terminal;
 use crate::types::{
-    CancelResponse, ChooseFolderResponse, DeleteResponse, DeleteResultItem, DrivesResponse,
-    FolderDrive, LayoutResponse, ScanResponse,
+    CancelResponse, ChooseFolderResponse, CloudTrashItem, CloudTrashResponse, DeleteResponse,
+    DeleteResultItem, DrivesResponse, FolderDrive, LayoutResponse, ScanResponse,
 };
 use crate::watcher;
 
@@ -464,6 +465,41 @@ pub async fn delete_items(items: Option<Vec<String>>) -> DeleteResponse {
     })
     .await
     .unwrap_or_default()
+}
+
+/// Move staged cloud items to their provider's Trash (currently Google Drive).
+///
+/// This is the only write operation the app performs on cloud content. It is
+/// registered as a cancellable job (not `begin`) so a long batch cannot cancel a
+/// scan and vice versa; cancel it with `cancel_scan` using the same
+/// `request_id`. Progress is emitted on `cloud-trash-progress`.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn trash_cloud_items(
+    app: AppHandle,
+    state: State<'_, ScanJobs>,
+    items: Option<Vec<CloudTrashItem>>,
+    request_id: Option<String>,
+) -> Result<CloudTrashResponse, String> {
+    let staged = items.unwrap_or_default();
+    let job_id = request_id
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(next_request_id);
+    let cancel = state.register(job_id.clone());
+    let emit_app = app.clone();
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        cloud_trash::trash_items(staged, &cancel, |progress| {
+            let _ = emit_app.emit("cloud-trash-progress", progress);
+        })
+    })
+    .await;
+
+    state.release(&job_id);
+
+    Ok(result.unwrap_or_else(|_| CloudTrashResponse {
+        error: Some("Cloud trash task failed".to_string()),
+        ..Default::default()
+    }))
 }
 
 #[tauri::command(rename_all = "camelCase")]

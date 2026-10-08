@@ -1832,6 +1832,52 @@ body {
 .chart-exact-btn { position: absolute; top: 10px; right: 12px; z-index: 120; }
 .theme-matrix .legend-local-badge { border-color: rgba(57,255,102,.3); background: rgba(57,255,102,.08); color: var(--matrix-text); }
 .theme-matrix .cloud-view-banner-close { color: var(--matrix-line-bright); }
+
+/* ── Cloud basket (cloud view only) ───────────────────────────────────────── */
+.cloud-basket-wrapper { position: absolute; bottom: 20px; left: 20px; z-index: 100; display: flex; flex-direction: column; gap: 8px; max-width: 380px; }
+.cloud-basket-drawer { background: #1e2229; border: 1px solid #323742; border-radius: 8px; padding: 10px; width: 360px; max-height: 240px; display: flex; flex-direction: column; box-shadow: 0 8px 24px rgba(0,0,0,.5); animation: slideUp .15s ease-out; }
+.cloud-basket-drawer-header { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #8b92a0; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,.06); margin-bottom: 6px; }
+.cloud-basket-clear { background: transparent; border: none; color: #6b7280; cursor: pointer; font-size: 11px; }
+.cloud-basket-clear:hover { color: #f87171; }
+.cloud-basket-hint { font-size: 10px; color: #8f97a5; margin-bottom: 6px; }
+.cloud-basket-items { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.cloud-basket-row { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 4px; font-size: 11.5px; color: #c2c7d0; }
+.cloud-basket-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cloud-basket-badge { flex: 0 0 auto; padding: 1px 6px; border: 1px solid rgba(96,165,250,.28); border-radius: 999px; background: rgba(96,165,250,.1); color: #bcd4f0; font-family: SFMono-Regular, Menlo, monospace; font-size: 9.5px; }
+.cloud-basket-size { flex: 0 0 auto; color: #9aa0ac; font-family: SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.cloud-basket-remove { flex: 0 0 auto; background: transparent; border: none; color: #6b7280; cursor: pointer; line-height: 0; padding: 2px; }
+.cloud-basket-remove:hover { color: #f87171; }
+.cloud-basket-target { display: flex; align-items: center; gap: 10px; color: #7f8694; font-size: 12px; padding: 8px 14px; border-radius: 8px; background: rgba(26,29,34,.9); border: 1.5px dashed #3a3f4a; transition: all .2s ease; }
+.cloud-basket-target.drag-over { border-color: #3b82f6; background: rgba(59,130,246,.15); color: #93c5fd; }
+.cloud-basket-text.has-items { color: #cbd5e1; }
+.cloud-basket-actions { margin-left: auto; }
+.cloud-basket-trash-btn { display: flex; align-items: center; gap: 4px; background: rgba(239,68,68,.18); border: 1px solid rgba(239,68,68,.35); color: #f87171; font-size: 11px; padding: 4px 8px; border-radius: 4px; cursor: pointer; }
+.cloud-basket-trash-btn:hover { background: rgba(239,68,68,.3); color: #ff8c8c; }
+.cloud-basket-progress { display: flex; align-items: center; gap: 8px; background: #1e2229; border: 1px solid #323742; border-radius: 8px; padding: 8px 10px; font-size: 11px; color: #cbd5e1; }
+.cloud-basket-progress-bar { flex: 1 1 auto; height: 4px; border-radius: 2px; background: rgba(255,255,255,.1); overflow: hidden; }
+.cloud-basket-progress-fill { height: 100%; background: #3b82f6; transition: width .15s ease; }
+.cloud-basket-cancel { background: #3b4252; border: 1px solid #4c566a; color: #eceff4; font-size: 11px; padding: 3px 9px; border-radius: 4px; cursor: pointer; }
+.cloud-basket-cancel:hover { background: #434c5e; color: #fff; }
+.cloud-basket-result { background: #1e2229; border: 1px solid #323742; border-radius: 8px; padding: 9px 10px; display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #cbd5e1; max-width: 360px; }
+.cloud-basket-result-line { font-weight: 600; }
+.cloud-basket-result-note { color: #9aa0ac; line-height: 1.4; }
+.cloud-basket-result-failures { color: #fca5a5; line-height: 1.4; word-break: break-word; }
+.cloud-basket-result-actions { display: flex; gap: 7px; }
+.cloud-basket-result-actions button { padding: 4px 9px; border: 1px solid rgba(128,142,164,.42); border-radius: 4px; background: rgba(255,255,255,.06); color: #dce3ed; font-size: 11px; cursor: pointer; }
+.cloud-basket-result-actions button:hover { background: rgba(255,255,255,.12); }
+.cloud-trash-confirm-backdrop { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; background: rgba(0,0,0,.58); }
+.cloud-trash-confirm { width: min(440px, calc(100vw - 32px)); padding: 18px; border: 1px solid rgba(128,142,164,.42); border-radius: 10px; background: #171b22; color: #dce3ed; box-shadow: 0 18px 60px rgba(0,0,0,.5); }
+.cloud-trash-confirm-title { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+.cloud-trash-confirm-body { margin: 0 0 14px; color: #a2adbc; font-size: 11.5px; line-height: 1.5; }
+.cloud-trash-confirm-typed { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: #aeb9c8; }
+.cloud-trash-confirm-typed input { width: 70px; padding: 6px 8px; border: 1px solid rgba(128,142,164,.42); border-radius: 5px; background: #0d1117; color: #f4f7fb; font: 12px SFMono-Regular, Menlo, monospace; }
+.cloud-trash-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.cloud-trash-confirm-actions button { padding: 7px 12px; border: 1px solid rgba(128,142,164,.42); border-radius: 5px; background: rgba(255,255,255,.06); color: #dce3ed; font-size: 11.5px; cursor: pointer; }
+.cloud-trash-confirm-go { background: rgba(239,68,68,.2) !important; border-color: rgba(239,68,68,.45) !important; color: #fca5a5 !important; }
+.cloud-trash-confirm-go:disabled { opacity: .45; cursor: not-allowed; }
+.theme-matrix .cloud-basket-target { border-color: var(--matrix-line); background: var(--matrix-panel-soft); color: var(--matrix-text-dim); }
+.theme-matrix .cloud-basket-drawer, .theme-matrix .cloud-basket-result, .theme-matrix .cloud-basket-progress { border-color: var(--matrix-line); background: var(--matrix-panel); color: var(--matrix-text); }
+.theme-matrix .cloud-trash-confirm { border-color: var(--matrix-line); background: var(--matrix-panel); color: var(--matrix-text); }
 .cloud-provider-figures { display: flex; gap: 22px; margin-top: 7px; }
 .cloud-provider-figures > div { display: flex; flex-direction: column; gap: 2px; }
 .cloud-provider-figures strong { color: #f8fafc; font-size: 13px; }

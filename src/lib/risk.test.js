@@ -1,10 +1,10 @@
-// Safety invariant: a cloud-managed node must be refused by every deletion
-// entry point. The cloud walk marks every node it returns with `cloudManaged`,
-// and this module is the single gate those entry points share, so proving the
-// gate refuses a cloud node proves the Collector (legend "+", context menu,
-// drag-and-drop), the details sidebar and Smart Clean export are all blocked.
+// Safety invariant: a cloud-managed node is refused by every *local* deletion
+// entry point, and the only cloud capability is the explicit, separate
+// `canTrashCloud` allowance (consumed solely by the cloud basket). The cloud walk
+// marks every node it returns with `cloudManaged`, and this module is the single
+// gate those entry points share.
 import { describe, it, expect } from 'vitest';
-import { getRiskInfo, canCollect, canExportCandidate, isStartupDataCategory } from './risk';
+import { getRiskInfo, canCollect, canCloudBasket, canExportCandidate, isStartupDataCategory } from './risk';
 
 const cloudFile = {
   name: 'report.pdf',
@@ -30,28 +30,39 @@ const ordinaryDirectory = { name: 'Projects', path: '/Users/x/Documents/Projects
 const systemItem = { name: 'System', path: '/System', type: 'directory' };
 const hiddenSpace = { name: 'hidden space...', path: '__hidden__', type: 'special' };
 
-describe('cloud read-only invariant', () => {
-  it('classifies a cloud-managed node as refusing, for files and directories alike', () => {
+describe('cloud capability boundary', () => {
+  it('refuses local deletion for every cloud node, but grants the cloud-basket allowance', () => {
     for (const node of [cloudFile, cloudDirectory, cloudBundle]) {
       const risk = getRiskInfo(node);
-      expect(risk.canDelete, `${node.path} must not be deletable`).toBe(false);
+      expect(risk.canDelete, `${node.path} must not be locally deletable`).toBe(false);
+      expect(risk.canTrashCloud, `${node.path} must be cloud-trashable`).toBe(true);
       expect(risk.level).toBe('protected');
-      expect(risk.label).toMatch(/read-only/i);
+      expect(risk.label).toMatch(/trash only/i);
     }
   });
 
-  it('blocks the Collector entry point', () => {
+  it('still blocks the local Collector and Smart Clean export', () => {
     expect(canCollect(cloudFile)).toBe(false);
     expect(canCollect(cloudDirectory)).toBe(false);
     expect(canCollect(cloudBundle)).toBe(false);
-  });
-
-  it('blocks Smart Clean export', () => {
     expect(canExportCandidate(cloudFile)).toBe(false);
     expect(canExportCandidate(cloudDirectory)).toBe(false);
   });
 
-  it('blocks every deletion guard for a synthetic cloud root too', () => {
+  it('allows the cloud basket for cloud items only', () => {
+    expect(canCloudBasket(cloudFile)).toBe(true);
+    expect(canCloudBasket(cloudDirectory)).toBe(true);
+    expect(canCloudBasket(cloudBundle)).toBe(true);
+    // Everything that is not a cloud item stays out of the cloud basket.
+    expect(canCloudBasket(ordinaryFile)).toBe(false);
+    expect(canCloudBasket(ordinaryDirectory)).toBe(false);
+    expect(canCloudBasket(systemItem)).toBe(false);
+    expect(canCloudBasket(hiddenSpace)).toBe(false);
+    expect(canCloudBasket(null)).toBe(false);
+    expect(canCloudBasket({ name: 'x', type: 'file' })).toBe(false);
+  });
+
+  it('keeps the cloud root out of the Collector but in the cloud basket', () => {
     const cloudRoot = {
       name: 'Google Drive — a@b.com',
       path: '/Users/x/Library/CloudStorage/GoogleDrive-a',
@@ -62,13 +73,16 @@ describe('cloud read-only invariant', () => {
       children: [cloudDirectory]
     };
     expect(getRiskInfo(cloudRoot).canDelete).toBe(false);
+    expect(getRiskInfo(cloudRoot).canTrashCloud).toBe(true);
     expect(canCollect(cloudRoot)).toBe(false);
+    expect(canCloudBasket(cloudRoot)).toBe(true);
   });
 });
 
 describe('the gate is not over-broad', () => {
   it('still allows ordinary local content', () => {
     expect(getRiskInfo(ordinaryFile).canDelete).toBe(true);
+    expect(getRiskInfo(ordinaryFile).canTrashCloud).toBe(false);
     expect(getRiskInfo(ordinaryFile).level).toBe('safe');
     expect(canCollect(ordinaryFile)).toBe(true);
     expect(canCollect(ordinaryDirectory)).toBe(true);

@@ -82,6 +82,14 @@ function buildElectronAPI() {
       }]
     })),
     cloudStorageClientState: vi.fn(async () => ({ ok: true, clientState: [] })),
+    trashCloudItems: vi.fn(async (items) => ({
+      results: (items || []).map(item => ({ path: item.path, name: item.name, success: true })),
+      canceled: false,
+      total: (items || []).length,
+      succeeded: (items || []).length,
+      failed: 0
+    })),
+    openExternalUrl: vi.fn(async () => ({ ok: true })),
     revealInFinder: vi.fn(async () => ({})),
     inspectItem: vi.fn(async () => ({ metadata: null })),
     inspectItems: vi.fn(async () => ({})),
@@ -92,6 +100,7 @@ function buildElectronAPI() {
     smartCleanPreview: vi.fn(async () => ({ ok: true, candidates: [], roots: [] })),
     onScanProgress: vi.fn(noopUnsub),
     onScanComplete: vi.fn(noopUnsub),
+    onCloudTrashProgress: vi.fn(noopUnsub),
     onUpdateProgress: vi.fn(noopUnsub),
     onFolderWatchChange: vi.fn(noopUnsub),
     onFolderWatchStatus: vi.fn(noopUnsub),
@@ -204,22 +213,51 @@ describe('cloud view flow', () => {
     expect(screen.getByText('Shared drives')).toBeTruthy();
   });
 
-  it('disables Collector for every cloud item and shows the read-only risk', async () => {
+  it('keeps cloud items out of the local Collector but stages them in the cloud basket', async () => {
     const user = userEvent.setup();
     await openCloudView(user);
     await screen.findByText(/Cloud content · read-only/i);
 
-    // Legend "+" buttons exist per child and are all disabled.
-    const plusButtons = screen.getAllByTitle('Add to collector');
+    // The legend "+" now stages into the cloud basket, and is enabled for cloud rows.
+    const plusButtons = screen.getAllByTitle('Add to Google Drive Trash basket');
     expect(plusButtons.length).toBe(2);
-    plusButtons.forEach(button => expect(button.disabled).toBe(true));
+    plusButtons.forEach(button => expect(button.disabled).toBe(false));
 
-    // The details sidebar refuses deletion for the focused cloud node.
+    // The local Collector is still refused for a cloud node.
     expect(screen.getByText('Deletion disabled')).toBeTruthy();
-    expect(screen.getAllByText(/Cloud item — read-only/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Cloud item — Trash only/i).length).toBeGreaterThan(0);
 
     // The local free-space / capacity rows are not shown in cloud view.
     expect(screen.queryByText(/^free space$/i)).toBeNull();
+  });
+
+  it('trashes the basket only after the count is typed (two-step gate)', async () => {
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    // Stage one row.
+    await user.click(screen.getAllByTitle('Add to Google Drive Trash basket')[0]);
+    expect(await screen.findByText(/1 item/i)).toBeTruthy();
+
+    // Open the confirmation; the move button is disabled until the count matches.
+    await user.click(screen.getByRole('button', { name: /move to google drive trash/i }));
+    await waitFor(() => expect(document.querySelector('.cloud-trash-confirm')).toBeTruthy());
+    expect(document.querySelector('.cloud-trash-confirm-go').disabled).toBe(true);
+    expect(window.electronAPI.trashCloudItems).not.toHaveBeenCalled();
+
+    // Wrong count keeps it disabled; the exact count enables it.
+    await user.type(document.querySelector('.cloud-trash-confirm-typed input'), '2');
+    expect(document.querySelector('.cloud-trash-confirm-go').disabled).toBe(true);
+    await user.clear(document.querySelector('.cloud-trash-confirm-typed input'));
+    await user.type(document.querySelector('.cloud-trash-confirm-typed input'), '1');
+    await waitFor(() => expect(document.querySelector('.cloud-trash-confirm-go').disabled).toBe(false));
+
+    await user.click(document.querySelector('.cloud-trash-confirm-go'));
+    await waitFor(() => expect(window.electronAPI.trashCloudItems).toHaveBeenCalledTimes(1));
+    const [items] = window.electronAPI.trashCloudItems.mock.calls[0];
+    expect(items).toHaveLength(1);
+    expect(items[0].path).toBe(`${PROVIDER_PATH}/My Drive`);
   });
 
   it('re-walks a partially-scanned cloud folder in full when it is opened', async () => {
