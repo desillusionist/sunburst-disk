@@ -55,6 +55,45 @@ function makeCloudTree() {
   };
 }
 
+// A minimal iCloud Drive provider, used to prove that every cloud-trash string
+// follows the detected provider rather than a hard-coded "Google Drive".
+const ICLOUD_PATH = '/Users/x/Library/Mobile Documents/com~apple~CloudDocs';
+
+function makeICloudTree() {
+  return {
+    name: 'com~apple~CloudDocs',
+    path: ICLOUD_PATH,
+    type: 'directory',
+    size: CLOUD_TOTAL,
+    itemCount: 120,
+    cloudManaged: true,
+    truncated: true,
+    localBytes: 0,
+    children: [
+      {
+        name: 'Documents',
+        path: `${ICLOUD_PATH}/Documents`,
+        type: 'directory',
+        size: 10_000_000_000,
+        itemCount: 100,
+        cloudManaged: true,
+        localBytes: 0,
+        children: []
+      },
+      {
+        name: 'Desktop',
+        path: `${ICLOUD_PATH}/Desktop`,
+        type: 'directory',
+        size: 5_000_000_000,
+        itemCount: 20,
+        cloudManaged: true,
+        localBytes: 0,
+        children: []
+      }
+    ]
+  };
+}
+
 function buildElectronAPI() {
   const noopUnsub = () => () => {};
   return {
@@ -277,6 +316,66 @@ describe('cloud view flow', () => {
 
     // Staging undo is local-only: nothing was ever sent to trash.
     expect(window.electronAPI.trashCloudItems).not.toHaveBeenCalled();
+  });
+
+  it('derives the confirm button, title, body and recovery wording from the provider (iCloud → Recently Deleted)', async () => {
+    const user = userEvent.setup();
+
+    // Scan an iCloud provider instead of the Google fixture. The confirm *button*
+    // is the part that regressed to a hard-coded "Google Drive" once already, so
+    // it is asserted explicitly alongside the title and body.
+    window.electronAPI.cloudStorageSurvey = vi.fn(async () => ({
+      ok: true,
+      sharesHomeFolders: false,
+      notes: [],
+      providers: [{
+        id: 'icloud-drive',
+        name: 'iCloud Drive',
+        kind: 'icloud',
+        path: ICLOUD_PATH,
+        cloudBytes: CLOUD_TOTAL,
+        localBytes: 0,
+        files: 120,
+        dataless: 120,
+        truncated: true,
+        readable: true,
+        largest: []
+      }]
+    }));
+    window.electronAPI.scanDirectory = vi.fn(async () => ({ tree: makeICloudTree() }));
+
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    // The legend "+" is provider-derived too -- and names the real destination.
+    await user.click(screen.getAllByTitle('Add to Recently Deleted basket')[0]);
+    expect(await screen.findByText(/1 item/i)).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: /move to recently deleted/i }));
+    await waitFor(() => expect(document.querySelector('.cloud-trash-confirm')).toBeTruthy());
+
+    const dialog = document.querySelector('.cloud-trash-confirm');
+    const goButton = dialog.querySelector('.cloud-trash-confirm-go');
+    // The button is the label that was previously missed and must be provider-derived.
+    expect(goButton.textContent.trim()).toBe('Move to Recently Deleted');
+    expect(dialog.querySelector('.cloud-trash-confirm-title').textContent).toContain('to Recently Deleted?');
+    expect(dialog.querySelector('.cloud-trash-confirm-body').textContent)
+      .toContain('Recoverable from Recently Deleted (in the Files app or at iCloud.com)');
+    // iCloud's recovery point is "Recently Deleted", never an "iCloud Drive Trash".
+    expect(dialog.textContent).not.toContain('iCloud Drive Trash');
+    expect(dialog.textContent).not.toContain('Google Drive');
+
+    // Run the batch: the success/result wording must be provider-correct too.
+    await user.type(dialog.querySelector('.cloud-trash-confirm-typed input'), '1');
+    await user.click(goButton);
+    await waitFor(() => expect(document.querySelector('.cloud-basket-result')).toBeTruthy());
+    const result = document.querySelector('.cloud-basket-result');
+    expect(result.textContent).toContain('moved to Recently Deleted');
+    expect(result.textContent).toContain('Recover from Recently Deleted (in the Files app or at iCloud.com)');
+    expect(result.textContent).not.toContain('iCloud Drive Trash');
+    expect(result.textContent).not.toContain('Google Drive');
+    // iCloud has no web Trash page, so no "Open ... Trash" button is offered.
+    expect(result.querySelector('.cloud-basket-result-actions').textContent).not.toContain('Open');
   });
 
   it('re-walks a partially-scanned cloud folder in full when it is opened', async () => {

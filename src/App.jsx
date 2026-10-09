@@ -4,7 +4,7 @@ import SunburstChart from './components/SunburstChart';
 import DetailsSidebar from './components/DetailsSidebar';
 import DebugDownbar from './components/DebugDownbar';
 import { getRiskInfo, canCollect, canCloudBasket } from './lib/risk';
-import { recomputeAncestorSizes, nodeSizeLabel, isAvailableOffline, isAvailableOnline, googleDriveTrashUrl, cloudProviderLabel } from './lib/cloudTree';
+import { recomputeAncestorSizes, nodeSizeLabel, isAvailableOffline, isAvailableOnline, googleDriveTrashUrl, cloudProviderLabel, cloudRecoveryCopy } from './lib/cloudTree';
 import { recordPerfEvent, recordPerfInstant } from './debug/perfTelemetry';
 import shortcutGuideText from './Sunburst-Disk-Ask-Siri-Shortcut-Guide.txt?raw';
 
@@ -897,7 +897,7 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
   '0.4.1': [
-    'Cloud-trash labels now name the provider you are viewing (Google Drive, iCloud Drive, …) instead of always saying “Google Drive”, and “Open Google Drive Trash” targets the account you actually scanned rather than a fixed account slot.',
+    'Every cloud-trash label — the button, the confirmation, the success message and the recovery note — now follows the provider you are viewing, and names the right place: “Google Drive Trash”, or iCloud’s “Recently Deleted”. “Open Google Drive Trash” targets the account you actually scanned rather than a fixed account slot.',
     'Items staged in the cloud basket can be un-staged with ⌘Z — a local list undo that only edits the basket and never trashes or restores anything.'
   ],
   '0.4.0': [
@@ -2868,7 +2868,7 @@ export default function App() {
     return result;
   }, [scannedTree]);
 
-  // ── Cloud basket → Move to Google Drive Trash ──────────────────────────────
+  // ── Cloud basket → Move to the provider's Trash ────────────────────────────
   const removeCloudTrashedFromTree = useCallback((paths, sourceTree) => {
     const result = removePathsFromTree(sourceTree, paths);
     if (!result.changed) return;
@@ -3603,10 +3603,15 @@ export default function App() {
   // "On this Mac": bytes actually stored locally for the same node. Rolls up the
   // same way as the cloud size, and reads as a lower bound for a partial folder.
   const headerLocalBytes = Number(liveHeaderNode?.localBytes) || 0;
-  // Provider shown in the cloud-trash UI, and Google Drive Trash for the account
-  // behind the provider being viewed.
+  // Provider shown in the cloud-trash UI, and the destination its Trash action
+  // actually targets. `cloudProviderName` (from the detected provider folder) and
+  // `cloudRecovery` are the single source for every cloud-trash string -- basket,
+  // confirm title/body/button, success message, recovery note, empty state, legend
+  // and context menu -- so none can drift to a hard-coded provider or destination.
   const cloudProviderSource = currentDrive?.scanPath || scannedTree?.path;
   const cloudProviderName = cloudProviderLabel(cloudProviderSource);
+  const cloudRecovery = cloudRecoveryCopy(cloudProviderName);
+  const cloudDestination = cloudRecovery.destination;
   const cloudTrashUrl = googleDriveTrashUrl(cloudProviderSource);
   // Drive-root only: leave a proportional gap for free space in the root ring.
   // Disabled for folder scans and any drilled-in / virtual view (path differs).
@@ -4160,6 +4165,10 @@ export default function App() {
                   )}
                 </div>
 
+                <div className="cloud-hint">
+                  This panel lists system cloud mirrors (macOS File Provider) only. A sync folder in a custom location — for example Dropbox on an external drive — is not one; scan it as a regular folder instead.
+                </div>
+
                 {cloudSurvey?.sharesHomeFolders && (
                   <div className="cloud-hint cloud-warning">iCloud is also syncing your Desktop and Documents, so those files appear both here and in the home scan — do not add the two together.</div>
                 )}
@@ -4555,12 +4564,12 @@ export default function App() {
                   <span className={`cloud-basket-text ${cloudBasket.length ? 'has-items' : ''}`}>
                     {cloudBasket.length > 0
                       ? `${cloudBasket.length} item${cloudBasket.length > 1 ? 's' : ''} (${formatBytes(totalCloudBasketSize)}) ${cloudBasketOpen ? '▲' : '▼'}`
-                      : `Add cloud items here to move to ${cloudProviderName} Trash`}
+                      : `Add cloud items here to move them to ${cloudDestination}`}
                   </span>
                   {cloudBasket.length > 0 && (
                     <div className="cloud-basket-actions" onClick={e => e.stopPropagation()}>
                       <button className="cloud-basket-trash-btn" onClick={openCloudTrashConfirm}>
-                        <Trash2 size={12} /> Move to {cloudProviderName} Trash
+                        <Trash2 size={12} /> Move to {cloudDestination}
                       </button>
                     </div>
                   )}
@@ -4581,11 +4590,11 @@ export default function App() {
                     <div className="cloud-basket-result-line">
                       {cloudTrashResult.error
                         ? `Cloud trash failed: ${cloudTrashResult.error}`
-                        : `${cloudTrashResult.succeeded} moved to Google Drive Trash${cloudTrashResult.failed ? `, ${cloudTrashResult.failed} failed` : ''}${cloudTrashResult.canceled ? ' (cancelled)' : ''}.`}
+                        : `${cloudTrashResult.succeeded} ${cloudRecovery.moved}${cloudTrashResult.failed ? `, ${cloudTrashResult.failed} failed` : ''}${cloudTrashResult.canceled ? ' (cancelled)' : ''}.`}
                     </div>
                     {cloudTrashResult.succeeded > 0 && (
                       <div className="cloud-basket-result-note">
-                        Recover from {cloudProviderName} Trash for ~30 days — not an in-app undo, and not local Trash. This does not free local disk space.
+                        {cloudRecovery.note}
                       </div>
                     )}
                     {cloudTrashResult.failed > 0 && (
@@ -4596,7 +4605,7 @@ export default function App() {
                     )}
                     <div className="cloud-basket-result-actions">
                       {cloudProviderName === 'Google Drive' && (
-                        <button onClick={() => { void window.electronAPI?.openExternalUrl?.(cloudTrashUrl); }}>Open Google Drive Trash</button>
+                        <button onClick={() => { void window.electronAPI?.openExternalUrl?.(cloudTrashUrl); }}>Open {cloudDestination}</button>
                       )}
                       <button onClick={() => setCloudTrashResult(null)}>Dismiss</button>
                     </div>
@@ -4926,7 +4935,7 @@ export default function App() {
                       <span className={`legend-val ${sizeLabel.partial ? 'partial' : ''}`} title={sizeLabel.title || undefined}>{sizeLabel.text}</span>
                       <button
                         className="legend-add-btn"
-                        title={cloudView ? `Add to ${cloudProviderName} Trash basket` : 'Add to collector'}
+                        title={cloudView ? `Add to ${cloudDestination} basket` : 'Add to collector'}
                         disabled={cloudView ? !canCloudBasket(item) : !getRiskInfo(item).canDelete}
                         onClick={e => {
                           e.stopPropagation();
@@ -5105,7 +5114,7 @@ export default function App() {
                 setContextMenu(null);
               }}
             >
-              {canCloudBasket(contextMenu.item) ? `+ Add to ${cloudProviderName} Trash basket` : '⊘ Not a cloud item'}
+              {canCloudBasket(contextMenu.item) ? `+ Add to ${cloudDestination} basket` : '⊘ Not a cloud item'}
             </div>
           ) : (
             <div
@@ -5132,10 +5141,10 @@ export default function App() {
             onClick={event => event.stopPropagation()}
           >
             <div className="cloud-trash-confirm-title" id="cloud-trash-title">
-              Move {cloudBasket.length} item{cloudBasket.length > 1 ? 's' : ''} ({formatBytes(totalCloudBasketSize)}) to {cloudProviderName} Trash?
+              Move {cloudBasket.length} item{cloudBasket.length > 1 ? 's' : ''} ({formatBytes(totalCloudBasketSize)}) to {cloudDestination}?
             </div>
             <p className="cloud-trash-confirm-body">
-              This removes them from {cloudProviderName} and every synced device. Recoverable from {cloudProviderName} Trash for ~30 days. This does NOT free local disk space. Shared files: items you own are removed for collaborators; items you don’t own may only lose your access.
+              This removes them from {cloudProviderName} and every synced device. {cloudRecovery.recoverable}. This does NOT free local disk space. Shared files: items you own are removed for collaborators; items you don’t own may only lose your access.
             </p>
             <label className="cloud-trash-confirm-typed">
               Type <strong>{cloudBasket.length}</strong> to confirm
@@ -5152,7 +5161,7 @@ export default function App() {
                 className="cloud-trash-confirm-go"
                 disabled={String(cloudTrashConfirm.typed).trim() !== String(cloudBasket.length)}
                 onClick={() => { void confirmCloudTrash(); }}
-              >Move to Google Drive Trash</button>
+              >Move to {cloudDestination}</button>
             </div>
           </section>
         </div>

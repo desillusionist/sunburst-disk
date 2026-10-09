@@ -743,13 +743,19 @@ Everything that remains is optional:
   `cancellation_stops_before_the_first_item`; renderer boundary tests in
   `src/lib/risk.test.js` (local deletion refused, cloud basket allowed) and the
   cloud-flow basket + typed-confirmation flow.
-- **r40** — Provider-aware cloud-trash labels, an account-aware Trash URL, and a
-  staging undo (0.4.1).
-  - **Labels follow the provider.** `cloudProviderLabel` derives the provider name
-    from the provider folder (`GoogleDrive-<email>`, `OneDrive-…`, `Mobile
-    Documents`), so the cloud basket, its confirmation and the result wording name
-    the actual provider (Google Drive, iCloud Drive, …) instead of hard-coded
-    "Google Drive". The "Open … Trash" action is shown for Google Drive only.
+- **r40** — Provider-aware cloud-trash labels and recovery wording, an
+  account-aware Trash URL, and a staging undo (0.4.1).
+  - **Everything derives from the provider.** `cloudProviderLabel` derives the
+    provider name from the provider folder (`GoogleDrive-<email>`, `OneDrive-…`,
+    `Mobile Documents`), and `cloudRecoveryCopy` derives the recovery destination
+    and wording. Every cloud-trash string -- basket button, confirm title, body and
+    button, success message, recovery note, empty state, legend and context menu --
+    reads from those two helpers, so none can fall back to a hard-coded provider.
+  - **Recovery destination is provider-correct.** Google Drive → "Google Drive
+    Trash" (the "Open … Trash" action is shown for Google Drive only); iCloud Drive
+    → "Recently Deleted", recoverable in the Files app or at iCloud.com, with no
+    button. Verified on this Mac that an iCloud `trashItem` lands in
+    `~/Library/Mobile Documents/.Trash` (iCloud's Recently Deleted), not `~/.Trash`.
   - **Account-aware Trash URL.** `googleDriveTrashUrl` opens
     `https://drive.google.com/drive/trash?authuser=<email>` for the viewed account
     (the email form, not a positional `/u/N` index), so it follows whichever Drive
@@ -759,6 +765,9 @@ Everything that remains is optional:
     before each add/remove/clear and ⌘Z pops it in cloud view. It only edits the
     staged list -- it can never trash or restore -- and the stack is dropped when a
     trash run completes, so ⌘Z can never resurrect trashed items.
+  - **Cloud Storage panel note.** It now states that the panel lists system cloud
+    mirrors (File Provider) only, and that a sync folder in a custom location (for
+    example Dropbox on an external drive) is scanned as a regular folder.
 - **r41 (spike only — not shipped)** — Un-trash feasibility. Moving an item from
   the provider trash (the `resultingItemURL` that `trashItem` returns) back to its
   original path restores the **same provider object** on **both Google Drive and

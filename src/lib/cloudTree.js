@@ -90,6 +90,27 @@ export function cloudProviderLabel(source) {
   return name || 'your provider';
 }
 
+// Where a cloud-trash action actually sends an item, and how the user recovers it.
+// Google Drive has its own Trash; iCloud Drive uses "Recently Deleted" (in the
+// Files app or at iCloud.com). Both keep items for about 30 days. Everything the
+// cloud-trash UI says derives from this, so no screen can name the wrong
+// destination (e.g. "iCloud Drive Trash", which does not exist).
+export function cloudTrashDestination(providerName) {
+  return providerName === 'iCloud Drive' ? 'Recently Deleted' : `${providerName} Trash`;
+}
+
+export function cloudRecoveryCopy(providerName) {
+  const destination = cloudTrashDestination(providerName);
+  // iCloud's recovery point is not a "Trash" -- name the actual place.
+  const via = providerName === 'iCloud Drive' ? ' (in the Files app or at iCloud.com)' : '';
+  return {
+    destination,
+    moved: `moved to ${destination}`,
+    recoverable: `Recoverable from ${destination}${via} for ~30 days`,
+    note: `Recover from ${destination}${via} for ~30 days — not an in-app undo, and not local Trash. This does not free local disk space.`
+  };
+}
+
 // The Google Drive Trash URL for the account behind a CloudStorage provider
 // folder. The provider folder is named `GoogleDrive-<email>`, and Google honours
 // `?authuser=<email>` (an account email, not a positional /u/N index), so the

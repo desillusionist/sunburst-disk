@@ -6,7 +6,7 @@
 // that equals the sum of the children actually shown, with partial sub-trees
 // labelled as lower bounds.
 import { describe, it, expect } from 'vitest';
-import { recomputeAncestorSizes, nodeSizeLabel, isAvailableOffline, isAvailableOnline, googleDriveTrashUrl, cloudProviderLabel } from './cloudTree';
+import { recomputeAncestorSizes, nodeSizeLabel, isAvailableOffline, isAvailableOnline, googleDriveTrashUrl, cloudProviderLabel, cloudTrashDestination, cloudRecoveryCopy } from './cloudTree';
 
 const formatBytes = bytes => `${bytes} B`;
 
@@ -186,5 +186,27 @@ describe('provider labels', () => {
   it('falls back to the folder name or a generic label', () => {
     expect(cloudProviderLabel('/Users/x/Library/CloudStorage/SomeApp-1')).toBe('SomeApp-1');
     expect(cloudProviderLabel(undefined)).toBe('your provider');
+  });
+});
+
+describe('cloud trash destination and recovery wording', () => {
+  it('names the real recovery destination per provider', () => {
+    expect(cloudTrashDestination('Google Drive')).toBe('Google Drive Trash');
+    expect(cloudTrashDestination('OneDrive')).toBe('OneDrive Trash');
+    // iCloud has no "Trash" -- its recovery point is Recently Deleted.
+    expect(cloudTrashDestination('iCloud Drive')).toBe('Recently Deleted');
+  });
+
+  it('points iCloud at Recently Deleted (Files app / iCloud.com), others at their Trash', () => {
+    expect(cloudRecoveryCopy('iCloud Drive').moved).toBe('moved to Recently Deleted');
+    expect(cloudRecoveryCopy('iCloud Drive').recoverable)
+      .toBe('Recoverable from Recently Deleted (in the Files app or at iCloud.com) for ~30 days');
+    expect(cloudRecoveryCopy('iCloud Drive').note)
+      .toContain('Recently Deleted (in the Files app or at iCloud.com)');
+    expect(cloudRecoveryCopy('iCloud Drive').note).not.toContain('iCloud Drive Trash');
+
+    expect(cloudRecoveryCopy('Google Drive').moved).toBe('moved to Google Drive Trash');
+    expect(cloudRecoveryCopy('Google Drive').recoverable)
+      .toBe('Recoverable from Google Drive Trash for ~30 days');
   });
 });
