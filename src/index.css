@@ -236,6 +236,40 @@ body {
   scrollbar-width: thin;
   scrollbar-color: rgba(145, 153, 168, .72) transparent;
 }
+/* Shown while the native drive list is enumerated. With many mounted volumes
+   that call takes a moment, so an obvious spinner beats an empty screen. */
+.drives-loading {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  color: var(--mac-text-dim);
+}
+.drives-loading-text {
+  font-size: 12px;
+  letter-spacing: .02em;
+}
+.drives-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid rgba(127, 134, 148, .22);
+  border-top-color: #cfd6e2;
+  animation: drives-spin .8s linear infinite;
+}
+@keyframes drives-spin { to { transform: rotate(360deg); } }
+.theme-matrix .drives-loading { color: var(--matrix-text-dim); }
+.theme-matrix .drives-spinner {
+  border-color: rgba(57, 255, 102, .2);
+  border-top-color: var(--matrix-line-bright);
+  box-shadow: 0 0 10px rgba(57, 255, 102, .3);
+}
+@media (prefers-reduced-motion: reduce) {
+  .drives-spinner { animation-duration: 2.4s; }
+}
 .drives-list::-webkit-scrollbar {
   width: 7px;
 }

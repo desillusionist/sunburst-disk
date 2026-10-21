@@ -439,13 +439,26 @@ function matchesViewFilters(node, options, metadataByPath) {
   // Cloud availability: independent of the type list. Selecting exactly one of
   // "available offline" / "available online" restricts to that side; selecting
   // both (or neither) adds no constraint. Pure predicates -- never any I/O.
+  // Only cloud nodes are affected, so a stale flag can never filter a local scan.
   const wantOffline = options.cloudOffline === true;
   const wantOnline = options.cloudOnline === true;
-  if (wantOffline !== wantOnline) {
+  if (wantOffline !== wantOnline && node?.cloudManaged === true) {
     if (wantOffline && !isAvailableOffline(node)) return false;
     if (wantOnline && !isAvailableOnline(node)) return false;
   }
   return true;
+}
+
+// The cloud "available offline" filter is a request to see the bytes that are
+// actually on this Mac, so its view must be sized by `localBytes` rather than the
+// cloud logical size. "Available online" items are dataless (`localBytes` 0), so
+// that filter -- and every other view -- keeps the cloud size. Selecting both (or
+// neither) adds no constraint, so it also keeps the cloud size. Restricted to
+// cloud nodes so a lingering flag can never re-size a local scan.
+function usesLocalCloudSizes(options, node) {
+  return options?.cloudOffline === true
+    && options?.cloudOnline !== true
+    && node?.cloudManaged === true;
 }
 
 function sortNodes(nodes, options, metadataByPath) {
@@ -665,8 +678,13 @@ function buildShallowDisplayNode(
     return cached.value;
   }
 
+  // In the "available offline" view the numbers describe bytes on this Mac, so
+  // rank and size the children by `localBytes` (the parent total follows below).
+  const localSizes = usesLocalCloudSizes(options, node);
+  const sized = child => (localSizes ? { ...child, size: Number(child.localBytes) || 0 } : child);
   const candidates = packageCollapsed ? [] : (node.children || [])
-    .filter(child => matchesViewFilters(child, options, metadataByPath));
+    .filter(child => matchesViewFilters(child, options, metadataByPath))
+    .map(sized);
   let children = candidates;
   let previewLimited = false;
   const previewTotalFiles = candidates.filter(child => child.type === 'file').length;
@@ -682,6 +700,7 @@ function buildShallowDisplayNode(
   const value = {
     ...node,
     children,
+    ...(localSizes ? { size: Number(node.localBytes) || 0 } : {}),
     previewLimited,
     previewTotalChildren: candidates.length,
     previewTotalFiles
@@ -722,7 +741,11 @@ function buildDisplayNode(
     options,
     metadataByPath
   );
-  const value = { ...node, children };
+  // "Available offline" is about bytes on this Mac: each node is sized by its
+  // `localBytes` (the same figure the "on this Mac" row shows), so the sunburst
+  // slices and the centre hub agree with the filter instead of showing cloud sizes.
+  const localSizes = usesLocalCloudSizes(options, node);
+  const value = { ...node, children, ...(localSizes ? { size: Number(node.localBytes) || 0 } : {}) };
   cache?.set(node, { key: cacheKey, metadata: needsMetadata ? metadataByPath : null, value });
   return value;
 }
@@ -959,6 +982,9 @@ const CORE_FEATURES = [
 export default function App() {
   const [viewState, setViewState]           = useState('drives');
   const [drives, setDrives]                 = useState([]);
+  // True until the native drive enumeration resolves. With many mounted volumes
+  // that call can take a moment, so the home screen shows a spinner meanwhile.
+  const [drivesLoading, setDrivesLoading]   = useState(true);
   const [currentDrive, setCurrentDrive]     = useState(null);
   const [scannedTree, setScannedTree]       = useState(null);
   const [scanCache, setScanCache]           = useState({});
@@ -1821,6 +1847,7 @@ export default function App() {
         }
       }
     } catch (e) { console.error('Drive fetch error:', e); }
+    finally { setDrivesLoading(false); }
   };
 
   const handleCapacityCaptureStart = useCallback(() => {
@@ -2969,6 +2996,19 @@ export default function App() {
     return () => window.removeEventListener('keydown', onUndoKey, true);
   }, [cloudView, cloudTrashRunning, cloudTrashConfirm, undoCloudBasket]);
 
+  // The availability filters only exist in the cloud view. Clear them when we
+  // leave it, so they cannot linger as an invisible constraint on a local scan.
+  // (`usesLocalCloudSizes` and `matchesViewFilters` also refuse to act on
+  // non-cloud nodes, so even a one-frame overlap is harmless.)
+  useEffect(() => {
+    if (cloudView) return;
+    setViewOptions(options => (
+      options.cloudOffline || options.cloudOnline
+        ? { ...options, cloudOffline: false, cloudOnline: false }
+        : options
+    ));
+  }, [cloudView]);
+
   // ── Countdown & Move to Trash ───────────────────────────────────────────────
   const startPurgeCountdown = () => {
     if (!collector.length || countdown !== null) return;
@@ -3598,8 +3638,16 @@ export default function App() {
   // reports allocated directory blocks and hidden/excluded entries separately.
   const currentTotalSize = previewNode?.size || 0;
   const liveHeaderNode = isFileHover ? liveHoveredNode : previewNode;
+  // In the "available offline" view the hub and header must describe bytes on
+  // this Mac too. The raw hovered node still carries the cloud size, so switch it
+  // explicitly; when not hovering, `previewNode.size` is already the local total.
+  const cloudLocalSizes = cloudView && usesLocalCloudSizes(viewOptions, previewNode);
+  const hoveredDisplayNode = liveHoveredNode && cloudLocalSizes
+    ? { ...liveHoveredNode, size: Number(liveHoveredNode.localBytes) || 0 }
+    : liveHoveredNode;
+  const centerBytes = hoveredDisplayNode ? Number(hoveredDisplayNode.size) || 0 : currentTotalSize;
   // Lower-bound treatment for a partially-walked cloud folder's total.
-  const headerSizeLabel = nodeSizeLabel(isFileHover ? liveHoveredNode : previewNode, formatBytes);
+  const headerSizeLabel = nodeSizeLabel(isFileHover ? hoveredDisplayNode : previewNode, formatBytes);
   // "On this Mac": bytes actually stored locally for the same node. Rolls up the
   // same way as the cloud size, and reads as a lower bound for a partial folder.
   const headerLocalBytes = Number(liveHeaderNode?.localBytes) || 0;
@@ -3994,6 +4042,12 @@ export default function App() {
       {/* ── Screen 1: Drives ────────────────────────────────────────────────── */}
       {viewState === 'drives' && (
         <div className="drives-screen">
+          {drivesLoading && drives.length === 0 ? (
+            <div className="drives-loading" role="status" aria-live="polite">
+              <span className="drives-spinner" aria-hidden="true" />
+              <span className="drives-loading-text">Checking connected disks…</span>
+            </div>
+          ) : (
           <div className="drives-list">
             {drives.map((drive, idx) => {
               const driveKey = getDriveKey(drive);
@@ -4076,6 +4130,7 @@ export default function App() {
               );
             })}
           </div>
+          )}
           <div className="drives-bottom-bar">
             <div className="drives-bottom-actions">
               <button className="mac-action-btn" onClick={() => { void handleScanFolder(); }}>Scan Folder...</button>
@@ -4397,8 +4452,8 @@ export default function App() {
                   colorAssignments={chartColorAssignments}
                   theme={matrixTheme ? 'matrix' : 'classic'}
                   collectedPaths={collectedPaths}
-                  centerValue={formatBytes(liveHoveredNode ? liveHoveredNode.size : currentTotalSize).split(' ')[0]}
-                  centerUnit={formatBytes(liveHoveredNode ? liveHoveredNode.size : currentTotalSize).split(' ')[1]}
+                  centerValue={formatBytes(centerBytes).split(' ')[0]}
+                  centerUnit={formatBytes(centerBytes).split(' ')[1]}
                   freeFraction={chartFreeFraction}
                   freeValue={chartFreeValue}
                   freeUnit={chartFreeUnit}
@@ -4924,7 +4979,7 @@ export default function App() {
                       />
                     </div>
                     <div className="legend-right">
-                      {cloudView && Number(item.localBytes) > 0 && (
+                      {cloudView && !cloudLocalSizes && Number(item.localBytes) > 0 && (
                         <span
                           className="legend-local-badge"
                           title={`${formatBytes(Number(item.localBytes))} stored on this Mac — not the cloud size`}
@@ -4955,16 +5010,18 @@ export default function App() {
               <div className="legend-divider" />
               {cloudView && (
                 <>
-                  <div className="legend-row static">
-                    <div className="legend-left">
-                      <div className="dot" style={{ backgroundColor: '#38bdf8' }} />
-                      <span className="legend-label dim">cloud content (not on-disk)</span>
+                  {!cloudLocalSizes && (
+                    <div className="legend-row static">
+                      <div className="legend-left">
+                        <div className="dot" style={{ backgroundColor: '#38bdf8' }} />
+                        <span className="legend-label dim">cloud content (not on-disk)</span>
+                      </div>
+                      <span
+                        className={`legend-val ${headerSizeLabel.partial ? 'partial' : ''}`}
+                        title={headerSizeLabel.title || undefined}
+                      >{headerSizeLabel.text}</span>
                     </div>
-                    <span
-                      className={`legend-val ${headerSizeLabel.partial ? 'partial' : ''}`}
-                      title={headerSizeLabel.title || undefined}
-                    >{headerSizeLabel.text}</span>
-                  </div>
+                  )}
                   {headerLocalBytes > 0 && (
                     <div className="legend-row static legend-local-total">
                       <div className="legend-left">

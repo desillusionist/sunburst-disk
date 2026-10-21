@@ -11,7 +11,10 @@ import pkg from '../package.json';
 import App from './App';
 
 vi.mock('./components/SunburstChart', () => ({
-  default: () => <div data-testid="sunburst-chart" />
+  default: (props) => {
+    globalThis.__sunburstProps = props;
+    return <div data-testid="sunburst-chart" />;
+  }
 }));
 
 const PROVIDER_PATH = '/Users/x/Library/CloudStorage/GoogleDrive-a';
@@ -157,6 +160,7 @@ beforeEach(() => {
   // is interactive.
   window.localStorage.setItem('sunburst-disk.onboarding-version', pkg.version);
   window.electronAPI = buildElectronAPI();
+  globalThis.__sunburstProps = null;
 });
 
 async function openCloudView(user) {
@@ -250,6 +254,31 @@ describe('cloud view flow', () => {
     await user.click(screen.getByRole('checkbox', { name: /available online/i }));
     await waitFor(() => expect(screen.queryByText('My Drive')).toBeNull());
     expect(screen.getByText('Shared drives')).toBeTruthy();
+  });
+
+  it('sizes the sunburst and its hub by on-this-Mac bytes when "available offline" is active', async () => {
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    // Unfiltered, the chart is driven by cloud sizes (My Drive = 300 GB).
+    await waitFor(() => expect(globalThis.__sunburstProps?.data?.children?.length).toBe(2));
+    expect(globalThis.__sunburstProps.data.children.find(child => child.name === 'My Drive').size)
+      .toBe(300_000_000_000);
+
+    // "Available offline" keeps only My Drive and must size it by localBytes
+    // (2 GB), not its 300 GB cloud size.
+    await user.click(screen.getByRole('button', { name: /sort and filter/i }));
+    await user.click(await screen.findByRole('checkbox', { name: /available offline/i }));
+
+    await waitFor(() => expect(globalThis.__sunburstProps?.data?.children?.length).toBe(1));
+    const [only] = globalThis.__sunburstProps.data.children;
+    expect(only.name).toBe('My Drive');
+    expect(only.size).toBe(2_000_000_000);
+    // The hub is the offline total too -- not the 300 GB cloud total. `centerValue`
+    // and `centerUnit` are the two halves of formatBytes().
+    expect(globalThis.__sunburstProps.centerValue).toBe('2.0');
+    expect(globalThis.__sunburstProps.centerUnit).toBe('GB');
   });
 
   it('keeps cloud items out of the local Collector but stages them in the cloud basket', async () => {
@@ -544,5 +573,20 @@ describe('cloud view flow', () => {
       expect(screen.getByText('sub').closest('.legend-row').textContent).toContain('5.0 GB');
     });
     expect(screen.queryByRole('button', { name: /calculate exact size/i })).toBeNull();
+  });
+
+  it('shows a loading spinner on the home screen while the drive list is enumerated', async () => {
+    let resolveDrives;
+    window.electronAPI.getDrives = vi.fn(() => new Promise(resolve => { resolveDrives = resolve; }));
+
+    render(<App />);
+
+    // An obvious, announced spinner beats an empty screen while the native drive
+    // enumeration (slow with many mounted volumes) is still running.
+    const spinner = await screen.findByRole('status');
+    expect(spinner.textContent).toMatch(/checking connected disks/i);
+
+    resolveDrives({ drives: [], userHome: '/Users/x' });
+    await waitFor(() => expect(screen.queryByText(/checking connected disks/i)).toBeNull());
   });
 });
