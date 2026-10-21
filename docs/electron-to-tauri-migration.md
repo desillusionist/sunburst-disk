@@ -779,6 +779,16 @@ Everything that remains is optional:
   built: if pursued it must be an explicit, time-boxed "Undo last Move to Trash"
   tied to the last batch (never a global ⌘Z), capturing `originalPath ->
   trashedURL` per item and reporting partial-restore failures.
+- **r42** — Cloud “available offline” sizing and a home-screen loading state
+  (0.4.2).
+  - **Offline sizing.** With `cloudOffline` active, the display tree
+    (`buildDisplayNode` / `buildShallowDisplayNode`) sizes each cloud node by
+    `localBytes`, so the sunburst slices, centre hub, legend rows and header all
+    describe bytes on this Mac. Restricted to `cloudManaged` nodes, and the
+    availability flags are cleared when leaving the cloud view, so a stale flag
+    cannot filter or re-size a local scan.
+  - **Drive enumeration spinner.** The home screen shows a themed, announced
+    spinner while the native drive list is being enumerated.
 
 ## Terminal security model
 

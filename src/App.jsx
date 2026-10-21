@@ -919,6 +919,10 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.4.2': [
+    'Cloud view: with “Available Offline” active, the sunburst now sizes its slices and centre by the bytes actually stored on this Mac, instead of keeping the cloud sizes — so the chart matches the filter.',
+    'The home screen shows a spinner while it enumerates the connected disks, which can take a moment when many volumes are mounted.'
+  ],
   '0.4.1': [
     'Every cloud-trash label — the button, the confirmation, the success message and the recovery note — now follows the provider you are viewing, and names the right place: “Google Drive Trash”, or iCloud’s “Recently Deleted”. “Open Google Drive Trash” targets the account you actually scanned rather than a fixed account slot.',
     'Items staged in the cloud basket can be un-staged with ⌘Z — a local list undo that only edits the basket and never trashes or restores anything.'
