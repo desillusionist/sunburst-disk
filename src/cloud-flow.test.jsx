@@ -132,6 +132,15 @@ function buildElectronAPI() {
       failed: 0
     })),
     openExternalUrl: vi.fn(async () => ({ ok: true })),
+    terminalRunSafe: vi.fn(async () => ({ ok: true, stdout: '', stderr: '', error: '' })),
+    terminalAuthorizeAdmin: vi.fn(async () => ({ ok: false, error: 'not available in tests' })),
+    terminalRevokeAdmin: vi.fn(async () => ({ ok: true })),
+    listDirectory: vi.fn(async (dirPath) => ({
+      ok: true,
+      path: dirPath,
+      entries: [{ name: 'Applications', isDir: true }, { name: 'Archive', isDir: true }],
+      truncated: false
+    })),
     revealInFinder: vi.fn(async () => ({})),
     inspectItem: vi.fn(async () => ({ metadata: null })),
     inspectItems: vi.fn(async () => ({})),
@@ -588,5 +597,185 @@ describe('cloud view flow', () => {
 
     resolveDrives({ drives: [], userHome: '/Users/x' });
     await waitFor(() => expect(screen.queryByText(/checking connected disks/i)).toBeNull());
+  });
+
+  it('completes terminal commands, paths and flags with Tab (never runs them)', async () => {
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    await user.click(document.querySelector('.terminal-debug-toggle'));
+    const input = await screen.findByRole('combobox', { name: /terminal command/i });
+    await user.clear(input);
+
+    // Path completion against the loaded tree (the cloud root's children).
+    await user.type(input, 'ls M');
+    expect(await screen.findByRole('listbox', { name: /command completions/i })).toBeTruthy();
+    await user.keyboard('{Tab}');
+    await waitFor(() => expect(input.value).toBe('ls "My Drive/"'));
+
+    // Command-word completion in the first token.
+    await user.clear(input);
+    await user.type(input, 'l');
+    await user.keyboard('{Tab}');
+    await waitFor(() => expect(input.value).toBe('ls'));
+
+    // Flag completion for a known command. Tab only edits the input; the command
+    // is not executed (there is no terminalRunSafe mock, and the value persists).
+    await user.clear(input);
+    await user.type(input, 'ls -');
+    await user.keyboard('{Tab}');
+    await waitFor(() => expect(input.value).toBe('ls -a'));
+  });
+
+  it('ArrowRight accepts the highlighted suggestion and ⌘Z undoes it', async () => {
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    await user.click(document.querySelector('.terminal-debug-toggle'));
+    const input = await screen.findByRole('combobox', { name: /terminal command/i });
+    await user.clear(input);
+
+    // Right after the command word the dropdown lists that command's options as
+    // well as the folder's contents, so paths and flags share one navigable list.
+    await user.type(input, 'ls ');
+    const list = await screen.findByRole('listbox', { name: /command completions/i });
+    await waitFor(() => expect(list.textContent).toContain('-a'));
+    expect(list.textContent).toContain('Shared drives');
+
+    // Narrow to a folder. → and ← are cursor navigation only: they must never
+    // insert a prediction (only Tab does that).
+    await user.type(input, 'Sh');
+    await screen.findByRole('listbox', { name: /command completions/i });
+    await user.keyboard('{ArrowRight}');
+    await waitFor(() => expect(input.value).toBe('ls Sh'));
+    await user.keyboard('{ArrowLeft}{ArrowLeft}');
+    await waitFor(() => expect(input.value).toBe('ls Sh'));
+
+    // Tab accepts the highlighted entry; a name with a space is quoted so the
+    // allowlist (and the shell) still see a single argument.
+    await user.keyboard('{Tab}');
+    await waitFor(() => expect(input.value).toBe('ls "Shared drives/"'));
+
+    // ⌘Z removes exactly the predictive insertion.
+    await user.keyboard('{Meta>}z{/Meta}');
+    await waitFor(() => expect(input.value).toBe('ls Sh'));
+  });
+
+  it('Escape collapses the prediction list but leaves the terminal open', async () => {
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    await user.click(document.querySelector('.terminal-debug-toggle'));
+    const input = await screen.findByRole('combobox', { name: /terminal command/i });
+    await user.clear(input);
+
+    await user.type(input, 'ls M');
+    await screen.findByRole('listbox', { name: /command completions/i });
+
+    // Escape belongs to the dropdown first: it must not close the drawer.
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('listbox', { name: /command completions/i })).toBeNull());
+    expect(screen.getByRole('combobox', { name: /terminal command/i })).toBe(input);
+
+    // A second Escape (with the list already collapsed) closes the terminal.
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('combobox', { name: /terminal command/i })).toBeNull());
+  });
+
+  it('offers destination suggestions outside the loaded tree', async () => {
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    await user.click(document.querySelector('.terminal-debug-toggle'));
+    const input = await screen.findByRole('combobox', { name: /terminal command/i });
+    await user.clear(input);
+
+    await user.type(input, 'mv -- a /Volumes/Ext/Ap');
+    const list = await screen.findByRole('listbox', { name: /command completions/i });
+    await waitFor(() => expect(list.textContent).toContain('Applications'));
+    await user.keyboard('{Tab}');
+    await waitFor(() => expect(input.value).toBe('mv -- a /Volumes/Ext/Applications/'));
+  });
+
+  it('keeps the scrollback and only clears it on an explicit clear', async () => {
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    await user.click(document.querySelector('.terminal-debug-toggle'));
+    const input = await screen.findByRole('combobox', { name: /terminal command/i });
+    await user.clear(input);
+    const output = () => document.querySelector('.terminal-output').textContent;
+
+    await user.type(input, 'pwd');
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(output()).toContain('$ pwd'));
+
+    // A second run is appended, not a replacement: the pane scrolls back.
+    await user.type(input, 'df -h');
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(output()).toContain('$ df -h'));
+    expect(output()).toContain('$ pwd');
+
+    // Only the explicit `clear` empties it.
+    await user.type(input, 'clear');
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(output()).toBe(''));
+  });
+
+  it('expands the Terminal drawer to fill the panel and restores it', async () => {
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    await user.click(document.querySelector('.terminal-debug-toggle'));
+    const expand = await screen.findByRole('button', { name: /expand the terminal to fill the panel/i });
+    await user.click(expand);
+
+    const drawer = document.querySelector('.terminal-drawer');
+    expect(drawer.className).toContain('terminal-expanded');
+    expect(drawer.style.width).toBe('100%');
+
+    // The control is a toggle: it restores the floating size.
+    await user.click(screen.getByRole('button', { name: /restore the terminal size/i }));
+    await waitFor(() => expect(document.querySelector('.terminal-drawer').className).not.toContain('terminal-expanded'));
+  });
+
+  it('reports a silent success instead of an ambiguous empty result', async () => {
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    await user.click(document.querySelector('.terminal-debug-toggle'));
+    const input = await screen.findByRole('combobox', { name: /terminal command/i });
+    await user.clear(input);
+    await user.type(input, 'pwd');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => expect(window.electronAPI.terminalRunSafe).toHaveBeenCalled());
+    // `mv`/`cp`/`touch` print nothing on success; that must not look like a no-op.
+    await waitFor(() => expect(document.querySelector('.terminal-output').textContent).toContain('✓ done'));
+  });
+
+  it('opens the macOS password prompt for an admin command while locked', async () => {
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    await user.click(document.querySelector('.terminal-debug-toggle'));
+    const input = await screen.findByRole('combobox', { name: /terminal command/i });
+    await user.clear(input);
+    await user.type(input, 'mv -- a b');
+    await user.keyboard('{Enter}');
+
+    // The password belongs in the admin prompt, not the command field; the
+    // command is kept for the post-unlock run and nothing is executed yet.
+    expect(await screen.findByLabelText(/administrator password/i)).toBeTruthy();
+    expect(input.value).toBe('mv -- a b');
+    expect(window.electronAPI.terminalRunSafe).not.toHaveBeenCalled();
   });
 });

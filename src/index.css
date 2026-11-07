@@ -1568,6 +1568,29 @@ body {
 /* ── Scan Screen ──────────────────────────────────────────────────────────── */
 .terminal-close { margin-left: auto; border: 0; background: transparent; color: #8f97a5; font-size: 16px; cursor: pointer; }
 .terminal-close:hover { color: #fff; }
+.terminal-header-actions { margin-left: auto; display: flex; align-items: center; gap: 5px; }
+.terminal-expand {
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #8f97a5;
+  cursor: pointer;
+}
+.terminal-expand:hover { color: #fff; background: rgba(148,163,184,.14); }
+.terminal-drawer.terminal-expanded {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  resize: none;
+}
+.theme-matrix .terminal-expand { color: var(--matrix-text-dim); }
+.theme-matrix .terminal-expand:hover { color: var(--matrix-text-bright); background: rgba(57,255,102,.12); }
 .terminal-output {
   min-height: 48px;
   max-height: 150px;
@@ -1606,6 +1629,82 @@ body {
 .theme-matrix .terminal-command-input { border-color: rgba(57,255,102,.35); background: #020703; color: var(--matrix-text); }
 .theme-matrix .terminal-run-btn { border-color: var(--matrix-line); background: var(--matrix-panel-soft); color: var(--matrix-text); }
 .theme-matrix .terminal-drawer-note { color: var(--matrix-text-dim); }
+
+/* ── Terminal predictive typing ───────────────────────────────────────────── */
+.terminal-command-field { position: relative; flex: 1; min-width: 0; display: flex; }
+.terminal-command-ghost {
+  position: absolute;
+  inset: 1px;
+  display: flex;
+  align-items: center;
+  padding: 0 7px;
+  overflow: hidden;
+  pointer-events: none;
+  white-space: pre;
+  font: 11px SFMono-Regular, Menlo, monospace;
+  color: #e1e4e8;
+}
+.terminal-ghost-suffix { color: #6b7280; }
+/* Transparent text so the mirror shows the typed text plus the dim prediction,
+   while the native caret stays visible above it. */
+.terminal-command-input.has-ghost {
+  position: relative;
+  z-index: 1;
+  color: transparent;
+  caret-color: #e1e4e8;
+  background: transparent;
+}
+.terminal-suggestions {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 5px);
+  z-index: 20;
+  max-height: 168px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid #3a3f4a;
+  border-radius: 6px;
+  background: #14171c;
+  box-shadow: 0 10px 24px rgba(0,0,0,.55);
+}
+.terminal-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #cbd5e1;
+  font: 10px SFMono-Regular, Menlo, monospace;
+  text-align: left;
+  cursor: pointer;
+}
+.terminal-suggestion.active { background: rgba(148,163,184,.16); color: #fff; }
+.terminal-suggestion-kind { flex: 0 0 auto; width: 9px; color: #64748b; text-align: center; }
+.terminal-suggestion-kind.directory { color: #60a5fa; }
+.terminal-suggestion-kind.command { color: #86efac; }
+.terminal-suggestion-kind.flag { color: #f0c36b; }
+.terminal-suggestion-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-suggestion-detail { flex: 0 0 auto; color: #5b6472; font-size: 9px; }
+
+.theme-matrix .terminal-suggestions {
+  border-color: var(--matrix-line);
+  background: #020703;
+  box-shadow: 0 0 18px rgba(57,255,102,.16);
+}
+.theme-matrix .terminal-suggestion { color: var(--matrix-text); }
+.theme-matrix .terminal-suggestion.active { background: rgba(57,255,102,.14); color: #d3ffd8; }
+.theme-matrix .terminal-suggestion-kind { color: var(--matrix-text-dim); }
+.theme-matrix .terminal-suggestion-kind.directory { color: var(--matrix-line-bright); }
+.theme-matrix .terminal-suggestion-kind.command { color: #7aff90; }
+.theme-matrix .terminal-suggestion-kind.flag { color: #f0d66a; }
+.theme-matrix .terminal-suggestion-detail { color: var(--matrix-text-dim); }
+.theme-matrix .terminal-command-ghost { color: var(--matrix-text); }
+.theme-matrix .terminal-ghost-suffix { color: var(--matrix-text-dim); }
+.theme-matrix .terminal-command-input.has-ghost { caret-color: var(--matrix-text); background: transparent; }
 .theme-matrix .terminal-readwrite-badge,
 .theme-matrix .terminal-lock-btn { color: #f0d66a; }
 .theme-matrix .terminal-admin-link { color: var(--matrix-text); }
@@ -1763,6 +1862,47 @@ body {
 .theme-matrix .scan-complete-toast { border-color: var(--matrix-line-bright); background: rgba(2,7,3,.96); box-shadow: 0 0 14px rgba(57,255,102,.2); color: var(--matrix-text); }
 .theme-matrix .scan-complete-toast strong { color: #c7ffd0; text-shadow: 0 0 5px rgba(57,255,102,.35); }
 .theme-matrix .scan-complete-toast span { color: var(--matrix-text-dim); }
+
+/* Move & Symlink: a short-lived, undoable confirmation. */
+.move-symlink-toast {
+  position: absolute;
+  top: 52px;
+  left: 50%;
+  z-index: 191;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: min(640px, calc(100% - 28px));
+  padding: 7px 11px;
+  transform: translateX(-50%);
+  border: 1px solid #526071;
+  border-radius: 6px;
+  background: rgba(28,33,41,.97);
+  box-shadow: 0 8px 22px rgba(0,0,0,.3);
+  color: #d1d5db;
+  font-size: 10px;
+}
+.move-symlink-toast strong { color: #fff; font-size: 10px; }
+.move-symlink-toast span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9aa0ac; }
+.move-symlink-undo,
+.move-symlink-dismiss {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid #475569;
+  border-radius: 4px;
+  background: transparent;
+  color: #e2e8f0;
+  font: inherit;
+  cursor: pointer;
+}
+.move-symlink-undo:hover,
+.move-symlink-dismiss:hover { border-color: #64748b; background: rgba(148,163,184,.14); }
+.move-symlink-dismiss { padding: 2px 6px; }
+.theme-matrix .move-symlink-toast { border-color: var(--matrix-line-bright); background: rgba(2,7,3,.97); box-shadow: 0 0 14px rgba(57,255,102,.2); color: var(--matrix-text); }
+.theme-matrix .move-symlink-toast strong { color: #c7ffd0; text-shadow: 0 0 5px rgba(57,255,102,.35); }
+.theme-matrix .move-symlink-toast span { color: var(--matrix-text-dim); }
+.theme-matrix .move-symlink-undo,
+.theme-matrix .move-symlink-dismiss { border-color: var(--matrix-line); color: var(--matrix-text); }
 
 .update-toast {
   position: fixed;

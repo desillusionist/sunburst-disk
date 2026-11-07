@@ -789,20 +789,104 @@ Everything that remains is optional:
     cannot filter or re-size a local scan.
   - **Drive enumeration spinner.** The home screen shows a themed, announced
     spinner while the native drive list is being enumerated.
+- **r43** — Terminal predictive typing and a wider admin-write scope (0.4.3).
+  - **Predictive typing.** `src/lib/terminalComplete.js` is a pure completion
+    engine over the loaded scan tree, a per-directory listing cache and static
+    command/flag data: path completion (including an empty argument token, so a
+    destination/target folder can be browsed), program completion, per-command
+    flag completion and history prediction. The drawer shows an inline ghost
+    (mirror overlay) plus a keyboard-driven dropdown of up to 50 entries
+    (directories first, then name); ↑/↓ navigate and scroll the active item into
+    view, Tab/→ accept the *highlighted* item, and Esc dismisses the list
+    *without* closing the drawer. Tab/→ never execute a command, and ⌘Z undoes
+    the last edit or predictive insertion (a local undo stack, not the app
+    shortcut).
+  - **Command options in the list.** An empty argument token also lists that
+    command's options (`ls -a -A -l …`, `du`, `df`), so flags are discoverable
+    without typing a dash first; flags already used on the line are omitted, and
+    commands without known options list paths only.
+  - **Outside-the-tree paths.** A read-only `list_directory` command (readdir +
+    entry types only -- never reads contents, never materialises a placeholder)
+    backs completion for paths the scan tree does not contain, debounced and
+    cached per directory.
+  - **Live reconciliation through firmlinks.** macOS delivers firmlink events in
+    the presentation form (`/Applications/x`) even when the change was made via
+    the Data volume, while a scan may hold either form — and `notify` drops every
+    event that is not under a watched path. The watcher now attaches its stream to
+    every existing presentation of the open folder (`/Applications` *and*
+    `/System/Volumes/Data/Applications`). Previously an admin `mv` inside such a
+    folder left the content tree stale while the badge still read “Live”.
+  - **Wider admin scope.** `touch`, `mkdir -p`, `rm`, `mv`, `cp -R` and `ln -s`
+    may target paths outside the current folder, but every target must stay on a
+    mounted drive and outside the protected system roots (including the top-level
+    firmlink aliases). The `--` separator is now optional (a target starting with
+    `-` is still rejected); symlinks in the existing prefix are resolved before
+    the check; and a refusal names the reason (protected path / off-drive) rather
+    than only the generic allowlist message.
+  - **Password prompt.** Submitting an admin-shaped command while locked opens the
+    macOS password prompt (the command is kept and runs after unlock). If sudo's
+    cached credential expires, `terminal_run_safe` returns `needsAdmin`, drops the
+    in-app authorization, and the renderer re-prompts instead of surfacing the raw
+    `sudo: a password is required` error. The password is never stored. A command
+    that succeeds without printing anything reports `✓ done` rather than an empty
+    result, so `mv`/`cp`/`touch` cannot be mistaken for a no-op.
+  - **Reusable sudo credential.** `sudo -S -k -v` only *validates* a password:
+    since sudo 1.9.10, `-k` combined with an option that may require a password
+    makes sudo ignore cached credentials and skip updating them, so the later
+    `sudo -n` calls found no ticket and every admin command looped on
+    “a password is required”. Unlocking now drops any cached ticket (`sudo -k`),
+    authenticates with a plain `sudo -S -v` (which does update the cache) and
+    proves the ticket with `sudo -n -v` before reporting success.
+- **r44** — Terminal refinements and “Move & Symlink” (0.4.3).
+  - **Arrows are cursor navigation.** Only Tab inserts the highlighted prediction;
+    →/← never insert, so moving the caret through a line can no longer replace it.
+  - **Scrollback, not a single result.** Results accumulate in a scrollable pane
+    (bounded to 200k characters) and are pinned to the newest line; only an
+    explicit `clear` empties it. The header also has a “fill the panel” toggle that
+    expands the drawer over the whole content area.
+  - **Quoted paths.** A prediction for a name containing a space is inserted
+    already quoted (`"My Documents/"`), and the admin refusal explains that a
+    path with spaces must be quoted — unquoted, a shell reads it as several
+    arguments, exactly as `mv` would.
+  - **Read-only commands never use sudo.** `terminal_run_safe` derived
+    `use_admin` from the unlocked session alone, so `ls` ran under `sudo -n` and,
+    once the ticket expired, failed with “a password is required”, dropped the
+    admin session and opened the password prompt. `should_use_admin()` now also
+    requires the command to be a write.
+  - **History persists.** Command lines are stored in `localStorage`
+    (`sunburst-disk.terminal-history`, bounded to the last 100) and restored on
+    launch. Output and passwords are never stored.
+  - **A write refreshes the open folder.** After a successful admin write the
+    open folder is rescanned and the on-demand completion cache is dropped, so the
+    content tree, the sunburst and the prediction list reflect the change at once;
+    the FSEvents watcher remains the background path.
+  - **Move & Symlink.** From the chart's and the content tree's context menu:
+    choose a destination in the native folder panel, confirm, and the item moves
+    there with a symlink left at its old path (`move_and_symlink`). Undo
+    (`undo_move_and_symlink`) acts only while that symlink still points at the
+    moved item, and is offered as a short-lived toast tied to the last move. Both
+    directions use `/bin/mv -n` (so a collision never clobbers), stay on mounted
+    drives outside the protected roots, and use an unlocked administrator session
+    when the move would otherwise be refused for permissions. Nothing reads file
+    contents or materialises a cloud placeholder.
 
 ## Terminal security model
 
-The allowlists are compiled with the `regex` crate from the *same* pattern
-sources Electron used (`SAFE_TERMINAL_COMMANDS`, `SAFE_ADMIN_COMMANDS`), so the
-permitted command set is unchanged:
+The allowlists are compiled with the `regex` crate. The read-only set is
+unchanged; admin writes now also accept the plain (no `--`) forms:
 
 - Read-only: `pwd`, `df -h`, `ls`, `ls -la`, `ls -lah`, `du -sh` (optionally
   with a single unquoted argument containing no shell metacharacters).
-- Admin writes require a validated password then run under `sudo -n /bin/zsh -lc`:
-  `touch`, `mkdir -p`, `rm [-i] --`, `mv --`, `cp -R --`, `ln -s --`, each with
-  every target resolving inside the current folder and outside protected roots.
-- The working directory itself cannot be `/`, `/System/Volumes/Data`, or a
-  protected root; targets are lexically resolved (so `..` escapes are rejected)
-  and `~` is expanded before the containment check.
+- Admin writes require a validated password (which leaves a reusable sudo
+  credential behind) then run under `sudo -n /bin/zsh -lc`:
+  `touch`, `mkdir -p`, `rm [-i] [--]`, `mv [--]`, `cp -R [--]`, `ln -s [--]`.
+  Targets may leave the current folder (the working directory only anchors
+  relative paths) but must stay on a mounted drive and outside the protected
+  system roots.
+- Protected targets are refused: `/System`, `/System/Volumes/Data/{System,usr,
+  private,…}` and the top-level firmlink aliases (`/usr`, `/private`, `/etc`,
+  `/var`, `/tmp`, `/bin`, `/sbin`, `/Library`, …). The path is lexically resolved
+  (`..` collapsed, `~` expanded) and also checked after resolving symlinks in its
+  existing prefix, so a symlink cannot point at a protected location.
 - `sudo`, arbitrary shell and unlisted flags remain blocked. Covered by unit
   tests in `src/terminal.rs`.

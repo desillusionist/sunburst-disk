@@ -347,17 +347,26 @@ pub fn set_window_layout(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn choose_folder(app: AppHandle) -> ChooseFolderResponse {
+pub async fn choose_folder(
+    app: AppHandle,
+    title: Option<String>,
+    start_path: Option<String>,
+) -> ChooseFolderResponse {
     // The native picker must run on the main thread, so use the callback form
     // and bridge it back with a oneshot channel.
     let (sender, receiver) = tokio::sync::oneshot::channel::<Option<PathBuf>>();
-    app.dialog()
+    let builder = app
+        .dialog()
         .file()
-        .set_title("Choose a folder to scan")
-        .pick_folder(move |selection| {
-            let resolved = selection.and_then(|file_path| file_path.into_path().ok());
-            let _ = sender.send(resolved);
-        });
+        .set_title(title.unwrap_or_else(|| "Choose a folder to scan".to_string()));
+    let builder = match start_path.filter(|value| value.starts_with('/')) {
+        Some(start) => builder.set_directory(start),
+        None => builder,
+    };
+    builder.pick_folder(move |selection| {
+        let resolved = selection.and_then(|file_path| file_path.into_path().ok());
+        let _ = sender.send(resolved);
+    });
 
     let Some(folder) = receiver.await.ok().flatten() else {
         return ChooseFolderResponse {
@@ -1369,11 +1378,13 @@ pub async fn terminal_run_safe(
 
     let read_only = terminal::read_only_allowed(&trimmed);
     let admin_write = terminal::admin_operation_allowed(&trimmed, &working_directory);
-    let use_admin = admin_mode.unwrap_or(false) && admin_authorized;
+    let use_admin =
+        terminal::should_use_admin(admin_mode.unwrap_or(false), admin_authorized, read_only);
 
     if !read_only && !(use_admin && admin_write) {
         let error = if use_admin {
-            terminal::admin_denied_message()
+            terminal::admin_denial_reason(&trimmed, &working_directory)
+                .unwrap_or_else(terminal::admin_denied_message)
         } else {
             terminal::readonly_denied_message()
         };
@@ -1389,10 +1400,87 @@ pub async fn terminal_run_safe(
     })
     .await
     {
-        Ok(result) => serde_json::to_value(result)
-            .unwrap_or_else(|_| json!({ "ok": false, "error": "Command failed" })),
+        Ok(result) => {
+            // The cached sudo credential expired: drop the in-app authorization so
+            // the renderer prompts again instead of looping on `sudo -n`.
+            if result.needs_admin == Some(true) {
+                app.state::<terminal::TerminalState>().set_admin(false);
+            }
+            serde_json::to_value(result)
+                .unwrap_or_else(|_| json!({ "ok": false, "error": "Command failed" }))
+        }
         Err(_) => json!({ "ok": false, "error": "Command failed" }),
     }
+}
+
+const MAX_DIRECTORY_LISTING: usize = 2000;
+
+/// Names and types only -- never reads file contents and never materialises a
+/// cloud placeholder. Used solely for Terminal path completion.
+fn directory_listing(path: &str) -> serde_json::Value {
+    let resolved = capacity::resolve_path(path);
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    let mut truncated = false;
+    match std::fs::read_dir(&resolved) {
+        Ok(read_dir) => {
+            for entry in read_dir.flatten() {
+                if entries.len() >= MAX_DIRECTORY_LISTING {
+                    truncated = true;
+                    break;
+                }
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                entries.push(json!({
+                    "name": entry.file_name().to_string_lossy(),
+                    "isDir": file_type.is_dir(),
+                    "isSymlink": file_type.is_symlink(),
+                }));
+            }
+        }
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "path": resolved.to_string_lossy(),
+                "entries": [],
+                "truncated": false,
+                "error": error.to_string(),
+            });
+        }
+    }
+    json!({
+        "ok": true,
+        "path": resolved.to_string_lossy(),
+        "entries": entries,
+        "truncated": truncated,
+    })
+}
+
+/// Read-only directory listing for Terminal path completion.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn list_directory(dir_path: Option<String>) -> serde_json::Value {
+    let path = dir_path.unwrap_or_default();
+    if !is_filesystem_path(&path) {
+        return json!({
+            "ok": false,
+            "path": path,
+            "entries": [],
+            "truncated": false,
+            "error": "Invalid filesystem path",
+        });
+    }
+    let error_path = path.clone();
+    tauri::async_runtime::spawn_blocking(move || directory_listing(&path))
+        .await
+        .unwrap_or_else(|_| {
+            json!({
+                "ok": false,
+                "path": error_path,
+                "entries": [],
+                "truncated": false,
+                "error": "Directory listing failed",
+            })
+        })
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1588,6 +1676,30 @@ mod tests {
         assert!(!is_protected_system_path("/Users/me/Documents"));
         assert!(!is_protected_system_path("/System/Volumes/Data/Users/me"));
         assert!(!is_protected_system_path("/Applications/Safari.app"));
+    }
+
+    #[test]
+    fn directory_listing_is_read_only_and_reports_types() {
+        let base = std::env::temp_dir().join(format!("sunburst-dirlist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("child")).expect("fixture dir");
+        std::fs::write(base.join("file.txt"), b"x").expect("fixture file");
+
+        let listing = directory_listing(&base.to_string_lossy());
+        assert_eq!(listing["ok"], true);
+        let entries = listing["entries"].as_array().expect("entries array");
+        let by_name = |name: &str| entries.iter().find(|entry| entry["name"] == name).cloned();
+        assert_eq!(by_name("child").expect("child")["isDir"], true);
+        assert_eq!(by_name("file.txt").expect("file")["isDir"], false);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn directory_listing_reports_errors() {
+        let listing = directory_listing("/definitely/not/a/real/path");
+        assert_eq!(listing["ok"], false);
+        assert!(listing["error"].as_str().is_some());
     }
 
     #[test]

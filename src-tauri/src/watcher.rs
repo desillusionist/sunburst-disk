@@ -131,6 +131,20 @@ fn map_fsevent_path_to_root(event_path: &str, canonical_root: &str) -> Option<St
         .find(|candidate| is_within_root(candidate, canonical_root))
 }
 
+/// Every *other* existing presentation of `root` that must be watched too.
+///
+/// macOS delivers firmlink events in the presentation form (`/Applications/x`)
+/// even when the change was made through the Data volume, and `notify` drops any
+/// event that is not under a watched path. Scanning can therefore hand us either
+/// form (`/Applications` or `/System/Volumes/Data/Applications`), so the stream
+/// has to be attached to both.
+fn watch_roots_for(root: &str, is_dir: impl Fn(&str) -> bool) -> Vec<String> {
+    fsevent_path_candidates(root)
+        .into_iter()
+        .filter(|candidate| candidate != root && is_dir(candidate))
+        .collect()
+}
+
 /// `(content, recovery, metadata_only)` for a notify event kind.
 fn classify(kind: &EventKind) -> (bool, bool, bool) {
     match kind {
@@ -365,6 +379,19 @@ pub fn start(app: &AppHandle, state: &FolderWatch, folder_path: &str) -> WatchRe
             ..Default::default()
         };
     }
+    // Attach the same stream to the other presentation of the root (firmlink vs.
+    // Data volume). Best effort: a missing or unwatchable alias must not fail the
+    // watch, because the canonical root above is already attached.
+    let mut roots = watch_roots_for(&canonical_root, |candidate| Path::new(candidate).is_dir());
+    for candidate in watch_roots_for(&display_root, |candidate| Path::new(candidate).is_dir()) {
+        push_unique(&mut roots, candidate);
+    }
+    for alias in roots {
+        if alias == canonical_root {
+            continue;
+        }
+        let _ = watcher.watch(Path::new(&alias), RecursiveMode::Recursive);
+    }
 
     let root_identity = file_identity(&canonical_root);
     let stop = Arc::new(AtomicBool::new(false));
@@ -571,6 +598,28 @@ mod tests {
             (false, false, true)
         );
         assert_eq!(classify(&EventKind::Any), (false, true, false));
+    }
+
+    #[test]
+    fn watches_both_presentations_of_a_firmlink_root() {
+        // FSEvents reports firmlink paths, while a scan may use the Data form (or
+        // the reverse), and `notify` drops events outside every watched path.
+        assert_eq!(
+            watch_roots_for("/System/Volumes/Data/Applications", |_| true),
+            vec!["/Applications".to_string()]
+        );
+        assert_eq!(
+            watch_roots_for("/Applications", |_| true),
+            vec!["/System/Volumes/Data/Applications".to_string()]
+        );
+        // A path with no second presentation watches nothing extra.
+        assert!(
+            watch_roots_for("/Volumes/exAPFS/projects", |candidate| candidate
+                != "/System/Volumes/Data/Volumes/exAPFS/projects")
+            .is_empty()
+        );
+        // The alias is skipped when it does not exist on disk.
+        assert!(watch_roots_for("/System/Volumes/Data/Applications", |_| false).is_empty());
     }
 
     #[test]

@@ -43,7 +43,12 @@ if (tauri?.core?.invoke) {
       invoke('scan_subdir', { targetPath, includePackageContents, cloud, requestId, exact }),
     setWindowLayout: (layout, driveCount = 0) =>
       invoke('set_window_layout', { layout, driveCount }),
-    chooseFolder: () => invoke('choose_folder'),
+    chooseFolder: (title = null, startPath = null) =>
+      invoke('choose_folder', { title, startPath }),
+    moveAndSymlink: (itemPath, destinationDir) =>
+      invoke('move_and_symlink', { itemPath, destinationDir }),
+    undoMoveAndSymlink: (from, to) =>
+      invoke('undo_move_and_symlink', { from, to }),
     deleteItems: items => invoke('delete_items', { items }),
     trashCloudItems: (items, requestId = null) =>
       invoke('trash_cloud_items', { items, requestId }),
@@ -75,6 +80,7 @@ if (tauri?.core?.invoke) {
     revokeHiddenSpace: () => invoke('hidden_space_revoke'),
     terminalRunSafe: (command, cwd, adminMode = false) =>
       invoke('terminal_run_safe', { command, cwd, adminMode }),
+    listDirectory: dirPath => invoke('list_directory', { dirPath }),
     smartCleanPreview: (scope, paths = {}) =>
       invoke('smart_clean_preview', {
         scope,

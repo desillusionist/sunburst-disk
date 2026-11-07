@@ -5,8 +5,22 @@ import DetailsSidebar from './components/DetailsSidebar';
 import DebugDownbar from './components/DebugDownbar';
 import { getRiskInfo, canCollect, canCloudBasket } from './lib/risk';
 import { recomputeAncestorSizes, nodeSizeLabel, isAvailableOffline, isAvailableOnline, googleDriveTrashUrl, cloudProviderLabel, cloudRecoveryCopy } from './lib/cloudTree';
+import { completionFor, historySuggestion } from './lib/terminalComplete';
+import { loadTerminalHistory, saveTerminalHistory, terminalHistoryStorage } from './lib/terminalHistory';
 import { recordPerfEvent, recordPerfInstant } from './debug/perfTelemetry';
 import shortcutGuideText from './Sunburst-Disk-Ask-Siri-Shortcut-Guide.txt?raw';
+
+// The "fit to panel" glyph for the Terminal's expand control.
+function AspectRatioIcon({ size = 13 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M2 4h20v16H2V4zm2 14h16V6H4v12zM8 8h2v2H8v2H6V8h2zm8 8h-2v-2h2v-2h2v4h-2z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
 
 // macOS Finder uses decimal gigabytes (1000^3) for disk and application display:
 function formatBytes(bytes) {
@@ -750,6 +764,10 @@ function buildDisplayNode(
   return value;
 }
 
+// The Terminal keeps a scrollback, so cap it (characters) rather than letting a
+// long session grow without bound.
+const TERMINAL_LOG_LIMIT = 200_000;
+
 const TERMINAL_COMMAND_PRESETS = [
   {
     command: 'pwd',
@@ -803,55 +821,55 @@ const TERMINAL_ADMIN_COMMAND_PRESETS = [
     command: 'touch new-file.txt',
     label: 'touch',
     syntax: 'touch [file]',
-    purpose: 'Create an empty file inside the current folder.',
-    options: 'Use a relative filename or path; the app rejects targets outside the current folder.',
-    examples: 'touch new-file.txt',
-    help: 'Admin-only write helper. Creates an empty file inside the current folder; delete, overwrite scripts and arbitrary shell syntax remain blocked.'
+    purpose: 'Create an empty file on a mounted drive.',
+    options: 'Accepts relative or absolute paths; targets may leave the current folder but must be on a mounted drive and outside protected system roots.',
+    examples: 'touch new-file.txt\ntouch /Users/me/elsewhere.txt',
+    help: 'Admin-only write helper. Creates an empty file on a mounted drive (including outside the current folder); protected system paths, overwrite scripts and arbitrary shell syntax remain blocked.'
   },
   {
     command: 'mkdir -p new-folder',
     label: 'mkdir',
     syntax: 'mkdir -p [folder]',
-    purpose: 'Create a folder, including missing parent folders, inside the current folder.',
-    options: '-p creates missing parents; the app rejects targets outside the current folder.',
-    examples: 'mkdir -p new-folder',
-    help: 'Admin-only write helper. Creates a directory inside the current folder; deletion and arbitrary shell syntax remain blocked.'
+    purpose: 'Create a folder, including missing parents, on a mounted drive.',
+    options: '-p creates missing parents; targets may leave the current folder but must be on a mounted drive and outside protected system roots.',
+    examples: 'mkdir -p new-folder\nmkdir -p /Users/me/new/nested',
+    help: 'Admin-only write helper. Creates a directory on a mounted drive (including outside the current folder); protected system paths and arbitrary shell syntax remain blocked.'
   },
   {
     command: 'rm -- file.txt',
     label: 'rm',
     syntax: 'rm -- [file]',
-    purpose: 'Remove one selected file or folder from the current folder.',
-    options: '-- ends options; the app rejects targets outside the current folder and protected roots.',
+    purpose: 'Remove one file or folder on a mounted drive.',
+    options: '-- ends options; targets may be outside the current folder but must be on a mounted drive; protected system roots are refused.',
     examples: 'rm -- old-file.txt',
-    help: 'Admin-only destructive helper. The app asks for confirmation before running it and blocks protected roots.'
+    help: 'Admin-only destructive helper. The app asks for confirmation before running it and blocks protected system paths.'
   },
   {
     command: 'mv -- source target',
     label: 'mv',
     syntax: 'mv -- [source] [target]',
-    purpose: 'Move or rename an object inside the current folder.',
-    options: '-- ends options; both source and destination must stay inside the current folder.',
+    purpose: 'Move or rename an object on a mounted drive.',
+    options: '-- ends options; source and destination may leave the current folder but must be on a mounted drive and outside protected system roots.',
     examples: 'mv -- draft.txt Archive/draft.txt',
-    help: 'Admin-only move/rename helper. The app asks for confirmation and keeps both paths inside the current folder.'
+    help: 'Admin-only move/rename helper. The app asks for confirmation and keeps both paths on mounted drives.'
   },
   {
     command: 'cp -R -- source target',
     label: 'cp -R',
     syntax: 'cp -R -- [source] [target]',
-    purpose: 'Copy a file or folder inside the current folder.',
-    options: '-R copies directories; -- ends options; both paths remain scoped to the current folder.',
+    purpose: 'Copy a file or folder on a mounted drive.',
+    options: '-R copies directories; -- ends options; both paths may leave the current folder but must be on a mounted drive and outside protected system roots.',
     examples: 'cp -R -- Photos Photos-copy',
-    help: 'Admin-only copy helper. The app asks for confirmation and rejects paths outside the current folder.'
+    help: 'Admin-only copy helper. The app asks for confirmation and keeps both paths on mounted drives and outside protected system roots.'
   },
   {
     command: 'ln -s -- target link-name',
     label: 'ln',
     syntax: 'ln -s -- [target] [link-name]',
-    purpose: 'Create a symbolic link to a file or folder inside the current folder.',
-    options: '-s creates a symbolic link; -- ends options; both target and link name stay scoped to the current folder.',
+    purpose: 'Create a symbolic link on a mounted drive.',
+    options: '-s creates a symbolic link; -- ends options; both paths may leave the current folder but must be on a mounted drive and outside protected system roots.',
     examples: 'ln -s -- Documents Shared-Documents',
-    help: 'Admin-only link helper. Creates a symbolic link without copying the target; the app rejects paths outside the current folder and protected system roots.'
+    help: 'Admin-only link helper. Creates a symbolic link without copying the target; the app asks for confirmation and blocks protected system paths.'
   }
 ];
 
@@ -919,6 +937,11 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.4.3': [
+    'The Terminal pane predicts as you type: paths (including a destination folder outside the scanned tree), command names, each command’s options and past commands. ↑/↓ walk the list — up to 50 entries — Tab inserts the highlighted one, arrows stay cursor navigation, Esc collapses the list, ⌘Z undoes the last insertion, and command history survives a restart. Results now accumulate in a scrollable log, a button expands the pane over the whole area, and names with spaces are inserted already quoted.',
+    'Administrator commands are no longer limited to the current folder: touch, mkdir -p, rm, mv, cp -R and ln -s can target any mounted drive, while protected system paths stay refused. Read-only commands never ask for a password, unlocking keeps a reusable macOS authorization, and a write refreshes the open folder immediately.',
+    'New “Move & Symlink” in the sunburst and content-tree menus: pick a destination in the native folder panel, and the item moves there while a symlink keeps the old path working. You confirm first, and an Undo toast reverses it.'
+  ],
   '0.4.2': [
     'Cloud view: with “Available Offline” active, the sunburst now sizes its slices and centre by the bytes actually stored on this Mac, instead of keeping the cloud sizes — so the chart matches the filter.',
     'The home screen shows a spinner while it enumerates the connected disks, which can take a moment when many volumes are mounted.'
@@ -986,6 +1009,7 @@ const CORE_FEATURES = [
 export default function App() {
   const [viewState, setViewState]           = useState('drives');
   const [drives, setDrives]                 = useState([]);
+  const [userHome, setUserHome]             = useState('');
   // True until the native drive enumeration resolves. With many mounted volumes
   // that call can take a moment, so the home screen shows a spinner meanwhile.
   const [drivesLoading, setDrivesLoading]   = useState(true);
@@ -1059,14 +1083,37 @@ export default function App() {
   const [terminalHelpKey, setTerminalHelpKey] = useState('df -h');
   const [terminalHelperHoverKey, setTerminalHelperHoverKey] = useState(null);
   const [terminalOutput, setTerminalOutput] = useState(null);
+  const [terminalExpanded, setTerminalExpanded] = useState(false);
+  const terminalOutputRef = useRef(null);
   const [terminalBusy, setTerminalBusy] = useState(false);
-  const [terminalHistory, setTerminalHistory] = useState([]);
+  const [terminalHistory, setTerminalHistory] = useState(() => loadTerminalHistory(terminalHistoryStorage()));
   const [terminalHistoryIndex, setTerminalHistoryIndex] = useState(-1);
   const [terminalAdminMode, setTerminalAdminMode] = useState(false);
   const [terminalAdminPassword, setTerminalAdminPassword] = useState('');
   const [terminalAdminPromptOpen, setTerminalAdminPromptOpen] = useState(false);
   const [terminalAdminError, setTerminalAdminError] = useState(null);
+  // An admin command waiting for the password prompt (locked or expired session).
+  const [terminalPendingAdminCommand, setTerminalPendingAdminCommand] = useState(null);
+  // Predictive typing: the cursor drives which token is completed, and the
+  // dropdown/ghost are pure UI over the loaded tree and static command data.
+  const [terminalCursor, setTerminalCursor] = useState(0);
+  const [terminalSuggestionIndex, setTerminalSuggestionIndex] = useState(0);
+  const [terminalSuggestionDismissed, setTerminalSuggestionDismissed] = useState(false);
+  const [terminalInputFocused, setTerminalInputFocused] = useState(false);
+  const terminalInputRef = useRef(null);
+  const terminalGhostRef = useRef(null);
+  const terminalActiveOptionRef = useRef(null);
+  const terminalUndoRef = useRef([]);
+  const terminalLastEditRef = useRef(0);
+  const terminalDirLoadingRef = useRef(new Set());
+  const [terminalDirCache, setTerminalDirCache] = useState({});
+  // Re-run the last command's folder after a write so the tree and chart match
+  // the filesystem without waiting for a watcher event.
+  const [terminalWriteTick, setTerminalWriteTick] = useState(0);
+  const handledTerminalWriteRef = useRef(0);
   const [ejectingDriveKey, setEjectingDriveKey] = useState(null);
+  const [moveSymlinkBusy, setMoveSymlinkBusy] = useState(null);
+  const [moveSymlinkUndo, setMoveSymlinkUndo] = useState(null);
   const [terminalFrame, setTerminalFrame] = useState({ left: 20, top: 20 });
   const [smartCleanOpen, setSmartCleanOpen] = useState(false);
   const [smartCleanLoading, setSmartCleanLoading] = useState(false);
@@ -1825,6 +1872,7 @@ export default function App() {
     try {
       if (window.electronAPI) {
         const data = await window.electronAPI.getDrives();
+        if (data?.userHome) setUserHome(data.userHome);
         if (data?.drives?.length > 0) {
           const startupDrive = data.drives.find(item => item.isStartup) || data.drives[0];
           const snapshotPath = startupDrive?.scanPath || startupDrive?.mount;
@@ -2713,29 +2761,63 @@ export default function App() {
     event.preventDefault();
     const droppedPath = pathFromDataTransfer(event.dataTransfer);
     if (!droppedPath || !droppedPath.startsWith('/') || droppedPath.startsWith('__')) return;
-    setTerminalCommand(current => {
-      const base = current.trim() || 'ls -lah';
-      return `${base} ${quoteTerminalPath(droppedPath)}`;
-    });
+    const base = terminalCommand.trim() || 'ls -lah';
+    const next = `${base} ${quoteTerminalPath(droppedPath)}`;
+    setTerminalCommand(next);
+    setTerminalCursor(next.length);
     setTerminalHistoryIndex(-1);
-  }, []);
+    setTerminalSuggestionDismissed(false);
+  }, [terminalCommand]);
 
   const handleTerminalPathDragOver = useCallback(event => {
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
   }, []);
 
-  const runTerminalCommand = useCallback(async () => {
+  // The pane keeps a scrollback like a real terminal: results accumulate instead
+  // of replacing each other, and only `clear` empties it. Bounded so a long
+  // session cannot grow without limit.
+  const appendTerminalOutput = useCallback(text => {
+    setTerminalOutput(previous => {
+      const next = previous ? `${previous}\n\n${text}` : text;
+      return next.length > TERMINAL_LOG_LIMIT ? next.slice(next.length - TERMINAL_LOG_LIMIT) : next;
+    });
+  }, []);
+
+  const runTerminalCommand = useCallback(async (commandOverride) => {
     if (terminalBusy) return;
-    const enteredCommand = terminalCommand.trim();
+    const enteredCommand = String(commandOverride ?? terminalCommand).trim();
     if (!enteredCommand) return;
-    if (terminalAdminMode && /^(?:rm|mv|cp -R|ln -s)\s/.test(enteredCommand)) {
-      const confirmed = window.confirm(`Run this admin filesystem command?\n\n${enteredCommand}`);
-      if (!confirmed) return;
+    const adminShape = /^(?:touch|mkdir -p|rm|mv|cp -R|ln -s)\s/.test(enteredCommand);
+
+    // Admin writes need an unlocked session. Open the password prompt instead of
+    // sending the command to be rejected by the read-only allowlist.
+    if (adminShape && !terminalAdminMode) {
+      setTerminalPendingAdminCommand(enteredCommand);
+      setTerminalAdminPassword('');
+      setTerminalAdminError('Enter your macOS password to run this admin command.');
+      setTerminalAdminPromptOpen(true);
+      setTerminalSuggestionDismissed(true);
+      return;
     }
+
+    if (terminalAdminMode && adminShape) {
+      const destructive = /^(?:rm|mv|cp -R|ln -s)\s/.test(enteredCommand);
+      // Confirm destructive writes, and any write whose target looks outside the
+      // current folder (absolute, `~`, or `..`). Targets may leave the folder now.
+      const leavesFolder = /(?:^|\s)(?:\/|~|\.\.(?:\/|\s|$))/.test(enteredCommand);
+      if (destructive || leavesFolder) {
+        const confirmed = window.confirm(`Run this admin filesystem command?\n\n${enteredCommand}\n\nTargets outside the current folder are allowed on mounted drives; protected system paths are refused.`);
+        if (!confirmed) return;
+      }
+    }
+
     setTerminalCommand('');
+    setTerminalCursor(0);
     setTerminalHistoryIndex(-1);
-    setTerminalHistory(previous => [...previous, enteredCommand].slice(-100));
+    setTerminalHistory(previous => (previous[previous.length - 1] === enteredCommand
+      ? previous
+      : [...previous, enteredCommand].slice(-100)));
     if (enteredCommand === 'clear') {
       setTerminalOutput('');
       return;
@@ -2747,19 +2829,229 @@ export default function App() {
       : undefined;
     try {
       const result = await window.electronAPI.terminalRunSafe(enteredCommand, cwd, terminalAdminMode);
-      const header = `$ ${result?.command || terminalCommand}${result?.cwd ? `  [${result.cwd}]` : ''}`;
+      if (result?.needsAdmin) {
+        // The cached sudo credential expired. Drop admin mode, keep the command,
+        // and ask for the password again; the effect below re-runs it on unlock.
+        setTerminalAdminMode(false);
+        setTerminalPendingAdminCommand(enteredCommand);
+        setTerminalCommand(enteredCommand);
+        setTerminalCursor(enteredCommand.length);
+        setTerminalAdminPassword('');
+        setTerminalAdminError('Administrator authorization expired. Enter your macOS password again.');
+        setTerminalAdminPromptOpen(true);
+        appendTerminalOutput(`$ ${enteredCommand}\n${result.error || 'Administrator authorization expired. Enter your macOS password again.'}`);
+        return;
+      }
+      const header = `$ ${result?.command || enteredCommand}${result?.cwd ? `  [${result.cwd}]` : ''}`;
       const output = [result?.stdout, result?.stderr ? `stderr:\n${result.stderr}` : '', result?.error ? `error: ${result.error}` : '']
         .filter(Boolean)
         .join('\n');
-      setTerminalOutput(`${header}\n${output || '(no output)'}`);
+      // A silent success (mv, cp, touch) must not look like a no-op or a failure.
+      const quiet = result?.ok ? '✓ done' : '(no output)';
+      appendTerminalOutput(`${header}\n${output || quiet}`);
+      if (adminShape && result?.ok) setTerminalWriteTick(previous => previous + 1);
     } catch (error) {
-      setTerminalOutput(`error: ${error.message}`);
+      appendTerminalOutput(`error: ${error.message}`);
     } finally {
       setTerminalBusy(false);
     }
-  }, [currentViewNode, terminalAdminMode, terminalBusy, terminalCommand]);
+  }, [appendTerminalOutput, currentViewNode, terminalAdminMode, terminalBusy, terminalCommand]);
+
+  // Run the command that triggered the password prompt once the session unlocks.
+  useEffect(() => {
+    if (!terminalAdminMode || !terminalPendingAdminCommand) return;
+    const pending = terminalPendingAdminCommand;
+    setTerminalPendingAdminCommand(null);
+    void runTerminalCommand(pending);
+  }, [terminalAdminMode, terminalPendingAdminCommand, runTerminalCommand]);
+
+  // ── Terminal predictive typing (paths, commands, flags, history) ────────────
+  const terminalCwd = currentViewNode?.type === 'directory' && currentViewNode.path && !currentViewNode.path.startsWith('__')
+    ? currentViewNode.path
+    : null;
+  const terminalCompletions = useMemo(() => {
+    if (!terminalOpen) {
+      return { suggestions: [], ghost: '', current: { text: '', start: 0, end: 0 }, atEnd: true, pathQuery: null };
+    }
+    const base = completionFor({
+      input: terminalCommand,
+      cursor: terminalCursor,
+      tree: scannedTree,
+      cwd: terminalCwd,
+      home: userHome,
+      presets: TERMINAL_COMMAND_PRESETS,
+      adminPresets: TERMINAL_ADMIN_COMMAND_PRESETS,
+      adminMode: terminalAdminMode,
+      // Paths outside the scanned tree use the on-demand listing cache.
+      externalEntriesFor: dirPath => terminalDirCache[dirPath]?.entries,
+      // The ghost previews whatever is highlighted in the dropdown.
+      highlightIndex: terminalSuggestionIndex
+    });
+    const atEnd = terminalCursor >= terminalCommand.length;
+    // A path/command/flag prediction wins; otherwise predict from history.
+    const ghost = terminalSuggestionDismissed
+      ? ''
+      : base.ghost || (base.suggestions.length === 0 && atEnd ? historySuggestion(terminalHistory, terminalCommand) : '');
+    return { ...base, ghost };
+  }, [terminalOpen, terminalCommand, terminalCursor, scannedTree, terminalCwd, userHome, terminalAdminMode, terminalHistory, terminalSuggestionDismissed, terminalDirCache, terminalSuggestionIndex]);
+
+  // Fetch a directory listing for a path the scan tree does not contain (e.g. a
+  // destination on another volume). Debounced and cached per directory.
+  const terminalExternalDirPath = terminalCompletions.pathQuery && !terminalCompletions.pathQuery.node
+    ? terminalCompletions.pathQuery.dirPath
+    : null;
+  useEffect(() => {
+    if (!terminalOpen || !terminalExternalDirPath) return undefined;
+    if (terminalDirCache[terminalExternalDirPath] || terminalDirLoadingRef.current.has(terminalExternalDirPath)) return undefined;
+    if (!window.electronAPI?.listDirectory) return undefined;
+    const dirPath = terminalExternalDirPath;
+    const timer = window.setTimeout(() => {
+      terminalDirLoadingRef.current.add(dirPath);
+      Promise.resolve(window.electronAPI.listDirectory(dirPath))
+        .then(result => {
+          setTerminalDirCache(current => ({
+            ...current,
+            [dirPath]: result && result.ok !== false
+              ? { ok: true, entries: Array.isArray(result.entries) ? result.entries : [] }
+              : { ok: false, entries: [] }
+          }));
+        })
+        .catch(() => setTerminalDirCache(current => ({ ...current, [dirPath]: { ok: false, entries: [] } })))
+        .finally(() => { terminalDirLoadingRef.current.delete(dirPath); });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [terminalOpen, terminalExternalDirPath, terminalDirCache]);
+
+  const terminalSuggestionsOpen = terminalInputFocused
+    && !terminalSuggestionDismissed
+    && terminalCompletions.suggestions.length > 0;
+  const terminalActiveSuggestion = Math.min(
+    terminalSuggestionIndex,
+    Math.max(0, terminalCompletions.suggestions.length - 1)
+  );
+  const terminalGhost = terminalInputFocused ? terminalCompletions.ghost : '';
+
+  // Keep the highlighted option visible while walking a long list with ↑/↓.
+  useEffect(() => {
+    if (!terminalSuggestionsOpen) return;
+    terminalActiveOptionRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [terminalActiveSuggestion, terminalSuggestionsOpen]);
+
+  // Clear the local undo history when the drawer closes.
+  useEffect(() => {
+    if (terminalOpen) return;
+    terminalUndoRef.current = [];
+    terminalLastEditRef.current = 0;
+    setTerminalExpanded(false);
+  }, [terminalOpen]);
+
+  // Keep the scrollback pinned to the newest output, as a terminal does.
+  useEffect(() => {
+    const node = terminalOutputRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [terminalOutput, terminalExpanded, terminalOpen]);
+
+  // Commands survive a restart: only the command lines themselves are stored.
+  useEffect(() => {
+    saveTerminalHistory(terminalHistoryStorage(), terminalHistory);
+  }, [terminalHistory]);
+
+  const syncTerminalCaret = useCallback(caret => {
+    window.requestAnimationFrame(() => {
+      const input = terminalInputRef.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(caret, caret);
+      setTerminalCursor(caret);
+    });
+  }, []);
+
+  const pushTerminalUndo = useCallback((value, cursor) => {
+    const stack = terminalUndoRef.current;
+    stack.push({ value, cursor });
+    if (stack.length > 100) stack.shift();
+  }, []);
+
+  // Coalesce rapid typing into one undo step; a predictive insertion pushes its
+  // own step so ⌘Z removes exactly what it inserted.
+  const recordTypingUndo = useCallback((value, cursor) => {
+    const now = Date.now();
+    if (now - terminalLastEditRef.current < 800 && terminalUndoRef.current.length > 0) {
+      terminalLastEditRef.current = now;
+      return;
+    }
+    pushTerminalUndo(value, cursor);
+    terminalLastEditRef.current = now;
+  }, [pushTerminalUndo]);
+
+  const acceptTerminalSuggestion = useCallback((index = 0) => {
+    const suggestion = terminalCompletions.suggestions[index];
+    if (!suggestion) return;
+    const { start, end } = terminalCompletions.current;
+    const next = `${terminalCommand.slice(0, start)}${suggestion.value}${terminalCommand.slice(end)}`;
+    const caret = start + suggestion.value.length;
+    pushTerminalUndo(terminalCommand, terminalCursor);
+    terminalLastEditRef.current = 0;
+    setTerminalCommand(next);
+    setTerminalHistoryIndex(-1);
+    setTerminalSuggestionIndex(0);
+    setTerminalSuggestionDismissed(false);
+    syncTerminalCaret(caret);
+  }, [terminalCommand, terminalCursor, terminalCompletions, syncTerminalCaret, pushTerminalUndo]);
+
+  const acceptTerminalGhost = useCallback(() => {
+    if (!terminalCompletions.ghost) return;
+    const next = `${terminalCommand}${terminalCompletions.ghost}`;
+    pushTerminalUndo(terminalCommand, terminalCursor);
+    terminalLastEditRef.current = 0;
+    setTerminalCommand(next);
+    setTerminalHistoryIndex(-1);
+    setTerminalSuggestionIndex(0);
+    syncTerminalCaret(next.length);
+  }, [terminalCommand, terminalCursor, terminalCompletions.ghost, syncTerminalCaret, pushTerminalUndo]);
 
   const handleTerminalCommandKeyDown = useCallback((event) => {
+    const suggestions = terminalCompletions.suggestions;
+    const open = terminalInputFocused && !terminalSuggestionDismissed && suggestions.length > 0;
+
+    // ⌘Z / Ctrl+Z undoes the last edit here (including a predictive insertion);
+    // it must not fall through to the app-level shortcut.
+    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && String(event.key).toLowerCase() === 'z') {
+      const previous = terminalUndoRef.current.pop();
+      if (previous) {
+        event.preventDefault();
+        event.stopPropagation();
+        terminalLastEditRef.current = 0;
+        setTerminalCommand(previous.value);
+        setTerminalCursor(previous.cursor);
+        setTerminalSuggestionDismissed(false);
+        syncTerminalCaret(previous.cursor);
+        return;
+      }
+    }
+    if (event.key === 'Tab') {
+      event.preventDefault();
+      if (open) acceptTerminalSuggestion(terminalActiveSuggestion);
+      else acceptTerminalGhost();
+      return;
+    }
+    // → and ← stay cursor navigation inside the field: only Tab accepts a
+    // prediction, so editing a line with the arrows cannot insert anything.
+    if (event.key === 'Escape' && open) {
+      event.preventDefault();
+      // Keep the drawer open: Escape here only collapses the prediction list.
+      event.stopPropagation();
+      setTerminalSuggestionDismissed(true);
+      setTerminalSuggestionIndex(0);
+      return;
+    }
+    // ↑/↓ walk the suggestion list when it is open; otherwise they walk history.
+    if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && open) {
+      event.preventDefault();
+      const delta = event.key === 'ArrowDown' ? 1 : -1;
+      setTerminalSuggestionIndex(index => (index + delta + suggestions.length) % suggestions.length);
+      return;
+    }
     if (event.key === 'Enter') {
       event.preventDefault();
       void runTerminalCommand();
@@ -2770,22 +3062,22 @@ export default function App() {
       const nextIndex = terminalHistoryIndex < 0
         ? terminalHistory.length - 1
         : Math.max(0, terminalHistoryIndex - 1);
+      const nextCommand = terminalHistory[nextIndex] || '';
       setTerminalHistoryIndex(nextIndex);
-      setTerminalCommand(terminalHistory[nextIndex] || '');
+      setTerminalCommand(nextCommand);
+      setTerminalCursor(nextCommand.length);
       return;
     }
     if (event.key === 'ArrowDown' && terminalHistoryIndex >= 0) {
       event.preventDefault();
       const nextIndex = terminalHistoryIndex + 1;
-      if (nextIndex >= terminalHistory.length) {
-        setTerminalHistoryIndex(-1);
-        setTerminalCommand('');
-      } else {
-        setTerminalHistoryIndex(nextIndex);
-        setTerminalCommand(terminalHistory[nextIndex] || '');
-      }
+      const past = nextIndex >= terminalHistory.length;
+      const nextCommand = past ? '' : (terminalHistory[nextIndex] || '');
+      setTerminalHistoryIndex(past ? -1 : nextIndex);
+      setTerminalCommand(nextCommand);
+      setTerminalCursor(nextCommand.length);
     }
-  }, [runTerminalCommand, terminalHistory, terminalHistoryIndex]);
+  }, [runTerminalCommand, terminalHistory, terminalHistoryIndex, terminalCompletions, terminalInputFocused, terminalSuggestionDismissed, terminalActiveSuggestion, acceptTerminalSuggestion, acceptTerminalGhost, syncTerminalCaret]);
 
   const authorizeTerminalAdmin = useCallback(async () => {
     if (!window.electronAPI?.terminalAuthorizeAdmin || !terminalAdminPassword) return;
@@ -2795,11 +3087,11 @@ export default function App() {
     if (result?.ok) {
       setTerminalAdminMode(true);
       setTerminalAdminPromptOpen(false);
-      setTerminalOutput('Administrator mode enabled for this app session.\nOnly allowlisted commands are available.');
+      appendTerminalOutput('Administrator mode enabled for this app session.\nOnly allowlisted commands are available.');
     } else {
       setTerminalAdminError(result?.error || 'Administrator authentication failed.');
     }
-  }, [terminalAdminPassword]);
+  }, [appendTerminalOutput, terminalAdminPassword]);
 
   const revokeTerminalAdmin = useCallback(async () => {
     await window.electronAPI?.terminalRevokeAdmin?.();
@@ -2807,6 +3099,7 @@ export default function App() {
     setTerminalAdminPromptOpen(false);
     setTerminalAdminPassword('');
     setTerminalAdminError(null);
+    setTerminalPendingAdminCommand(null);
   }, []);
 
   const handleEjectDrive = useCallback(async drive => {
@@ -2876,6 +3169,79 @@ export default function App() {
       setRefreshing(false);
     }
   }, [currentDrive, currentViewNode, packageContentsShown, refreshing, scannedTree]);
+
+  // A Terminal write changed the filesystem: rescan the open folder so the
+  // content tree, the sunburst and the prediction list all match it right away.
+  // (The watcher can lag, and a move reports the item's old path only.)
+  useEffect(() => {
+    if (!terminalWriteTick || handledTerminalWriteRef.current === terminalWriteTick) return;
+    handledTerminalWriteRef.current = terminalWriteTick;
+    setTerminalDirCache({});
+    void refreshCurrentFolder();
+  }, [terminalWriteTick, refreshCurrentFolder]);
+
+  // ── Move & Symlink ─────────────────────────────────────────────────────────
+  // Pick a destination in the native folder panel, then move there and leave a
+  // symlink behind. Confirmed first, and undoable from the toast.
+  const handleMoveAndSymlink = useCallback(async item => {
+    if (!item?.path || !window.electronAPI?.chooseFolder || !window.electronAPI?.moveAndSymlink) return;
+    setContextMenu(null);
+    setContextOpenWith(null);
+    const pick = await window.electronAPI.chooseFolder(
+      `Move “${item.name}” to…`,
+      pathDirname(item.path) || undefined
+    );
+    if (pick?.cancelled) return;
+    if (!pick?.ok || !pick?.folder?.mount) {
+      window.alert(pick?.error || 'A destination folder could not be selected.');
+      return;
+    }
+    const destination = pick.folder.mount;
+    const confirmed = window.confirm(
+      `Move “${item.name}” to “${pick.folder.name}”?\n\n`
+      + `A symlink will be left at the original location so anything that still uses it keeps working:\n${item.path}\n\n`
+      + 'The move is reversible: use Undo in the toast right after it.'
+    );
+    if (!confirmed) return;
+
+    setMoveSymlinkBusy({ name: item.name });
+    try {
+      const result = await window.electronAPI.moveAndSymlink(item.path, destination);
+      if (!result?.ok) {
+        window.alert(result?.error || 'The item could not be moved.');
+        return;
+      }
+      setMoveSymlinkUndo({ from: result.from, to: result.to, name: item.name });
+      setTerminalDirCache({});
+      await refreshCurrentFolder();
+    } catch (error) {
+      window.alert(error?.message || 'The item could not be moved.');
+    } finally {
+      setMoveSymlinkBusy(null);
+    }
+  }, [refreshCurrentFolder]);
+
+  const handleUndoMoveAndSymlink = useCallback(async () => {
+    const pending = moveSymlinkUndo;
+    if (!pending || !window.electronAPI?.undoMoveAndSymlink) return;
+    setMoveSymlinkUndo(null);
+    const result = await window.electronAPI.undoMoveAndSymlink(pending.from, pending.to);
+    if (!result?.ok) {
+      window.alert(result?.error || 'The undo could not be completed.');
+      return;
+    }
+    setTerminalDirCache({});
+    setScanNotice({ title: 'Move undone', body: `“${pending.name}” is back in its original folder.` });
+    window.setTimeout(() => setScanNotice(null), 5200);
+    await refreshCurrentFolder();
+  }, [moveSymlinkUndo, refreshCurrentFolder]);
+
+  // The undo window is deliberately short-lived and tied to the last move only.
+  useEffect(() => {
+    if (!moveSymlinkUndo) return undefined;
+    const timer = window.setTimeout(() => setMoveSymlinkUndo(null), 30000);
+    return () => window.clearTimeout(timer);
+  }, [moveSymlinkUndo]);
 
   const applyOptimisticTrashRemoval = useCallback(paths => {
     const sourceTree = folderWatchTreeRef.current || scannedTree;
@@ -3338,6 +3704,10 @@ export default function App() {
         closeAndStop();
         return;
       }
+      // The terminal's own key handler collapses an open prediction list first;
+      // this capture listener would otherwise close the whole drawer before the
+      // input ever sees the Escape. A second Escape (list dismissed) closes it.
+      if (terminalOpen && terminalSuggestionsOpen) return;
       if (terminalOpen) {
         void revokeTerminalAdmin();
         setTerminalHelperHoverKey(null);
@@ -3358,7 +3728,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onEscape, true);
     return () => window.removeEventListener('keydown', onEscape, true);
-  }, [assistantOpen, breadcrumbsMenuOpen, contextMenu, driveMenuKey, hiddenSpaceAdminPromptOpen, loading, onboardingOpen, revokeTerminalAdmin, smartCleanMenuOpen, smartCleanOpen, terminalAdminPromptOpen, terminalOpen, themesOpen, viewOptionsOpen]);
+  }, [assistantOpen, breadcrumbsMenuOpen, contextMenu, driveMenuKey, hiddenSpaceAdminPromptOpen, loading, onboardingOpen, revokeTerminalAdmin, smartCleanMenuOpen, smartCleanOpen, terminalAdminPromptOpen, terminalOpen, terminalSuggestionsOpen, themesOpen, viewOptionsOpen]);
 
   const totalCollectorSize = collector.reduce((s, i) => s + (i.size || 0), 0);
   const totalCloudBasketSize = cloudBasket.reduce((sum, item) => sum + (Number(item.size) || 0), 0);
@@ -4353,6 +4723,31 @@ export default function App() {
             </div>
           )}
 
+          {/* Move & Symlink is reversible for the batch that just ran. */}
+          {moveSymlinkBusy && (
+            <div className="move-symlink-toast" role="status" aria-live="polite">
+              <strong>Moving “{moveSymlinkBusy.name}”…</strong>
+              <span>Leaving a symlink at the original path.</span>
+            </div>
+          )}
+          {moveSymlinkUndo && (
+            <div className="move-symlink-toast" role="status" aria-live="polite">
+              <strong>Moved “{moveSymlinkUndo.name}”</strong>
+              <span>Symlink left at the original path.</span>
+              <button
+                type="button"
+                className="move-symlink-undo"
+                onClick={() => { void handleUndoMoveAndSymlink(); }}
+              >Undo</button>
+              <button
+                type="button"
+                className="move-symlink-dismiss"
+                aria-label="Dismiss move confirmation"
+                onClick={() => setMoveSymlinkUndo(null)}
+              >×</button>
+            </div>
+          )}
+
           {cloudView && !cloudBannerDismissed && (
             <div className="cloud-view-banner" role="status">
               <div className="cloud-view-banner-head">
@@ -4675,15 +5070,20 @@ export default function App() {
 
             {terminalOpen && (
               <div
-                className="terminal-drawer"
+                className={`terminal-drawer ${terminalExpanded ? 'terminal-expanded' : ''}`}
                 ref={terminalDrawerRef}
-                style={{ left: `${terminalFrame.left}px`, top: `${terminalFrame.top}px` }}
+                style={terminalExpanded
+                  ? { left: '0px', top: '0px', width: '100%', height: '100%', maxWidth: 'none', maxHeight: 'none' }
+                  : { left: `${terminalFrame.left}px`, top: `${terminalFrame.top}px` }}
                 onClick={event => event.stopPropagation()}
               >
                 <div
                   className="terminal-drawer-header"
                   onPointerDown={event => {
                     if (event.target.closest('button')) return;
+                    // An expanded drawer fills its panel; dragging it out of that
+                    // state would need a size to restore to, so it stays put.
+                    if (terminalExpanded) return;
                     const drawer = event.currentTarget.parentElement;
                     const area = drawer?.parentElement;
                     if (!drawer || !area) return;
@@ -4703,7 +5103,19 @@ export default function App() {
                 >
                   <span>Terminal</span>
                   <span className={`terminal-readonly-badge ${terminalAdminMode ? 'terminal-readwrite-badge' : ''}`}>{terminalAdminMode ? 'READ & WRITE' : 'READ ONLY'}</span>
-                  <button className="terminal-close" title="Hide Terminal" onClick={() => { void revokeTerminalAdmin(); setTerminalHelperHoverKey(null); setTerminalOpen(false); }}>×</button>
+                  <div className="terminal-header-actions">
+                    <button
+                      className="terminal-expand"
+                      type="button"
+                      title={terminalExpanded ? 'Restore the Terminal size' : 'Expand the Terminal to fill the panel'}
+                      aria-label={terminalExpanded ? 'Restore the Terminal size' : 'Expand the Terminal to fill the panel'}
+                      aria-pressed={terminalExpanded}
+                      onClick={() => setTerminalExpanded(value => !value)}
+                    >
+                      {terminalExpanded ? <Minimize2 size={13} /> : <AspectRatioIcon size={13} />}
+                    </button>
+                    <button className="terminal-close" title="Hide Terminal" onClick={() => { void revokeTerminalAdmin(); setTerminalHelperHoverKey(null); setTerminalOpen(false); }}>×</button>
+                  </div>
                 </div>
                 <div className="terminal-command-presets" aria-label={terminalAdminMode ? 'Read and write terminal command helpers' : 'Safe terminal command helpers'}>
                   {(terminalAdminMode ? [...TERMINAL_COMMAND_PRESETS, ...TERMINAL_ADMIN_COMMAND_PRESETS] : TERMINAL_COMMAND_PRESETS).map(preset => (
@@ -4716,7 +5128,7 @@ export default function App() {
                       onMouseLeave={() => setTerminalHelperHoverKey(null)}
                       onFocus={() => setTerminalHelperHoverKey(preset.command)}
                       onBlur={() => setTerminalHelperHoverKey(null)}
-                      onClick={() => { setTerminalCommand(preset.command); setTerminalHistoryIndex(-1); setTerminalHelpKey(preset.command); }}
+                      onClick={() => { setTerminalCommand(preset.command); setTerminalCursor(preset.command.length); setTerminalHistoryIndex(-1); setTerminalSuggestionDismissed(false); setTerminalHelpKey(preset.command); }}
                     >
                       {preset.label}
                     </button>
@@ -4739,13 +5151,21 @@ export default function App() {
                 })()}
                 <pre
                   className="terminal-output"
+                  ref={terminalOutputRef}
                   onDragOver={handleTerminalPathDragOver}
                   onDrop={handleTerminalPathDrop}
                 >{terminalOutput === null ? 'Safe commands: pwd · ls -la · du -sh · df -h · clear' : terminalOutput}</pre>
                 <div className="terminal-drawer-note">
-                  Filesystem changes, deletion, sudo and arbitrary shell commands are blocked unless you have an{' '}
-                  <button className="terminal-admin-link" type="button" onClick={() => { if (!terminalAdminMode) { setTerminalAdminError(null); setTerminalAdminPromptOpen(true); } }} disabled={terminalAdminMode}>admin</button>{' '}
-                  accessing. clear is handled locally.
+                  {terminalAdminMode
+                    ? 'Admin writes are unlocked for this app session. Only allowlisted commands run.'
+                    : (
+                      <>
+                        Admin writes are locked. Click{' '}
+                        <button className="terminal-admin-link" type="button" onClick={() => { setTerminalAdminError(null); setTerminalAdminPromptOpen(true); }}>admin</button>{' '}
+                        to enter your macOS password — not in the command field.
+                      </>
+                    )}
+                  {' '}Read-only commands and clear always work.
                   {terminalAdminMode && <button className="terminal-lock-btn" type="button" onClick={() => { void revokeTerminalAdmin(); }}>Lock</button>}
                 </div>
                 {terminalAdminPromptOpen && !terminalAdminMode && (
@@ -4761,7 +5181,7 @@ export default function App() {
                       autoFocus
                     />
                     <button type="button" onClick={() => { void authorizeTerminalAdmin(); }} disabled={!terminalAdminPassword}>Unlock</button>
-                    <button type="button" onClick={() => { setTerminalAdminPromptOpen(false); setTerminalAdminPassword(''); setTerminalAdminError(null); }}>Cancel</button>
+                    <button type="button" onClick={() => { setTerminalAdminPromptOpen(false); setTerminalAdminPassword(''); setTerminalAdminError(null); setTerminalPendingAdminCommand(null); }}>Cancel</button>
                     {terminalAdminError && <span className="terminal-admin-error">{terminalAdminError}</span>}
                   </div>
                 )}
@@ -4771,16 +5191,65 @@ export default function App() {
                   onDrop={handleTerminalPathDrop}
                 >
                   <span className="terminal-prompt">›</span>
-                  <input
-                    className="terminal-command-input"
-                    value={terminalCommand}
-                    onChange={event => { setTerminalCommand(event.target.value); setTerminalHistoryIndex(-1); }}
-                    onKeyDown={handleTerminalCommandKeyDown}
-                    aria-label={terminalAdminMode ? 'Read and write terminal command' : 'Read-only terminal command'}
-                    spellCheck="false"
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                  />
+                  <div className="terminal-command-field">
+                    <input
+                      ref={terminalInputRef}
+                      className={`terminal-command-input ${terminalGhost ? 'has-ghost' : ''}`}
+                      value={terminalCommand}
+                      onChange={event => {
+                        recordTypingUndo(terminalCommand, terminalCursor);
+                        setTerminalCommand(event.target.value);
+                        setTerminalCursor(event.target.selectionEnd ?? event.target.value.length);
+                        setTerminalHistoryIndex(-1);
+                        setTerminalSuggestionIndex(0);
+                        setTerminalSuggestionDismissed(false);
+                      }}
+                      onSelect={event => setTerminalCursor(event.target.selectionEnd ?? 0)}
+                      onScroll={event => { if (terminalGhostRef.current) terminalGhostRef.current.scrollLeft = event.target.scrollLeft; }}
+                      onFocus={event => { setTerminalInputFocused(true); setTerminalCursor(event.target.selectionEnd ?? 0); }}
+                      onBlur={() => setTerminalInputFocused(false)}
+                      onKeyDown={handleTerminalCommandKeyDown}
+                      aria-label={terminalAdminMode ? 'Read and write terminal command' : 'Read-only terminal command'}
+                      role="combobox"
+                      aria-expanded={terminalSuggestionsOpen}
+                      aria-autocomplete="list"
+                      spellCheck="false"
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                    />
+                    {terminalGhost && (
+                      <div className="terminal-command-ghost" aria-hidden="true" ref={terminalGhostRef}>
+                        <span>{terminalCommand.slice(0, terminalCursor)}</span>
+                        <span className="terminal-ghost-suffix">{terminalGhost}</span>
+                        <span>{terminalCommand.slice(terminalCursor)}</span>
+                      </div>
+                    )}
+                    {terminalSuggestionsOpen && (
+                      <div className="terminal-suggestions" role="listbox" aria-label="Command completions">
+                        {terminalCompletions.suggestions.map((suggestion, index) => (
+                          <button
+                            key={`${suggestion.kind}:${suggestion.value}`}
+                            type="button"
+                            role="option"
+                            ref={index === terminalActiveSuggestion ? terminalActiveOptionRef : null}
+                            aria-selected={index === terminalActiveSuggestion}
+                            className={`terminal-suggestion ${index === terminalActiveSuggestion ? 'active' : ''}`}
+                            onMouseDown={event => event.preventDefault()}
+                            onMouseEnter={() => setTerminalSuggestionIndex(index)}
+                            onClick={() => acceptTerminalSuggestion(index)}
+                          >
+                            <span className={`terminal-suggestion-kind ${suggestion.kind}`}>
+                              {suggestion.kind === 'directory' ? '▸'
+                                : suggestion.kind === 'command' ? '›'
+                                  : suggestion.kind === 'flag' ? '–' : '·'}
+                            </span>
+                            <span className="terminal-suggestion-label">{suggestion.label}</span>
+                            <span className="terminal-suggestion-detail">{suggestion.detail}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   <button className="terminal-run-btn" onClick={() => { void runTerminalCommand(); }} disabled={terminalBusy}>
                     {terminalBusy ? 'Running…' : 'Run'}
                   </button>
@@ -5139,6 +5608,17 @@ export default function App() {
             if (window.electronAPI?.revealInFinder) void window.electronAPI.revealInFinder(contextMenu.item.path);
             setContextMenu(null);
           }}>⌕ Reveal in Finder</div>
+          {!cloudView && (
+            <div
+              className={`ctx-item ${['file', 'directory', 'symlink'].includes(contextMenu.item.type) && getRiskInfo(contextMenu.item).canDelete ? '' : 'disabled'}`}
+              title="Move the item to another folder and leave a symlink at its current path"
+              onClick={() => {
+                const item = contextMenu.item;
+                if (!['file', 'directory', 'symlink'].includes(item.type) || !getRiskInfo(item).canDelete) return;
+                void handleMoveAndSymlink(item);
+              }}
+            >⇄ Move & Symlink…</div>
+          )}
           <div className="ctx-item" onClick={() => { void handleContextGetInfo(contextMenu.item); }}>ⓘ Get Info</div>
           <div className="ctx-item" onClick={() => { void handleContextOpenWith(contextMenu.item); }}>{contextOpenWith?.path === contextMenu.item.path ? '▾ Open with…' : '▸ Open with…'}</div>
           {contextOpenWith?.path === contextMenu.item.path && (

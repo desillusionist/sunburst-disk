@@ -3,9 +3,9 @@
 //! Ported from `electron/main.js`. The security model is unchanged:
 //!   * a read-only command allowlist (`SAFE_TERMINAL_COMMANDS`) runs under the
 //!     user's shell,
-//!   * an administrator password is validated with `sudo -S -k -v`, then a
-//!     narrow, path-scoped write allowlist (`SAFE_ADMIN_COMMANDS`) runs under
-//!     `sudo -n`,
+//!   * an administrator password establishes a reusable sudo credential (a
+//!     plain `sudo -S -v` after `sudo -k`), then a narrow, path-scoped write
+//!     allowlist (`SAFE_ADMIN_COMMANDS`) runs under `sudo -n`,
 //!   * every write target must resolve inside the current folder and outside
 //!     the protected System roots.
 //!
@@ -25,11 +25,11 @@ use crate::capacity::resolve_path;
 use crate::commands::is_protected_system_path;
 
 const SAFE_TERMINAL_ARGUMENT: &str = r"[^\n\r;|&><`$]+";
-const SAFE_ADMIN_ARGUMENT: &str = r"[A-Za-z0-9_./~'() -]+";
+const SAFE_ADMIN_ARGUMENT: &str = r#"[A-Za-z0-9_./~'() "-]+"#;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 
-const ADMIN_DENIED: &str = "Allowed commands are read-only helpers plus scoped touch, mkdir -p, rm, mv, cp -R and ln -s inside the current folder. Sudo and arbitrary shell commands remain blocked.";
+const ADMIN_DENIED: &str = "Allowed commands are read-only helpers plus scoped touch, mkdir -p, rm, mv, cp -R and ln -s on mounted drives. Protected system paths (System, usr, private, etc.) and arbitrary shell commands remain blocked. Paths that contain spaces must be quoted, e.g. mv \"My App\" /Volumes/External/.";
 const READONLY_DENIED: &str = "Only read-only commands are allowed: pwd, ls, du -sh and df -h.";
 
 static SAFE_TERMINAL_COMMANDS: OnceLock<Regex> = OnceLock::new();
@@ -49,7 +49,7 @@ fn safe_terminal_commands() -> &'static Regex {
 fn safe_admin_commands() -> &'static Regex {
     SAFE_ADMIN_COMMANDS.get_or_init(|| {
         Regex::new(&format!(
-            r"^(?:touch|mkdir -p|rm(?: -i)? --|mv --|cp -R --|ln -s --) {argument}(?: {argument})?$",
+            r"^(?:touch|mkdir -p|rm(?: -i)?(?: --)?|mv(?: --)?|cp -R(?: --)?|ln -s(?: --)?) {argument}(?: {argument})?$",
             argument = SAFE_ADMIN_ARGUMENT
         ))
         .expect("valid admin command regex")
@@ -110,6 +110,10 @@ pub struct CommandRun {
     pub stdout: String,
     pub stderr: String,
     pub error: String,
+    /// Set when an admin command could not run because sudo needed a password
+    /// again (the cached credential expired). The renderer re-opens the prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub needs_admin: Option<bool>,
 }
 
 pub(crate) fn read_only_allowed(command: &str) -> bool {
@@ -157,8 +161,116 @@ fn expand_tilde(value: &str, home: &str) -> String {
     value.to_string()
 }
 
-/// Resolve a write target inside `working_directory`, rejecting flags, the
-/// directory itself, escapes above it, and protected System roots.
+/// Mounts that are system-managed and never legitimate write targets. Mirrors
+/// the hidden mounts the Home screen excludes.
+const HIDDEN_MOUNTS: [&str; 8] = [
+    "/dev",
+    "/System/Volumes/VM",
+    "/System/Volumes/Preboot",
+    "/System/Volumes/Update",
+    "/System/Volumes/xarts",
+    "/System/Volumes/iSCPreboot",
+    "/System/Volumes/Hardware",
+    "/Volumes/Recovery",
+];
+
+fn is_hidden_mount(path: &str) -> bool {
+    HIDDEN_MOUNTS
+        .iter()
+        .any(|mount| path == *mount || path.starts_with(&format!("{mount}/")))
+}
+
+/// Top-level locations that are system-owned. These are the firmlink aliases that
+/// point into the Data volume, so widening the admin scope must not reach them.
+const PROTECTED_ADMIN_ROOTS: [&str; 10] = [
+    "/bin", "/sbin", "/usr", "/etc", "/private", "/var", "/tmp", "/dev", "/cores", "/Library",
+];
+
+/// Stronger protected-path check for *admin writes* than the shared
+/// `is_protected_system_path`: it also covers the firmlink aliases (`/usr`,
+/// `/private`, `/etc`, …) that resolve into `/System/Volumes/Data/...`.
+fn is_protected_admin_target(value: &str) -> bool {
+    if is_protected_system_path(value) {
+        return true;
+    }
+    let normalized = value.trim_end_matches('/');
+    let under =
+        |prefix: &str| normalized == prefix || normalized.starts_with(&format!("{prefix}/"));
+    if PROTECTED_ADMIN_ROOTS.iter().any(|prefix| under(prefix)) {
+        return true;
+    }
+    [
+        "bin", "sbin", "usr", "etc", "private", "var", "tmp", "dev", "cores", "Library",
+    ]
+    .iter()
+    .any(|segment| under(&format!("/System/Volumes/Data/{segment}")))
+}
+
+/// Resolve symlinks in the longest existing prefix of `path` (for the safety
+/// checks only) so a symlink cannot smuggle a protected location past the
+/// lexical checks. Non-existent tail components are re-appended lexically.
+fn real_check_path(path: &str) -> String {
+    let mut probe = std::path::PathBuf::from(path);
+    let mut tail: Vec<String> = Vec::new();
+    loop {
+        if let Ok(canonical) = probe.canonicalize() {
+            let mut result = canonical.to_string_lossy().into_owned();
+            for part in tail.iter().rev() {
+                result.push('/');
+                result.push_str(part);
+            }
+            return lexical_normalize(&result);
+        }
+        let Some(name) = probe
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+        else {
+            break;
+        };
+        tail.push(name);
+        if !probe.pop() {
+            break;
+        }
+    }
+    lexical_normalize(path)
+}
+
+/// Mount points of the user-visible drives (`/` plus `/Volumes/*`), excluding
+/// hidden/system mounts. Read from the same `df -k` the Home screen uses.
+fn mounted_drive_roots() -> Vec<String> {
+    let mut roots = vec!["/".to_string()];
+    if let Some(stdout) = crate::capacity::run_capture("/bin/df", &["-k"]) {
+        for line in stdout.lines().skip(1) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 9 {
+                continue;
+            }
+            let mount = parts[8..].join(" ");
+            if !mount.starts_with('/') || is_hidden_mount(&mount) {
+                continue;
+            }
+            if !roots.iter().any(|root| root == &mount) {
+                roots.push(mount);
+            }
+        }
+    }
+    roots
+}
+
+/// True when `path` lives on a mounted drive the app exposes. `/` is the startup
+/// disk, so this is true for essentially every absolute path; it exists to keep
+/// the rule explicit and to reject hidden/system mounts.
+pub(crate) fn within_mounted_drives(path: &str) -> bool {
+    if is_hidden_mount(path) {
+        return false;
+    }
+    mounted_drive_roots()
+        .iter()
+        .any(|root| root == "/" || path == root || path.starts_with(&format!("{root}/")))
+}
+
+/// Resolve a write target against `working_directory`, allowing it to leave that
+/// folder but requiring it to stay on a mounted drive and outside protected roots.
 fn admin_target_path(raw_target: &str, working_directory: &str) -> Option<String> {
     if raw_target.is_empty() || raw_target.starts_with('-') {
         return None;
@@ -166,11 +278,17 @@ fn admin_target_path(raw_target: &str, working_directory: &str) -> Option<String
     let home = std::env::var("HOME").unwrap_or_default();
     let expanded = expand_tilde(raw_target, &home);
     let resolved = resolve_against(working_directory, &expanded);
-    let root = lexical_normalize(working_directory);
-    if resolved == root || !resolved.starts_with(&format!("{root}/")) {
+    if resolved == "/" {
         return None;
     }
-    if is_protected_system_path(&resolved) {
+    // Check both the lexical path and the symlink-resolved path, so a symlink
+    // inside an allowed folder cannot point at a protected location.
+    let real = real_check_path(&resolved);
+    if real == "/"
+        || is_protected_admin_target(&resolved)
+        || is_protected_admin_target(&real)
+        || !within_mounted_drives(&real)
+    {
         return None;
     }
     Some(resolved)
@@ -198,42 +316,53 @@ fn parse_simple_admin_command(command: &str) -> Option<Vec<String>> {
     )
 }
 
-/// True when `command` is an allowlisted admin write whose targets are all
-/// inside `working_directory` (and outside protected roots).
+/// True when `command` is an allowlisted admin write whose targets are all on a
+/// mounted drive and outside the protected system roots. Targets may leave
+/// `working_directory`; the folder only anchors relative paths.
 pub(crate) fn admin_operation_allowed(command: &str, working_directory: &str) -> bool {
     let normalized = lexical_normalize(working_directory);
-    if normalized == "/"
-        || normalized == "/System/Volumes/Data"
-        || is_protected_system_path(&normalized)
-    {
-        return false;
-    }
     let Some(tokens) = parse_simple_admin_command(command) else {
         return false;
     };
     if tokens.is_empty() {
         return false;
     }
+    // The working directory only anchors relative targets now; each target is
+    // validated against the mounted drives and the protected system roots.
 
     match tokens[0].as_str() {
         "touch" if tokens.len() == 2 => admin_target_path(&tokens[1], &normalized).is_some(),
         "mkdir" if tokens.len() == 3 && tokens[1] == "-p" => {
             admin_target_path(&tokens[2], &normalized).is_some()
         }
-        "rm" if tokens.len() == 3 || tokens.len() == 4 => {
+        // `--` is optional: targets are validated individually and one that
+        // starts with `-` is rejected, so a flag cannot masquerade as a path.
+        "rm" if (2..=4).contains(&tokens.len()) => {
             let target = tokens.last().expect("non-empty tokens");
             let flags_ok = tokens[1..tokens.len() - 1]
                 .iter()
                 .all(|token| token == "-i" || token == "--");
             flags_ok && admin_target_path(target, &normalized).is_some()
         }
+        "mv" if tokens.len() == 3 => {
+            admin_target_path(&tokens[1], &normalized).is_some()
+                && admin_target_path(&tokens[2], &normalized).is_some()
+        }
         "mv" if tokens.len() == 4 && tokens[1] == "--" => {
+            admin_target_path(&tokens[2], &normalized).is_some()
+                && admin_target_path(&tokens[3], &normalized).is_some()
+        }
+        "cp" if tokens.len() == 4 && tokens[1] == "-R" => {
             admin_target_path(&tokens[2], &normalized).is_some()
                 && admin_target_path(&tokens[3], &normalized).is_some()
         }
         "cp" if tokens.len() == 5 && tokens[1] == "-R" && tokens[2] == "--" => {
             admin_target_path(&tokens[3], &normalized).is_some()
                 && admin_target_path(&tokens[4], &normalized).is_some()
+        }
+        "ln" if tokens.len() == 4 && tokens[1] == "-s" => {
+            admin_target_path(&tokens[2], &normalized).is_some()
+                && admin_target_path(&tokens[3], &normalized).is_some()
         }
         "ln" if tokens.len() == 5 && tokens[1] == "-s" && tokens[2] == "--" => {
             admin_target_path(&tokens[3], &normalized).is_some()
@@ -243,21 +372,87 @@ pub(crate) fn admin_operation_allowed(command: &str, working_directory: &str) ->
     }
 }
 
-/// Validate a password non-interactively via `sudo -S -k -v` (10 s timeout).
-pub(crate) fn validate_admin_password(password: &str) -> bool {
-    let mut child = match Command::new("/usr/bin/sudo")
-        .args(["-S", "-k", "-v"])
-        .stdin(Stdio::piped())
+/// Whether a command runs under `sudo -n`.
+///
+/// Only an admin *write* does: a read-only helper must keep working when the
+/// sudo ticket has expired, otherwise `ls` would prompt for a password and drop
+/// the unlocked session.
+pub(crate) fn should_use_admin(admin_mode: bool, admin_authorized: bool, read_only: bool) -> bool {
+    admin_mode && admin_authorized && !read_only
+}
+
+/// Why an admin command was refused, so the UI can explain the reason instead of
+/// only showing the generic allowlist message. `None` when it is allowed.
+pub(crate) fn admin_denial_reason(command: &str, working_directory: &str) -> Option<&'static str> {
+    if admin_operation_allowed(command, working_directory) {
+        return None;
+    }
+    let normalized = lexical_normalize(working_directory);
+    let Some(tokens) = parse_simple_admin_command(command) else {
+        return Some(admin_denied_message());
+    };
+    let targets: Vec<&str> = match tokens.first().map(String::as_str) {
+        Some("touch") if tokens.len() == 2 => vec![&tokens[1]],
+        Some("mkdir") if tokens.len() == 3 && tokens[1] == "-p" => vec![&tokens[2]],
+        Some("rm") if (2..=4).contains(&tokens.len()) => {
+            vec![tokens.last().expect("non-empty tokens")]
+        }
+        Some("mv") if tokens.len() == 3 => vec![&tokens[1], &tokens[2]],
+        Some("mv") if tokens.len() == 4 && tokens[1] == "--" => vec![&tokens[2], &tokens[3]],
+        Some("cp") if tokens.len() == 4 && tokens[1] == "-R" => vec![&tokens[2], &tokens[3]],
+        Some("cp") if tokens.len() == 5 && tokens[1] == "-R" && tokens[2] == "--" => {
+            vec![&tokens[3], &tokens[4]]
+        }
+        Some("ln") if tokens.len() == 4 && tokens[1] == "-s" => vec![&tokens[2], &tokens[3]],
+        Some("ln") if tokens.len() == 5 && tokens[1] == "-s" && tokens[2] == "--" => {
+            vec![&tokens[3], &tokens[4]]
+        }
+        _ => return Some(admin_denied_message()),
+    };
+    let home = std::env::var("HOME").unwrap_or_default();
+    for target in targets {
+        if target.is_empty() || target.starts_with('-') {
+            return Some("Options and flags are not allowed in admin write commands.");
+        }
+        let resolved = resolve_against(&normalized, &expand_tilde(target, &home));
+        let real = real_check_path(&resolved);
+        if resolved == "/" || real == "/" {
+            return Some("The filesystem root is not a valid write target.");
+        }
+        if is_protected_admin_target(&resolved) || is_protected_admin_target(&real) {
+            return Some(
+                "The target is inside a protected system path (System, usr, private, Library, …).",
+            );
+        }
+        if !within_mounted_drives(&real) {
+            return Some("The target is outside the mounted drives.");
+        }
+    }
+    Some(admin_denied_message())
+}
+
+/// Run sudo non-interactively, feeding `password` on stdin when one is given.
+fn run_sudo(args: &[&str], password: Option<&str>) -> bool {
+    let mut command = Command::new("/usr/bin/sudo");
+    command
+        .args(args)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+        .stderr(Stdio::null());
+    command.stdin(if password.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
+
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(_) => return false,
     };
 
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(format!("{password}\n").as_bytes());
+    if let Some(password) = password {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(format!("{password}\n").as_bytes());
+        }
     }
 
     let start = Instant::now();
@@ -275,6 +470,36 @@ pub(crate) fn validate_admin_password(password: &str) -> bool {
             Err(_) => return false,
         }
     }
+}
+
+/// Authenticate `password` *and* leave a reusable credential behind.
+///
+/// `sudo -S -k -v` only validates: since sudo 1.9.10 `-k` combined with an
+/// option that may require a password makes sudo ignore cached credentials and
+/// deliberately not update them. The later `sudo -n` calls therefore found no
+/// ticket and looped on "a password is required". So: drop any cached ticket
+/// (a stale one must never make a wrong password look valid), authenticate with
+/// a plain `-v` -- which *does* update the cache -- then prove the ticket the
+/// run path depends on actually exists.
+pub(crate) fn validate_admin_password(password: &str) -> bool {
+    if password.is_empty() {
+        return false;
+    }
+    let _ = run_sudo(&["-k"], None);
+    if !run_sudo(&["-S", "-v"], Some(password)) {
+        return false;
+    }
+    run_sudo(&["-n", "-v"], None)
+}
+
+/// True when an admin command failed because sudo needed the password again
+/// (the cached credential expired or was never established).
+fn sudo_needs_password(use_admin: bool, success: bool, stderr: &str) -> bool {
+    use_admin
+        && !success
+        && (stderr.contains("a password is required")
+            || stderr.contains("a terminal is required")
+            || stderr.contains("no tty present"))
 }
 
 fn read_capped<R: Read>(mut reader: R) -> String {
@@ -357,7 +582,12 @@ pub(crate) fn run_command(command: &str, working_directory: &str, use_admin: boo
 
     match capture(program, &args, working_directory, COMMAND_TIMEOUT) {
         Ok((success, stdout, stderr, timed_out)) => {
-            let error = if success {
+            // `sudo -n` fails this way when the cached credential has expired (or
+            // was never established): the caller must ask for the password again.
+            let needs_admin = sudo_needs_password(use_admin, success, &stderr);
+            let error = if needs_admin {
+                "Administrator authorization expired. Enter your macOS password again.".to_string()
+            } else if success {
                 String::new()
             } else if timed_out {
                 "Command timed out".to_string()
@@ -371,6 +601,7 @@ pub(crate) fn run_command(command: &str, working_directory: &str, use_admin: boo
                 stdout,
                 stderr,
                 error,
+                needs_admin: needs_admin.then_some(true),
                 ..base
             }
         }
@@ -416,7 +647,8 @@ mod tests {
     }
 
     #[test]
-    fn admin_allowlist_scopes_targets_inside_cwd() {
+    fn admin_allowlist_allows_targets_anywhere_on_mounted_drives() {
+        // Inside the current folder still works.
         assert!(admin_operation_allowed("touch a.txt", CWD));
         assert!(admin_operation_allowed("mkdir -p sub/dir", CWD));
         assert!(admin_operation_allowed("rm -- a.txt", CWD));
@@ -425,27 +657,89 @@ mod tests {
         assert!(admin_operation_allowed("cp -R -- a b", CWD));
         assert!(admin_operation_allowed("ln -s -- a b", CWD));
 
-        // Escapes and flags are rejected.
-        assert!(!admin_operation_allowed("touch ../escape", CWD));
-        assert!(!admin_operation_allowed("touch /etc/passwd", CWD));
+        // `--` is optional; the plain forms are accepted too.
+        assert!(admin_operation_allowed("rm a.txt", CWD));
+        assert!(admin_operation_allowed("rm -i a.txt", CWD));
+        assert!(admin_operation_allowed("mv a b", CWD));
+        assert!(admin_operation_allowed("cp -R a b", CWD));
+        assert!(admin_operation_allowed("ln -s a b", CWD));
+        // Quoted paths with spaces (the shape a manual `mv` produces).
+        assert!(admin_operation_allowed(
+            "mv 'My File.app/' /Users/me/Applications/",
+            CWD
+        ));
+
+        // Outside the current folder, on a mounted drive, is now allowed -- both
+        // relative and absolute.
+        assert!(admin_operation_allowed("touch ../sibling.txt", CWD));
+        assert!(admin_operation_allowed(
+            "touch /Users/me/elsewhere.txt",
+            CWD
+        ));
+        assert!(admin_operation_allowed(
+            "mkdir -p /Users/me/new/nested",
+            CWD
+        ));
+        assert!(admin_operation_allowed("mv -- a /Users/me/b", CWD));
+        assert!(admin_operation_allowed(
+            "cp -R -- /Users/me/src /Users/me/dst",
+            CWD
+        ));
+        assert!(admin_operation_allowed(
+            "ln -s -- /Users/me/target /Users/me/link",
+            CWD
+        ));
+
+        // Flags and arbitrary shell syntax remain blocked.
         assert!(!admin_operation_allowed("rm -rf -- a", CWD));
         assert!(!admin_operation_allowed("touch -m a", CWD));
         assert!(!admin_operation_allowed("touch a.txt && rm b", CWD));
         assert!(!admin_operation_allowed("sudo rm -- a", CWD));
-        assert!(!admin_operation_allowed("mv -- a /tmp/b", CWD));
     }
 
     #[test]
-    fn admin_refused_for_root_and_protected_workdirs() {
-        assert!(!admin_operation_allowed("touch a.txt", "/"));
-        assert!(!admin_operation_allowed(
-            "touch a.txt",
-            "/System/Volumes/Data"
+    fn admin_allowlist_refuses_protected_system_roots() {
+        for target in [
+            "/System/Library/x",
+            "/System/Volumes/Data/System/x",
+            "/System/Volumes/Data/usr/local/x",
+            "/usr/local/x",
+            "/private/etc/hosts",
+            "/etc/hosts",
+            "/var/tmp/x",
+            "/tmp/x",
+            "/bin/x",
+            "/sbin/x",
+            "/Library/x",
+            "/Volumes/Recovery/x",
+            "/",
+        ] {
+            assert!(
+                !admin_operation_allowed(&format!("touch {target}"), CWD),
+                "protected target {target} must be refused"
+            );
+        }
+        // A relative target from a protected folder resolves into it and is refused.
+        assert!(!admin_operation_allowed("touch x", "/System/Library"));
+        // User data on the Data volume is not a system root.
+        assert!(admin_operation_allowed(
+            "touch /System/Volumes/Data/Users/me/x",
+            CWD
         ));
-        assert!(!admin_operation_allowed(
-            "touch a.txt",
-            "/System/Volumes/Data/private/x"
-        ));
+    }
+
+    #[test]
+    fn admin_denial_reason_explains_the_refusal() {
+        assert_eq!(admin_denial_reason("touch a.txt", CWD), None);
+        assert!(admin_denial_reason("touch /System/Library/x", CWD)
+            .unwrap()
+            .contains("protected system path"));
+        assert!(
+            admin_denial_reason("mv -- a /System/Volumes/exAPFS/Applications/", CWD)
+                .unwrap()
+                .contains("protected system path")
+        );
+        assert!(admin_denial_reason("touch -m a", CWD).is_some());
     }
 
     #[test]
@@ -464,9 +758,68 @@ mod tests {
     }
 
     #[test]
+    fn empty_admin_password_never_authenticates() {
+        // Guard against accidentally accepting a blank password (and spawning sudo).
+        assert!(!validate_admin_password(""));
+    }
+
+    #[test]
+    fn sudo_password_expiry_is_detected() {
+        assert!(sudo_needs_password(
+            true,
+            false,
+            "sudo: a password is required"
+        ));
+        assert!(sudo_needs_password(
+            true,
+            false,
+            "sudo: a terminal is required to read the password"
+        ));
+        assert!(!sudo_needs_password(
+            false,
+            false,
+            "sudo: a password is required"
+        ));
+        assert!(!sudo_needs_password(true, true, ""));
+        assert!(!sudo_needs_password(
+            true,
+            false,
+            "mv: No such file or directory"
+        ));
+    }
+
+    #[test]
     fn quoted_targets_keep_spaces() {
         let tokens = parse_simple_admin_command("touch 'a b.txt'").expect("valid");
         assert_eq!(tokens, vec!["touch".to_string(), "a b.txt".to_string()]);
         assert!(admin_operation_allowed("touch 'a b.txt'", CWD));
+    }
+
+    #[test]
+    fn read_only_commands_never_use_sudo() {
+        // Unlocked admin session: write -> sudo, read-only -> never.
+        assert!(should_use_admin(true, true, false));
+        assert!(!should_use_admin(true, true, true));
+        // Locked: no sudo either way.
+        assert!(!should_use_admin(true, false, false));
+        assert!(!should_use_admin(false, true, false));
+    }
+
+    #[test]
+    fn double_quoted_paths_with_spaces_are_allowed_and_unquoted_ones_explain_why() {
+        const DEST: &str = "/System/Volumes/Data/Users/me/Applications/";
+        // A bundle whose name contains a space, quoted the way a shell needs it.
+        assert!(admin_operation_allowed("touch \"My Report.txt\"", CWD));
+        assert!(admin_operation_allowed(
+            &format!("mv \"LM Studio.app/\" {DEST}"),
+            CWD
+        ));
+        // Unquoted, a shell would read three arguments; the refusal must say how
+        // to fix it instead of only naming the allowlist.
+        let unquoted = format!("mv LM Studio.app/ {DEST}");
+        assert!(!admin_operation_allowed(&unquoted, CWD));
+        assert!(admin_denial_reason(&unquoted, CWD)
+            .unwrap()
+            .contains("quoted"));
     }
 }

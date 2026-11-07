@@ -13,6 +13,7 @@ mod commands;
 mod drives;
 mod hidden_space;
 mod inspect;
+mod move_symlink;
 mod openwith;
 mod quick_look;
 mod related;
@@ -99,6 +100,7 @@ pub fn run() {
             commands::hidden_space_authorize,
             commands::hidden_space_revoke,
             commands::terminal_run_safe,
+            commands::list_directory,
             commands::scan_hidden_space,
             commands::smart_clean_preview,
             commands::cloud_storage_survey,
@@ -108,6 +110,8 @@ pub fn run() {
             commands::ask_siri_transform,
             commands::quick_look,
             commands::quick_look_close,
+            move_symlink::move_and_symlink,
+            move_symlink::undo_move_and_symlink,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sunburst Disk");
