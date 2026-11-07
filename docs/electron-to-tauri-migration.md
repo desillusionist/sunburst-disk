@@ -837,6 +837,19 @@ Everything that remains is optional:
     “a password is required”. Unlocking now drops any cached ticket (`sudo -k`),
     authenticates with a plain `sudo -S -v` (which does update the cache) and
     proves the ticket with `sudo -n -v` before reporting success.
+- **r45** — One universal build (Apple Silicon + Intel).
+  - Releases now ship a single universal app: `tauri build --target
+    universal-apple-darwin` lipo-merges the arm64 and x86_64 Rust binaries, so the
+    same DMG runs natively on both kinds of Mac. The arm64 runner cross-compiles
+    the Intel slice, so no Intel hardware is needed to build.
+  - The Quick Look helper is compiled for both slices and lipo'd by
+    `scripts/build-quicklook.sh` (`npm run build:quicklook`). It is spawned as a
+    child process, so an arm64-only helper silently breaks Quick Look on Intel;
+    the committed universal binary and the script both prevent that.
+  - CI asserts that the app binary *and* the bundled helper under
+    `Contents/Resources/_up_/electron/` carry both architectures, so a missing
+    slice fails the release instead of shipping.
+  - Cost: bundle ~14 MiB, DMG ~8.4 MiB (was ~9 MiB / ~6 MiB arm64-only).
 - **r44** — Terminal refinements and “Move & Symlink” (0.4.3).
   - **Arrows are cursor navigation.** Only Tab inserts the highlighted prediction;
     →/← never insert, so moving the caret through a line can no longer replace it.
