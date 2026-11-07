@@ -3,7 +3,7 @@
 **A fast, safety-first macOS disk-space analyzer with an interactive sunburst.**
 Rust + [Tauri v2](https://v2.tauri.app) backend, React interface. **Local scans are review-only — nothing is deleted automatically.** Cloud items can be moved to your provider's Trash only on explicit confirmation.
 
-**Platform:** macOS 11+ · **Apple Silicon (arm64) only** — Intel Macs are not supported in this release.
+**Platform:** macOS 11+ · **Universal** — one download runs natively on Apple Silicon and Intel.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -127,19 +127,19 @@ log and the deliberate parity deltas live in
 
 ## Requirements
 
-- macOS 11 or later on **Apple Silicon (arm64)**. Intel Macs are **not**
-  supported in this release.
+- macOS 11 or later on Apple Silicon **or Intel**. The release is a single
+  universal build, so the same download runs natively on both.
 - macOS 26+ additionally shows the dark/tinted app icon.
 - To build from source: Node.js 20+, a Rust toolchain, and Xcode (for the Quick
   Look helper and the Icon Composer icon).
 
 ## Install
 
-Download `Sunburst Disk_0.4.0_aarch64.dmg` from
+Download `Sunburst Disk_0.4.4_universal.dmg` from
 [Releases](../../releases), open it and drag **Sunburst Disk** to *Applications*.
 
-> **Apple Silicon only.** The `aarch64` build runs on M-series Macs. Intel
-> (`x86_64`) is not supported in this release; a universal build is planned.
+> **One universal build.** The same DMG runs natively on Apple Silicon and on
+> Intel — there is no separate download to choose between.
 
 ## Build from source
 
@@ -148,12 +148,16 @@ npm install
 npm run tauri:dev        # dev build with the Vite dev server
 ```
 
-Release bundle (`.app` + `.dmg`):
+Release bundle (`.app` + `.dmg`), universal for Apple Silicon + Intel:
 
 ```bash
-npm run build:quicklook  # compile the Quick Look Swift helper (once)
-npm run tauri:build
+npm run build:quicklook  # compile the Quick Look Swift helper (both slices)
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+npm run tauri:build -- --target universal-apple-darwin
 ```
+
+A plain `npm run tauri:build` builds only the host architecture, which is fine
+for local testing but is not what the releases ship.
 
 Rust checks (no webview needed):
 
@@ -288,15 +292,15 @@ Read-only хелпер по allowlist (`pwd`, `df -h`, `ls …`, `du -sh`).
 
 ## Требования и сборка
 
-macOS 11+ на **Apple Silicon (arm64)** — Intel-маки в этом релизе **не
-поддерживаются**. Для сборки из исходников: Node.js 20+, Rust toolchain и Xcode
+macOS 11+ на **Apple Silicon или Intel** — один универсальный DMG работает
+нативно на обоих. Для сборки из исходников: Node.js 20+, Rust toolchain и Xcode
 (для Quick Look-хелпера и иконки Icon Composer).
 
 ```bash
 npm install
 npm run tauri:dev        # разработка
-npm run build:quicklook  # собрать Swift-хелпер Quick Look (один раз)
-npm run tauri:build      # релиз .app + .dmg
+npm run build:quicklook  # собрать Swift-хелпер Quick Look (обе архитектуры)
+npm run tauri:build -- --target universal-apple-darwin   # релиз .app + .dmg
 npm run rust:test        # тесты Rust
 npm run rust:lint        # clippy (warnings = errors)
 ```

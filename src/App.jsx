@@ -937,6 +937,9 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.4.4': [
+    'One universal build: the same download now runs natively on Apple Silicon and on Intel Macs, including Quick Look previews and every other feature. There is no separate version to choose, and no Rosetta overhead on either kind of Mac.'
+  ],
   '0.4.3': [
     'The Terminal pane predicts as you type: paths (including a destination folder outside the scanned tree), command names, each command’s options and past commands. ↑/↓ walk the list — up to 50 entries — Tab inserts the highlighted one, arrows stay cursor navigation, Esc collapses the list, ⌘Z undoes the last insertion, and command history survives a restart. Results now accumulate in a scrollable log, a button expands the pane over the whole area, and names with spaces are inserted already quoted.',
     'Administrator commands are no longer limited to the current folder: touch, mkdir -p, rm, mv, cp -R and ln -s can target any mounted drive, while protected system paths stay refused. Read-only commands never ask for a password, unlocking keeps a reusable macOS authorization, and a write refreshes the open folder immediately.',
