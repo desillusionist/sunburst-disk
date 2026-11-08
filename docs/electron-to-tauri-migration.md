@@ -837,6 +837,28 @@ Everything that remains is optional:
     “a password is required”. Unlocking now drops any cached ticket (`sudo -k`),
     authenticates with a plain `sudo -S -v` (which does update the cache) and
     proves the ticket with `sudo -n -v` before reporting success.
+- **r46** — Roomier file list, draggable panes, stable signing, permission hint.
+  - **Name column.** `.legend-label` was capped at `flex: 0 1 160px`, so a wide
+    window left a large empty gap before the size column. It is now
+    `flex: 1 1 auto` with no `max-width`, so a name takes the space the size
+    column does not need and truncates only when the pane is genuinely narrow.
+  - **Draggable panes.** Two `role="separator"` dividers between the chart, the
+    file list and the inspector: pointer drag plus ←/→ (2% of the chart+list
+    region per step, 16px for the inspector), clamped to 25–78% and 220–620px.
+    The inspector sits in a `.details-pane` wrapper so its width changes without
+    touching the child component.
+  - **Stable code identity.** The bundle is now ad-hoc signed
+    (`bundle.macOS.signingIdentity: "-"`), so `codesign` reports
+    `Identifier=com.sunburstdisk.app` with the Info.plist bound and the
+    designated requirement satisfied. Previously the app was only
+    linker-signed and reported a hash-derived identifier (`sunburst_disk-…`)
+    that changes with every build, which left macOS TCC without a stable
+    “allow Downloads” record.
+  - **Full Disk Access hint.** When `get_permission_status` reports
+    `not-granted`, the scan screen offers a dismissible hint explaining that
+    macOS asks for Downloads/Desktop/Documents until Full Disk Access is granted,
+    with a button that opens that pane (`open_system_settings` now accepts
+    `full-disk-access` and `files-and-folders`).
 - **r45** — One universal build (Apple Silicon + Intel).
   - Releases now ship a single universal app: `tauri build --target
     universal-apple-darwin` lipo-merges the arm64 and x86_64 Rust binaries, so the

@@ -727,6 +727,45 @@ describe('cloud view flow', () => {
     await waitFor(() => expect(output()).toBe(''));
   });
 
+  it('lets the chart, file list and inspector be rebalanced from the divider', async () => {
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    const chartDivider = screen.getByRole('separator', { name: /resize the chart and the file list/i });
+    const inspectorDivider = screen.getByRole('separator', { name: /resize the file list and the inspector/i });
+    expect(Number(chartDivider.getAttribute('aria-valuenow'))).toBe(59);
+    expect(Number(inspectorDivider.getAttribute('aria-valuenow'))).toBe(286);
+
+    // The keyboard path moves both dividers without a pointer.
+    chartDivider.focus();
+    await user.keyboard('{ArrowRight}');
+    await waitFor(() => expect(Number(chartDivider.getAttribute('aria-valuenow'))).toBe(61));
+    expect(document.querySelector('.chart-area').style.flex).toContain('0.61');
+
+    inspectorDivider.focus();
+    await user.keyboard('{ArrowLeft}');
+    await waitFor(() => expect(Number(inspectorDivider.getAttribute('aria-valuenow'))).toBe(302));
+    expect(document.querySelector('.details-pane').style.flex).toContain('302px');
+  });
+
+  it('offers a one-time Full Disk Access fix instead of per-folder prompts', async () => {
+    window.electronAPI.getPermissionStatus = vi.fn(async () => ({ fullDiskAccess: 'not-granted' }));
+    window.electronAPI.openSystemSettings = vi.fn(async () => ({ ok: true }));
+    const user = userEvent.setup();
+    await openCloudView(user);
+    await screen.findByText(/Cloud content · read-only/i);
+
+    const hint = await screen.findByText(/granting/i);
+    expect(hint.textContent).toMatch(/Full Disk Access/i);
+
+    await user.click(screen.getByRole('button', { name: /open settings/i }));
+    expect(window.electronAPI.openSystemSettings).toHaveBeenCalledWith('full-disk-access');
+
+    await user.click(screen.getByRole('button', { name: /dismiss permission hint/i }));
+    await waitFor(() => expect(screen.queryByText(/granting/i)).toBeNull());
+  });
+
   it('expands the Terminal drawer to fill the panel and restores it', async () => {
     const user = userEvent.setup();
     await openCloudView(user);

@@ -788,6 +788,14 @@ pub async fn open_system_settings(section: Option<String>) -> serde_json::Value 
     let section = section.unwrap_or_default();
     let url = match section.as_str() {
         "notifications" => "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
+        // The permission panes a disk analyzer actually needs: Full Disk Access
+        // covers Downloads/Desktop/Documents, so macOS stops prompting per folder.
+        "full-disk-access" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+        }
+        "files-and-folders" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders"
+        }
         _ => return json!({ "ok": false, "error": "Unknown System Settings section" }),
     };
     let url = url.to_string();

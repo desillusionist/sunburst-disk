@@ -39,7 +39,9 @@ review-oriented:
 ## Features
 
 - **Interactive sunburst + content tree** sharing one hierarchy, with hover
-  pulse, stable keyboard navigation and breadcrumbs.
+  pulse, stable keyboard navigation and breadcrumbs. The chart, the file list and
+  the inspector are separated by draggable dividers (or ←/→ on a focused
+  divider), and names use the full width before the size column.
 - **In-process scanner** with `du -x` parity: it stays on one filesystem, prunes
   system junk and cloud FileProvider domains (`~/Library/CloudStorage`,
   `~/Library/Mobile Documents`), and counts each physical object once
@@ -132,10 +134,15 @@ log and the deliberate parity deltas live in
 - macOS 26+ additionally shows the dark/tinted app icon.
 - To build from source: Node.js 20+, a Rust toolchain, and Xcode (for the Quick
   Look helper and the Icon Composer icon).
+- macOS protects `~/Downloads`, `~/Desktop` and `~/Documents` and will ask before
+  an app reads them. Granting **Full Disk Access** once (System Settings →
+  Privacy & Security) answers that permanently and lets a full-disk scan finish;
+  the app shows a dismissible hint with a shortcut to that pane. Run the app
+  from *Applications* rather than from the mounted DMG so the permission sticks.
 
 ## Install
 
-Download `Sunburst Disk_0.4.4_universal.dmg` from
+Download `Sunburst Disk_0.4.5_universal.dmg` from
 [Releases](../../releases), open it and drag **Sunburst Disk** to *Applications*.
 
 > **One universal build.** The same DMG runs natively on Apple Silicon and on
@@ -145,8 +152,12 @@ Download `Sunburst Disk_0.4.4_universal.dmg` from
 
 ```bash
 npm install
-npm run tauri:dev        # dev build with the Vite dev server
+npm run tauri:dev        # the app: starts Vite on :3000 and opens the native window
 ```
+
+> `npm run dev` on its own only starts Vite on :5173 — that is the web UI in a
+> browser, without the Rust backend (no scanning, Quick Look, Terminal or cloud
+> views). Use `npm run tauri:dev` to run the app.
 
 Release bundle (`.app` + `.dmg`), universal for Apple Silicon + Intel:
 
@@ -296,14 +307,25 @@ macOS 11+ на **Apple Silicon или Intel** — один универсаль�
 нативно на обоих. Для сборки из исходников: Node.js 20+, Rust toolchain и Xcode
 (для Quick Look-хелпера и иконки Icon Composer).
 
+macOS защищает `~/Downloads`, `~/Desktop` и `~/Documents` и спрашивает разрешение
+перед чтением. Однократно выданный **Full Disk Access** (Системные настройки →
+Конфиденциальность и безопасность) снимает эти запросы и позволяет полностью
+просканировать диск; приложение показывает подсказку с кнопкой перехода в эту
+панель. Запускайте приложение из *Applications*, а не из смонтированного DMG,
+чтобы разрешение сохранялось.
+
 ```bash
 npm install
-npm run tauri:dev        # разработка
+npm run tauri:dev        # разработка: Vite на :3000 + нативное окно
 npm run build:quicklook  # собрать Swift-хелпер Quick Look (обе архитектуры)
 npm run tauri:build -- --target universal-apple-darwin   # релиз .app + .dmg
 npm run rust:test        # тесты Rust
 npm run rust:lint        # clippy (warnings = errors)
 ```
+
+`npm run dev` без `tauri` запускает только Vite на :5173 — это веб-интерфейс в
+браузере без Rust-бэкенда (сканирование, Quick Look, терминал и облачные виды
+не работают).
 
 Установка: скачайте DMG из [Releases](../../releases) и перетащите **Sunburst
 Disk** в *Applications*.

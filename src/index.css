@@ -386,7 +386,41 @@ body {
   justify-content: center;
   position: relative;
   overflow: hidden;
+  min-width: 200px;
 }
+
+/* Draggable borders between the chart, the file list and the inspector. */
+.pane-divider {
+  flex: 0 0 6px;
+  align-self: stretch;
+  position: relative;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  -webkit-app-region: no-drag;
+}
+.pane-divider::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: rgba(255,255,255,.07);
+  transition: background .12s, width .12s;
+}
+.pane-divider:hover::after,
+.pane-divider:focus-visible::after { width: 2px; background: rgba(96,165,250,.55); }
+.pane-divider:focus-visible { outline: none; }
+.theme-matrix .pane-divider::after { background: rgba(57,255,102,.14); }
+.theme-matrix .pane-divider:hover::after,
+.theme-matrix .pane-divider:focus-visible::after { background: var(--matrix-line-bright); }
+
+/* Hosts the inspector so its width can be dragged without changing the child. */
+.details-pane { display: flex; min-width: 0; flex: 0 0 auto; }
+.details-pane > .details-sidebar { width: 100%; flex: 1 1 auto; min-width: 0; }
 .sunburst-stage {
   position: relative;
   width: min(540px, 100%);
@@ -879,7 +913,7 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  min-width: 280px;
+  min-width: 220px;
 }
 .legend-header {
   display: flex;
@@ -1071,14 +1105,15 @@ body {
   padding: 5px 6px;
   border-radius: 5px;
   transition: background .1s;
-  gap: 6px;
+  /* Breathing room between the name and the size column. */
+  gap: 26px;
   -webkit-app-region: no-drag;
 }
 .legend-row:hover, .legend-row.highlighted { background: transparent; }
 .legend-row.highlighted { outline: none; }
 .legend-row.static { cursor: default; }
 .legend-row.static:hover { background: transparent; }
-.legend-left { display: flex; align-items: center; gap: 6px; overflow: hidden; min-width: 0; }
+.legend-left { display: flex; align-items: center; gap: 6px; overflow: hidden; min-width: 0; flex: 1 1 auto; }
 .legend-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .legend-label {
@@ -1087,9 +1122,11 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 160px;
+  /* The name takes all the space the size column does not need, so a wide
+     window is not wasted on a fixed 160px cap. */
+  max-width: none;
   min-width: 0;
-  flex: 0 1 160px;
+  flex: 1 1 auto;
 }
 .legend-label-text { display: inline-block; flex: 0 0 auto; white-space: nowrap; }
 .legend-label-track { display: inline-flex; align-items: center; gap: 28px; min-width: max-content; }
@@ -1903,6 +1940,45 @@ body {
 .theme-matrix .move-symlink-toast span { color: var(--matrix-text-dim); }
 .theme-matrix .move-symlink-undo,
 .theme-matrix .move-symlink-dismiss { border-color: var(--matrix-line); color: var(--matrix-text); }
+
+/* Full Disk Access hint: macOS TCC prompts for Downloads/Desktop/Documents
+   until the app is granted access once. */
+.permission-hint {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(680px, calc(100% - 48px));
+  padding: 8px 12px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(240,195,107,.35);
+  border-radius: 7px;
+  background: rgba(28,33,41,.96);
+  box-shadow: 0 8px 22px rgba(0,0,0,.35);
+  color: #c8cdd5;
+  font-size: 10.5px;
+  line-height: 1.4;
+  -webkit-app-region: no-drag;
+}
+.permission-hint strong { color: #f0c36b; font-weight: 600; }
+.permission-hint button {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border: 1px solid #475569;
+  border-radius: 4px;
+  background: transparent;
+  color: #e2e8f0;
+  font: inherit;
+  cursor: pointer;
+}
+.permission-hint button:hover { border-color: #64748b; background: rgba(148,163,184,.14); }
+.permission-hint-dismiss { padding: 1px 6px; }
+.theme-matrix .permission-hint { border-color: rgba(57,255,102,.35); background: rgba(2,7,3,.97); color: var(--matrix-text); }
+.theme-matrix .permission-hint strong { color: #ffce5c; }
+.theme-matrix .permission-hint button { border-color: var(--matrix-line); color: var(--matrix-text); }
 
 .update-toast {
   position: fixed;

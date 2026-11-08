@@ -768,6 +768,13 @@ function buildDisplayNode(
 // long session grow without bound.
 const TERMINAL_LOG_LIMIT = 200_000;
 
+// Pane resizing limits: the chart's share of the chart+file-list region, and the
+// inspector's width in pixels.
+const PANE_CHART_MIN = 0.25;
+const PANE_CHART_MAX = 0.78;
+const PANE_INSPECTOR_MIN = 220;
+const PANE_INSPECTOR_MAX = 620;
+
 const TERMINAL_COMMAND_PRESETS = [
   {
     command: 'pwd',
@@ -937,6 +944,10 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.4.5': [
+    'Drag the borders between the sunburst, the file list and the inspector to give any pane the room it needs — or focus a border and use ←/→. Names now use the full width of the list instead of stopping at a fixed width, with a little more space before the size column.',
+    'The app bundle is now signed, so macOS keeps your “Allow” answer for Downloads, Desktop and Documents instead of asking again. If access is still missing, a dismissible hint explains how to grant Full Disk Access once and opens that pane for you.'
+  ],
   '0.4.4': [
     'One universal build: the same download now runs natively on Apple Silicon and on Intel Macs, including Quick Look previews and every other feature. There is no separate version to choose, and no Rosetta overhead on either kind of Mac.'
   ],
@@ -1117,6 +1128,13 @@ export default function App() {
   const [ejectingDriveKey, setEjectingDriveKey] = useState(null);
   const [moveSymlinkBusy, setMoveSymlinkBusy] = useState(null);
   const [moveSymlinkUndo, setMoveSymlinkUndo] = useState(null);
+  // Pane layout: the chart/file-list split (as a share of the space left after
+  // the inspector) and the inspector width in pixels. Dragged or arrow-keyed.
+  const [paneLayout, setPaneLayout] = useState({ chartShare: 0.59, inspector: 286 });
+  const paneDragRef = useRef(null);
+  const scanAreaRef = useRef(null);
+  const [permissionStatus, setPermissionStatus] = useState(null);
+  const [permissionHintDismissed, setPermissionHintDismissed] = useState(false);
   const [terminalFrame, setTerminalFrame] = useState({ left: 20, top: 20 });
   const [smartCleanOpen, setSmartCleanOpen] = useState(false);
   const [smartCleanLoading, setSmartCleanLoading] = useState(false);
@@ -3246,6 +3264,85 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [moveSymlinkUndo]);
 
+  // ── Pane resizing: chart ↔ file list ↔ inspector ───────────────────────────
+  const startPaneDrag = useCallback((kind, event) => {
+    const area = scanAreaRef.current;
+    if (!area) return;
+    const rect = area.getBoundingClientRect();
+    paneDragRef.current = {
+      kind,
+      startX: event.clientX,
+      startShare: paneLayout.chartShare,
+      startInspector: paneLayout.inspector,
+      available: Math.max(1, rect.width - (detailsOpen ? paneLayout.inspector : 0) - 12),
+      containerWidth: rect.width
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  }, [detailsOpen, paneLayout.chartShare, paneLayout.inspector]);
+
+  useEffect(() => {
+    const move = event => {
+      const drag = paneDragRef.current;
+      if (!drag) return;
+      if (drag.kind === 'chart') {
+        const next = drag.startShare + (event.clientX - drag.startX) / drag.available;
+        setPaneLayout(previous => ({
+          ...previous,
+          chartShare: Math.min(PANE_CHART_MAX, Math.max(PANE_CHART_MIN, next))
+        }));
+        return;
+      }
+      const ceiling = Math.max(PANE_INSPECTOR_MIN + 60, Math.min(PANE_INSPECTOR_MAX, drag.containerWidth * 0.5));
+      const next = drag.startInspector - (event.clientX - drag.startX);
+      setPaneLayout(previous => ({
+        ...previous,
+        inspector: Math.min(ceiling, Math.max(PANE_INSPECTOR_MIN, next))
+      }));
+    };
+    const stop = () => { paneDragRef.current = null; };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', stop);
+    window.addEventListener('pointercancel', stop);
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+    };
+  }, []);
+
+  // Keyboard path for the same two dividers, so they work without a pointer.
+  const resizePaneWithKey = useCallback((kind, event) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    const step = event.key === 'ArrowRight' ? 1 : -1;
+    if (kind === 'chart') {
+      setPaneLayout(previous => ({
+        ...previous,
+        chartShare: Math.min(PANE_CHART_MAX, Math.max(PANE_CHART_MIN, previous.chartShare + step * 0.02))
+      }));
+      return;
+    }
+    setPaneLayout(previous => ({
+      ...previous,
+      inspector: Math.min(PANE_INSPECTOR_MAX, Math.max(PANE_INSPECTOR_MIN, previous.inspector - step * 16))
+    }));
+  }, []);
+
+  // macOS asks before each protected folder (Downloads, Desktop, Documents)
+  // until the app is granted Full Disk Access — surface the one-time fix instead
+  // of letting the system dialog appear on every scan.
+  useEffect(() => {
+    if (!window.electronAPI?.getPermissionStatus) return undefined;
+    let cancelled = false;
+    Promise.resolve(window.electronAPI.getPermissionStatus())
+      .then(status => { if (!cancelled && status) setPermissionStatus(status); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const showPermissionHint = permissionStatus?.fullDiskAccess === 'not-granted' && !permissionHintDismissed;
+
   const applyOptimisticTrashRemoval = useCallback(paths => {
     const sourceTree = folderWatchTreeRef.current || scannedTree;
     const result = removePathsFromTree(sourceTree, paths);
@@ -4718,7 +4815,26 @@ export default function App() {
 
       {/* ── Screen 2: Scan View ─────────────────────────────────────────────── */}
       {viewState === 'scan' && (
-        <div className="scan-screen">
+        <div className="scan-screen" ref={scanAreaRef}>
+          {showPermissionHint && (
+            <div className="permission-hint" role="status">
+              <span>
+                macOS asks before Sunburst Disk can read a protected folder such as
+                <strong> Downloads</strong>, <strong>Desktop</strong> or <strong>Documents</strong>.
+                Granting <strong>Full Disk Access</strong> once stops those prompts and makes the scan complete.
+              </span>
+              <button
+                type="button"
+                onClick={() => { void window.electronAPI?.openSystemSettings?.('full-disk-access'); }}
+              >Open Settings</button>
+              <button
+                type="button"
+                className="permission-hint-dismiss"
+                aria-label="Dismiss permission hint"
+                onClick={() => setPermissionHintDismissed(true)}
+              >×</button>
+            </div>
+          )}
           {scanNotice && !cloudView && (
             <div className="scan-complete-toast" role="status" aria-live="polite">
               <strong>{scanNotice.title || 'Disk scan complete'}</strong>
@@ -4773,7 +4889,7 @@ export default function App() {
           )}
 
           {/* Chart Area */}
-          <div className="chart-area">
+          <div className="chart-area" style={{ flex: `${paneLayout.chartShare} 1 0` }}>
             {cloudView && currentViewNode?.type === 'directory' && currentViewNode?.truncated && !loading && !nodeLoading && (
               <button
                 type="button"
@@ -5261,8 +5377,22 @@ export default function App() {
             )}
           </div>
 
+          {/* Chart ↔ file list: drag (or arrow keys) to rebalance the two panes. */}
+          <div
+            className="pane-divider"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize the chart and the file list"
+            aria-valuenow={Math.round(paneLayout.chartShare * 100)}
+            aria-valuemin={PANE_CHART_MIN * 100}
+            aria-valuemax={PANE_CHART_MAX * 100}
+            tabIndex={0}
+            onPointerDown={event => startPaneDrag('chart', event)}
+            onKeyDown={event => resizePaneWithKey('chart', event)}
+          />
+
           {/* Legend / File List */}
-          <div className="legend-area">
+          <div className="legend-area" style={{ flex: `${1 - paneLayout.chartShare} 1 0` }}>
             <div className="legend-header">
               <div className="legend-title">
                 <CrawlLabel
@@ -5534,22 +5664,39 @@ export default function App() {
           </div>
 
           {detailsOpen && (
-            <DetailsSidebar
-              node={focusedLiveNode}
-              metadata={itemDetails}
-              loading={detailsLoading}
-              risk={getRiskInfo(focusedLiveNode)}
-              categoryDescription={getCategoryDescription(focusedLiveNode)}
-              onAddToCollector={collectItem}
-              onQuickLook={handleQuickLook}
-              onRevealInFinder={itemPath => window.electronAPI?.revealInFinder(itemPath)}
-              onTogglePackageContents={togglePackageContents}
-              packageContentsShown={Boolean(packageContentsShown[focusedLiveNode?.path])}
-              packageContentsStatus={packageContentsStatus[focusedLiveNode?.path]}
-              onOpenFullDiskAccessSettings={() => { void window.electronAPI?.openFullDiskAccessSettings?.(); }}
-              onRequestHiddenSpaceAccess={node => hiddenSpaceAdminAuthorized ? lockHiddenSpace(node) : openHiddenSpace(node)}
-              hiddenSpaceUnlocked={hiddenSpaceAdminAuthorized}
-            />
+            <>
+              {/* File list ↔ inspector */}
+              <div
+                className="pane-divider"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize the file list and the inspector"
+                aria-valuenow={Math.round(paneLayout.inspector)}
+                aria-valuemin={PANE_INSPECTOR_MIN}
+                aria-valuemax={PANE_INSPECTOR_MAX}
+                tabIndex={0}
+                onPointerDown={event => startPaneDrag('inspector', event)}
+                onKeyDown={event => resizePaneWithKey('inspector', event)}
+              />
+              <div className="details-pane" style={{ flex: `0 0 ${paneLayout.inspector}px` }}>
+                <DetailsSidebar
+                  node={focusedLiveNode}
+                  metadata={itemDetails}
+                  loading={detailsLoading}
+                  risk={getRiskInfo(focusedLiveNode)}
+                  categoryDescription={getCategoryDescription(focusedLiveNode)}
+                  onAddToCollector={collectItem}
+                  onQuickLook={handleQuickLook}
+                  onRevealInFinder={itemPath => window.electronAPI?.revealInFinder(itemPath)}
+                  onTogglePackageContents={togglePackageContents}
+                  packageContentsShown={Boolean(packageContentsShown[focusedLiveNode?.path])}
+                  packageContentsStatus={packageContentsStatus[focusedLiveNode?.path]}
+                  onOpenFullDiskAccessSettings={() => { void window.electronAPI?.openFullDiskAccessSettings?.(); }}
+                  onRequestHiddenSpaceAccess={node => hiddenSpaceAdminAuthorized ? lockHiddenSpace(node) : openHiddenSpace(node)}
+                  hiddenSpaceUnlocked={hiddenSpaceAdminAuthorized}
+                />
+              </div>
+            </>
           )}
           <DebugDownbar
             terminalOpen={terminalOpen}
