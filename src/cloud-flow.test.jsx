@@ -5,7 +5,7 @@
 // stub, so the assertions cover the actual wiring: panel → Scan → cloud view.
 import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import pkg from '../package.json';
 import App from './App';
@@ -132,6 +132,7 @@ function buildElectronAPI() {
       failed: 0
     })),
     openExternalUrl: vi.fn(async () => ({ ok: true })),
+    setDockProgress: vi.fn(async () => ({ ok: true })),
     terminalRunSafe: vi.fn(async () => ({ ok: true, stdout: '', stderr: '', error: '' })),
     terminalAuthorizeAdmin: vi.fn(async () => ({ ok: false, error: 'not available in tests' })),
     terminalRevokeAdmin: vi.fn(async () => ({ ok: true })),
@@ -747,6 +748,43 @@ describe('cloud view flow', () => {
     await user.keyboard('{ArrowLeft}');
     await waitFor(() => expect(Number(inspectorDivider.getAttribute('aria-valuenow'))).toBe(302));
     expect(document.querySelector('.details-pane').style.flex).toContain('302px');
+  });
+
+  it('mirrors scan progress on the Dock icon and clears it when the scan ends', async () => {
+    let progressListener;
+    window.electronAPI.onScanProgress = vi.fn(callback => {
+      progressListener = callback;
+      return () => {};
+    });
+    let finishScan;
+    window.electronAPI.getDrives = vi.fn(async () => ({
+      drives: [{
+        filesystem: 'apfs', name: 'Macintosh HD', mount: '/', scanPath: '/',
+        total: 1000, free: 400, used: 600, usePercent: '60%', isStartup: true, isCustomFolder: false
+      }],
+      userHome: '/Users/x'
+    }));
+    window.electronAPI.scanDirectory = vi.fn(() => new Promise(resolve => { finishScan = resolve; }));
+
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Scan' }));
+
+    await waitFor(() => expect(progressListener).toBeTypeOf('function'));
+    act(() => progressListener({ percent: 42, currentDir: 'x', itemsScanned: 3 }));
+    // The Dock bar takes the same fraction the window shows; with the default
+    // theme the colour is left to the system accent (null).
+    await waitFor(() => expect(window.electronAPI.setDockProgress).toHaveBeenCalledWith(0.42, null));
+
+    // Switching to the Matrix theme re-sends the same value in the theme colour.
+    await user.click(screen.getByRole('button', { name: /choose theme/i }));
+    await user.click(await screen.findByRole('button', { name: /matrix/i }));
+    await waitFor(() => expect(window.electronAPI.setDockProgress).toHaveBeenCalledWith(0.42, '#39ff66'));
+
+    await act(async () => {
+      finishScan({ tree: { name: 'Macintosh HD', path: '/', type: 'directory', size: 1000, itemCount: 1, children: [] } });
+    });
+    await waitFor(() => expect(window.electronAPI.setDockProgress).toHaveBeenLastCalledWith(null, null));
   });
 
   it('offers a one-time Full Disk Access fix instead of per-folder prompts', async () => {

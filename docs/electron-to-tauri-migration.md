@@ -837,6 +837,27 @@ Everything that remains is optional:
     “a password is required”. Unlocking now drops any cached ticket (`sudo -k`),
     authenticates with a plain `sudo -S -v` (which does update the cache) and
     proves the ticket with `sudo -n -v` before reporting success.
+- **r47** — Scan progress on the Dock icon.
+  - `dock_progress::set()` installs a slim `NSProgressIndicator` into the app's
+    `NSDockTile.contentView` — macOS has no public API for Dock-tile progress;
+    this is what Safari does for downloads. **The tile only re-snapshots its view
+    hierarchy, so changing the value of an attached indicator never repaints it**:
+    every update detaches the previous bar and attaches a fresh one whose value is
+    already set, then calls `display()`. Verified by photographing the Dock at
+    several values (20% / 95% / cleared).
+  - The renderer mirrors `scanProgress.percent` while the scan is `loading`,
+    throttled to one update per 200 ms and skipped under a 2% change, and sends
+    `null` as soon as the scan stops, so the bar clears on completion, cancel or
+    error. “Preparing” (`percent < 0`) leaves the previous state alone. A theme
+    switch bypasses the throttle so the colour updates immediately.
+  - The bar follows the theme: without a colour the system `NSProgressIndicator`
+    is used (system accent colour, native look); with a colour — the Matrix theme
+    passes its `#39ff66` accent — a small `NSView` subclass
+    (`SunburstDockBarView`) draws a rounded track and fill. Both share the
+    detach/re-attach step, so switching the theme mid-scan repaints in the new
+    colour. Verified by photographing the Dock in both themes.
+  - `set_dock_progress` hops to the main thread with `run_on_main_thread`; off the
+    main thread the call is a no-op, which is unit-tested.
 - **r46** — Roomier file list, draggable panes, stable signing, permission hint.
   - **Name column.** `.legend-label` was capped at `flex: 0 1 160px`, so a wide
     window left a large empty gap before the size column. It is now

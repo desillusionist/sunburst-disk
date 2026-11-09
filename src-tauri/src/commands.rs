@@ -771,6 +771,16 @@ pub(crate) fn full_disk_access_status() -> String {
     }
 }
 
+/// Mirror the scan percentage on the Dock icon. `color` is an optional
+/// `#rrggbb` used for the themed bar; without it the system accent colour is
+/// used. Best effort: the AppKit work must happen on the main thread, and a
+/// failure there is never fatal.
+#[tauri::command(rename_all = "camelCase")]
+pub fn set_dock_progress(app: AppHandle, progress: Option<f64>, color: Option<String>) {
+    let rgb = color.as_deref().and_then(crate::dock_progress::parse_color);
+    let _ = app.run_on_main_thread(move || crate::dock_progress::set(progress, rgb));
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub async fn get_permission_status() -> serde_json::Value {
     tauri::async_runtime::spawn_blocking(|| {

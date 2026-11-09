@@ -10,6 +10,7 @@ mod capacity;
 mod cloud;
 mod cloud_trash;
 mod commands;
+mod dock_progress;
 mod drives;
 mod hidden_space;
 mod inspect;
@@ -112,6 +113,7 @@ pub fn run() {
             commands::quick_look_close,
             move_symlink::move_and_symlink,
             move_symlink::undo_move_and_symlink,
+            commands::set_dock_progress,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sunburst Disk");

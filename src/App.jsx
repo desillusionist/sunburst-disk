@@ -67,6 +67,9 @@ const COLOR_MAP = {
   'hidden space...': '#7e22ce' // Dark Purple
 };
 const RING_COLORS = ['#eab308','#22c55e','#06b6d4','#3b82f6','#8b5cf6','#ec4899','#f97316','#14b8a6','#6366f1'];
+// The Matrix theme's accent: the sunburst and the Dock progress bar share it.
+const MATRIX_ACCENT = '#39ff66';
+
 function getNodeColor(node, idx, matrixTheme = false) {
   // Hidden space is pale-red only once the session is unlocked with the admin
   // password; while locked it uses a neutral grey. Match on the hidden-space
@@ -78,7 +81,7 @@ function getNodeColor(node, idx, matrixTheme = false) {
   if (isHiddenSpace) {
     return node?.hiddenSpaceAdminUnlocked === true ? 'rgba(255, 123, 138, 0.9)' : 'rgba(154, 160, 172, 0.9)';
   }
-  if (matrixTheme) return '#39ff66';
+  if (matrixTheme) return MATRIX_ACCENT;
   if (node?.name === 'smaller objects...') return COLOR_MAP['smaller objects...'];
   if (node?.type === 'special') return COLOR_MAP['hidden space...'];
   if (node?.type === 'file') return '#64748b';
@@ -3342,6 +3345,40 @@ export default function App() {
   }, []);
 
   const showPermissionHint = permissionStatus?.fullDiskAccess === 'not-granted' && !permissionHintDismissed;
+
+  // Mirror the scan percentage on the Dock icon, throttled: the scanner emits
+  // progress far more often than the tile needs to redraw, and the bar only
+  // needs to move visibly. Cleared the moment the scan stops. The bar follows the
+  // theme: the system accent colour normally, the Matrix green when that theme is
+  // active, so a theme switch mid-scan re-sends the same value in the new colour.
+  const dockProgressRef = useRef({ value: null, at: 0, color: null });
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api?.setDockProgress) return;
+    const clear = () => {
+      if (dockProgressRef.current.value === null) return;
+      dockProgressRef.current = { value: null, at: 0, color: null };
+      void api.setDockProgress(null, null);
+    };
+    if (!loading) {
+      clear();
+      return;
+    }
+    const percent = Number(scanProgress.percent);
+    if (!Number.isFinite(percent) || percent < 0) {
+      // "Preparing" — nothing to show yet, but do not clear a bar mid-scan.
+      return;
+    }
+    const next = Math.min(1, Math.max(0, percent / 100));
+    const color = matrixTheme ? MATRIX_ACCENT : null;
+    const previous = dockProgressRef.current;
+    const now = Date.now();
+    const sameLook = previous.color === color;
+    if (sameLook && previous.value !== null && now - previous.at < 200) return;
+    if (sameLook && previous.value !== null && Math.abs(next - previous.value) < 0.02) return;
+    dockProgressRef.current = { value: next, at: now, color };
+    void api.setDockProgress(next, color);
+  }, [loading, scanProgress.percent, matrixTheme]);
 
   const applyOptimisticTrashRemoval = useCallback(paths => {
     const sourceTree = folderWatchTreeRef.current || scannedTree;

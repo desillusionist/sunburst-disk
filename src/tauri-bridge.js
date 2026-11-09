@@ -69,6 +69,7 @@ if (tauri?.core?.invoke) {
     notifyScanComplete: (scanPath, itemCount = 0) =>
       invoke('notify_scan_complete', { scanPath, itemCount }),
     getPermissionStatus: () => invoke('get_permission_status'),
+    setDockProgress: (progress, color = null) => invoke('set_dock_progress', { progress, color }),
     openSystemSettings: section => invoke('open_system_settings', { section }),
     saveTextFile: (defaultName, content) =>
       invoke('save_text_file', { defaultName, content }),
