@@ -142,7 +142,7 @@ log and the deliberate parity deltas live in
 
 ## Install
 
-Download `Sunburst Disk_0.4.5_universal.dmg` from
+Download `Sunburst Disk_0.4.6_universal.dmg` from
 [Releases](../../releases), open it and drag **Sunburst Disk** to *Applications*.
 
 > **One universal build.** The same DMG runs natively on Apple Silicon and on

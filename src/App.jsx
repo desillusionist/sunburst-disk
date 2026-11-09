@@ -947,6 +947,10 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.4.6': [
+    'Scans now show their progress on the Dock icon: a slim bar fills along the bottom of the app icon, mirroring the percentage in the window, and disappears when the scan finishes, is cancelled or fails. It keeps you informed while the window is behind another app.',
+    'The bar follows your theme — the system accent colour in the default theme, the Matrix green when that theme is active, recolouring instantly if you switch mid-scan.'
+  ],
   '0.4.5': [
     'Drag the borders between the sunburst, the file list and the inspector to give any pane the room it needs — or focus a border and use ←/→. Names now use the full width of the list instead of stopping at a fixed width, with a little more space before the size column.',
     'The app bundle is now signed, so macOS keeps your “Allow” answer for Downloads, Desktop and Documents instead of asking again. If access is still missing, a dismissible hint explains how to grant Full Disk Access once and opens that pane for you.'
