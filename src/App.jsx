@@ -424,6 +424,13 @@ function getNodeDate(node, metadataByPath) {
   return Number(metadataByPath?.[node?.path]?.modifiedAt || node?.modifiedAt || 0);
 }
 
+// "Date added" is the item's creation time from the same metadata read that
+// powers the Modified filter. Finder's own "Date Added" comes from Spotlight;
+// on APFS the creation time is the closest value a plain `lstat` can give.
+function getNodeAddedDate(node, metadataByPath) {
+  return Number(metadataByPath?.[node?.path]?.createdAt || node?.createdAt || 0);
+}
+
 function matchesViewFilters(node, options, metadataByPath) {
   const query = options.nameQuery.trim().toLocaleLowerCase();
   if (query && !String(node.name || '').toLocaleLowerCase().includes(query)) return false;
@@ -487,8 +494,8 @@ function sortNodes(nodes, options, metadataByPath) {
     } else if (options.sortBy === 'type') {
       result = (TYPE_ORDER[a.type] ?? 99) - (TYPE_ORDER[b.type] ?? 99);
       if (result === 0) result = String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base', numeric: true });
-    } else if (options.sortBy === 'date') {
-      result = getNodeDate(a, metadataByPath) - getNodeDate(b, metadataByPath);
+    } else if (options.sortBy === 'added') {
+      result = getNodeAddedDate(a, metadataByPath) - getNodeAddedDate(b, metadataByPath);
     } else {
       result = (Number(a.size) || 0) - (Number(b.size) || 0);
     }
@@ -947,6 +954,12 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.4.7': [
+    'The Dock progress bar now actually appears in the installed app. It worked while running from source but stayed invisible in a normal launch, because macOS gives a running app’s Dock tile no content view to attach a bar to — the app now installs one, so the bar is there for every scan.',
+    'Folder scans show honest progress. Progress inside a folder used to be measured against the whole disk, so a scan that was almost finished still read about 1% and the bar barely moved. A folder now tracks its own measured size — and when no size is known yet the bar is indeterminate, with a live item count, instead of pretending to be nearly done.',
+    'Sort & Filter gained “Date added” and a clearer active state. Sorting by when an item first appeared replaces “Date modified”, and the funnel turns yellow whenever any sort or filter differs from the default, so an altered view is obvious at a glance. In cloud views the Type list now shows every option at once — no scrollbar hiding half the types.',
+    'Typing the first letters of a name in the content list jumps to that row and scrolls it into view. A second letter narrows the search, and repeating a letter cycles through the names that start with it. Scrollbars were also brought in line with the app: one thin, themed bar everywhere instead of the system’s light one in some panes.'
+  ],
   '0.4.6': [
     'Scans now show their progress on the Dock icon: a slim bar fills along the bottom of the app icon, mirroring the percentage in the window, and disappears when the scan finishes, is cancelled or fails. It keeps you informed while the window is behind another app.',
     'The bar follows your theme — the system accent colour in the default theme, the Matrix green when that theme is active, recolouring instantly if you switch mid-scan.'
@@ -1356,7 +1369,7 @@ export default function App() {
     : liveHoveredNode && liveHoveredNode.children && liveHoveredNode.children.length > 0
       ? liveHoveredNode
       : currentViewDisplayNode;
-  const needsDisplayMetadata = viewOptions.sortBy === 'date' || viewOptions.dateFilter !== 'all';
+  const needsDisplayMetadata = viewOptions.sortBy === 'added' || viewOptions.dateFilter !== 'all';
   const displayMetadata = needsDisplayMetadata ? metadataByPath : EMPTY_METADATA;
   const displayCacheRef = useRef(new WeakMap());
   const packageContentsKey = Object.keys(packageContentsShown)
@@ -1453,7 +1466,7 @@ export default function App() {
 
   useEffect(() => {
     if (!window.electronAPI?.inspectItems || !previewSource?.children?.length) return undefined;
-    if (viewOptions.sortBy !== 'date' && viewOptions.dateFilter === 'all') return undefined;
+    if (viewOptions.sortBy !== 'added' && viewOptions.dateFilter === 'all') return undefined;
     let cancelled = false;
     const paths = previewSource.children
       .filter(node => node.path && !node.path.startsWith('__'))
@@ -2005,7 +2018,12 @@ export default function App() {
         // process; detail (children) is returned for the first 10 levels and
         // lazy-loaded beyond that. No timeout, no mock fallback.
         const scanStartedAt = performance.now();
-        const data = await window.electronAPI.scanDirectory(scanPath, 10, requestId, cloud);
+        // A custom folder is a subtree of a volume: its own previously measured
+        // size (if any) is the only honest progress denominator, and without it
+        // the bar must be indeterminate. A real volume keeps `statfs` sizing.
+        const knownBytes = drive.isCustomFolder ? scanCache[getDriveKey(drive)]?.tree?.size : null;
+        const expectedBytes = Number.isFinite(knownBytes) && knownBytes > 0 ? knownBytes : null;
+        const data = await window.electronAPI.scanDirectory(scanPath, 10, requestId, cloud, expectedBytes, Boolean(drive.isCustomFolder));
         if (activeScanRequestRef.current !== requestId) return;
         recordPerfEvent('ipc.scan-directory', performance.now() - scanStartedAt, { path: scanPath, requestId });
         if (data?.canceled) {
@@ -2306,7 +2324,7 @@ export default function App() {
     if (isPackageContainerNode(node) && !packageContentsShown[node.path]) return;
     try {
       const scanStartedAt = performance.now();
-      const result = await window.electronAPI.scanSubdir(node.path, false, cloudModeRef.current);
+      const result = await window.electronAPI.scanSubdir(node.path, false, cloudModeRef.current, null, false, Number.isFinite(node.size) && node.size > 0 ? node.size : null);
       recordPerfEvent('ipc.scan-subdir', performance.now() - scanStartedAt, { path: node.path });
       if (!result?.tree?.children || result.tree.children.length === 0) return;
       const enriched = {
@@ -2664,7 +2682,7 @@ export default function App() {
         : null;
       nodeScanRequestRef.current = requestId;
       try {
-        const result = await window.electronAPI.scanSubdir(node.path, false, cloudModeRef.current, requestId);
+        const result = await window.electronAPI.scanSubdir(node.path, false, cloudModeRef.current, requestId, false, Number.isFinite(node.size) && node.size > 0 ? node.size : null);
         // A newer navigation or a cancel superseded this walk: drop the result.
         if (token !== nodeScanTokenRef.current) return;
         if (result?.canceled) return;
@@ -2726,7 +2744,7 @@ export default function App() {
     nodeScanRequestRef.current = requestId;
     setNodeLoading(true);
     try {
-      const result = await window.electronAPI.scanSubdir(node.path, false, true, requestId, true);
+      const result = await window.electronAPI.scanSubdir(node.path, false, true, requestId, true, Number.isFinite(node.size) && node.size > 0 ? node.size : null);
       if (token !== nodeScanTokenRef.current) return;
       if (result?.canceled) return;
       if (result?.tree) {
@@ -3164,10 +3182,15 @@ export default function App() {
     try {
       const isFullDriveRefresh = scanPath === (currentDrive?.scanPath || currentDrive?.mount);
       const includePackageContents = Boolean(packageContentsShown[currentPath]);
+      // The size this view already has is the honest denominator for a re-scan:
+      // the scanner walks the same tree again, so progress tracks the work it
+      // actually has to redo instead of being measured against the whole disk.
+      const knownBytes = currentViewNode?.size;
+      const expectedBytes = Number.isFinite(knownBytes) && knownBytes > 0 ? knownBytes : null;
       const refreshStartedAt = performance.now();
       const result = isFullDriveRefresh
-        ? await window.electronAPI.scanDirectory(scanPath, 10, null, cloudModeRef.current)
-        : await window.electronAPI.scanSubdir(scanPath, includePackageContents, cloudModeRef.current);
+        ? await window.electronAPI.scanDirectory(scanPath, 10, null, cloudModeRef.current, expectedBytes, false)
+        : await window.electronAPI.scanSubdir(scanPath, includePackageContents, cloudModeRef.current, null, false, expectedBytes);
       recordPerfEvent('ipc.refresh', performance.now() - refreshStartedAt, { path: scanPath, fullDrive: isFullDriveRefresh });
       if (!result?.tree) throw new Error(result?.error || 'Refresh returned no tree');
 
@@ -3369,17 +3392,22 @@ export default function App() {
       return;
     }
     const percent = Number(scanProgress.percent);
-    if (!Number.isFinite(percent) || percent < 0) {
-      // "Preparing" — nothing to show yet, but do not clear a bar mid-scan.
-      return;
-    }
-    const next = Math.min(1, Math.max(0, percent / 100));
+    // An unknown total (the first scan of a folder) has no honest percentage.
+    // Show a thin sliver — the same "working, total unknown" language as the
+    // window's indeterminate bar — instead of a bar parked at 0 or no bar at all.
+    const indeterminate = !Number.isFinite(percent) || percent < 0;
+    const next = indeterminate ? 0.04 : Math.min(1, Math.max(0, percent / 100));
     const color = matrixTheme ? MATRIX_ACCENT : null;
     const previous = dockProgressRef.current;
     const now = Date.now();
     const sameLook = previous.color === color;
-    if (sameLook && previous.value !== null && now - previous.at < 200) return;
-    if (sameLook && previous.value !== null && Math.abs(next - previous.value) < 0.02) return;
+    if (sameLook && previous.value !== null) {
+      const delta = Math.abs(next - previous.value);
+      // Skip only small, rapid movement. A visible jump must land at once: the
+      // first real percentage after an indeterminate scan is exactly that.
+      if (delta < 0.02) return;
+      if (delta < 0.06 && now - previous.at < 200) return;
+    }
     dockProgressRef.current = { value: next, at: now, color };
     void api.setDockProgress(next, color);
   }, [loading, scanProgress.percent, matrixTheme]);
@@ -3878,7 +3906,12 @@ export default function App() {
   const selectedTypeFilters = Array.isArray(viewOptions.typeFilter)
     ? viewOptions.typeFilter
     : (viewOptions.typeFilter && viewOptions.typeFilter !== 'all' ? [viewOptions.typeFilter] : []);
-  const filtersActive = selectedTypeFilters.length > 0
+  // Any deviation from the default view -- including sort field and direction --
+  // turns the trigger yellow, so an active sort/filter is visible at a glance.
+  const sortCustomised = viewOptions.sortBy !== DEFAULT_VIEW_OPTIONS.sortBy
+    || viewOptions.sortDirection !== DEFAULT_VIEW_OPTIONS.sortDirection;
+  const filtersActive = sortCustomised
+    || selectedTypeFilters.length > 0
     || viewOptions.sizeFilter !== 'all'
     || viewOptions.dateFilter !== 'all'
     || Boolean(viewOptions.nameQuery.trim())
@@ -3939,6 +3972,10 @@ export default function App() {
   const treeSelectionChildren = (chartNode?.children || []).filter(item => !collectedPaths.has(item.path));
   const visibleChildrenRef = useRef(visibleChildren);
   const treeSelectionChildrenRef = useRef(treeSelectionChildren);
+  // Type-ahead: the content list element (for scroll-into-view) and the small
+  // buffer of recently typed letters.
+  const contentListRef = useRef(null);
+  const typeAheadRef = useRef({ buffer: '', at: 0, path: null });
   visibleChildrenRef.current = visibleChildren;
   treeSelectionChildrenRef.current = treeSelectionChildren;
   arrowStateRef.current = {
@@ -4132,6 +4169,71 @@ export default function App() {
     window.addEventListener('keydown', onArrowKey);
     return () => window.removeEventListener('keydown', onArrowKey);
   }, [treeSelectionPath, focusedLiveNode, highlightedPath, viewState, loading, nodeLoading, handleQuickLook]);
+
+  // Finder-style type-ahead in the content list: typing the first letters of a
+  // name jumps to that row and scrolls it into view. The buffer resets after a
+  // short pause, so one letter is a quick jump and a typed word refines it;
+  // pressing the same letter again cycles through the names starting with it.
+  useEffect(() => {
+    if (viewState !== 'scan' || loading || nodeLoading) return undefined;
+    const reset = () => { typeAheadRef.current = { buffer: '', at: 0, path: null }; };
+    const onTypeAhead = event => {
+      if (event.key === 'Escape') { reset(); return; }
+      if (event.metaKey || event.ctrlKey || event.altKey || event.key.length !== 1) return;
+      const target = event.target;
+      if (target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || target?.isContentEditable) return;
+      // A dialog owns the keyboard while it is up; do not jump the list behind it.
+      if (target?.closest?.('[aria-modal="true"]')) return;
+      if (/\s/.test(event.key)) { reset(); return; }
+
+      const items = (visibleChildrenRef.current || []).filter(item => (
+        item?.path && !String(item.path).startsWith('__') && item.type !== 'special'
+      ));
+      if (!items.length) return;
+
+      const typed = event.key.toLocaleLowerCase();
+      const now = Date.now();
+      const previous = typeAheadRef.current;
+      const continuing = now - previous.at <= 700;
+      const names = items.map(item => String(item.name || '').toLocaleLowerCase());
+
+      let buffer = `${continuing ? previous.buffer : ''}${typed}`;
+      let index = names.findIndex(name => name.startsWith(buffer));
+      let cycling = false;
+      if (index < 0 && continuing && buffer.length > 1) {
+        // A repeated letter refines nothing: cycle through that letter's names.
+        buffer = typed;
+        cycling = true;
+        index = names.findIndex(name => name.startsWith(buffer));
+      }
+      if (index < 0) return;
+      if (cycling) {
+        const currentIndex = items.findIndex(item => item.path === previous.path);
+        if (currentIndex >= 0) {
+          for (let step = 1; step <= items.length; step += 1) {
+            const candidate = (currentIndex + step) % items.length;
+            if (names[candidate].startsWith(buffer)) { index = candidate; break; }
+          }
+        }
+      }
+
+      const match = items[index];
+      if (!match) return;
+      event.preventDefault();
+      typeAheadRef.current = { buffer, at: now, path: match.path };
+      setKeyboardNavigationActive(true);
+      setTreeSelectionPath(match.path);
+      setFocusedNode(match);
+      setHighlightedPath(match.path);
+      const row = contentListRef.current?.querySelector(`[data-tree-path="${CSS.escape(match.path)}"]`);
+      row?.scrollIntoView?.({ block: 'nearest' });
+    };
+    window.addEventListener('keydown', onTypeAhead);
+    return () => window.removeEventListener('keydown', onTypeAhead);
+  }, [viewState, loading, nodeLoading]);
   const visibleChildCount = visibleChildren.length;
   const visibleSizesKey = visibleChildren.slice(0, 20).map(child => Number(child.size) || 0).join(',');
   useEffect(() => {
@@ -4951,8 +5053,8 @@ export default function App() {
                 </div>
                 <div className="scan-progress-bar-bg">
                   <div
-                    className={`scan-progress-bar-fill ${cloudView ? 'cloud-indeterminate' : ''}`}
-                    style={cloudView ? undefined : { width: scanProgress.percent < 0 ? '4%' : `${Math.max(4, scanProgress.percent)}%` }}
+                    className={`scan-progress-bar-fill ${cloudView || scanProgress.percent < 0 ? 'cloud-indeterminate' : ''}`}
+                    style={cloudView || scanProgress.percent < 0 ? undefined : { width: `${Math.max(4, scanProgress.percent)}%` }}
                   />
                 </div>
                 <div className="scan-progress-status">
@@ -4960,9 +5062,9 @@ export default function App() {
                     {scanProgress.currentDir || (cloudView ? 'Listing folders…' : 'Indexing folders…')}
                   </span>
                   <span className="scan-percent-text">
-                    {cloudView
+                    {cloudView || scanProgress.percent < 0
                       ? `${scanProgress.itemsScanned || 0} items`
-                      : scanProgress.percent >= 0 ? `${Math.round(scanProgress.percent)}%` : 'Preparing…'}
+                      : `${Math.round(scanProgress.percent)}%`}
                   </span>
                 </div>
               </div>
@@ -5467,7 +5569,7 @@ export default function App() {
                 </div>
                 <button
                   className={`view-options-trigger ${viewOptionsOpen ? 'active' : ''} ${filtersActive ? 'filters-active' : ''}`}
-                  title="Sort and filter"
+                  title={filtersActive ? 'Sort and filter (active)' : 'Sort and filter'}
                   aria-label="Sort and filter"
                   aria-expanded={viewOptionsOpen}
                   onClick={event => {
@@ -5494,7 +5596,7 @@ export default function App() {
                         { value: 'size', label: 'Size' },
                         { value: 'name', label: 'Name' },
                         { value: 'type', label: 'Type' },
-                        { value: 'date', label: 'Date modified' }
+                        { value: 'added', label: 'Date added' }
                       ]}
                       onChange={value => setViewOptions(options => ({ ...options, sortBy: value }))}
                     />
@@ -5574,7 +5676,7 @@ export default function App() {
               </div>
             )}
 
-            <div className="legend-list">
+            <div className="legend-list" ref={contentListRef}>
               {visibleChildren.map((item, idx) => {
                 const color = colorAssignments[item.path] || getNodeColor(item, idx, matrixTheme);
                 const isHigh = highlightedPath === item.path;

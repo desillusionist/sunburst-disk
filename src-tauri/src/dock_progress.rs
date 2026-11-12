@@ -23,8 +23,8 @@ use std::cell::RefCell;
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker};
 use objc2_app_kit::{
-    NSApplication, NSBezierPath, NSColor, NSControlSize, NSProgressIndicator,
-    NSProgressIndicatorStyle, NSView,
+    NSApplication, NSBezierPath, NSColor, NSControlSize, NSImageScaling, NSImageView,
+    NSProgressIndicator, NSProgressIndicatorStyle, NSView,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
@@ -105,6 +105,43 @@ thread_local! {
     static BAR: RefCell<Option<Retained<NSView>>> = const { RefCell::new(None) };
 }
 
+/// The tile's content view, creating one if AppKit has not made it yet.
+///
+/// A running app does not necessarily have a `NSDockTile.contentView`: AppKit
+/// draws the icon directly in that case, and there would be nothing to attach a
+/// bar to. So the first time we need one we install a container that draws the
+/// app icon itself; from then on the tile keeps it.
+fn tile_content(
+    mtm: MainThreadMarker,
+    tile: &objc2_app_kit::NSDockTile,
+) -> Option<Retained<NSView>> {
+    if let Some(view) = tile.contentView(mtm) {
+        return Some(view);
+    }
+    let size = tile.size();
+    let frame = NSRect {
+        origin: NSPoint { x: 0.0, y: 0.0 },
+        size: NSSize {
+            width: if size.width > 0.0 { size.width } else { 128.0 },
+            height: if size.height > 0.0 {
+                size.height
+            } else {
+                128.0
+            },
+        },
+    };
+    let container = NSView::initWithFrame(mtm.alloc(), frame);
+    let icon = NSImageView::initWithFrame(mtm.alloc(), frame);
+    // Never replace a real icon with a blank tile: without an icon image, keep
+    // AppKit's own rendering and simply skip the bar.
+    let app_icon = NSApplication::sharedApplication(mtm).applicationIconImage()?;
+    icon.setImage(Some(&app_icon));
+    icon.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
+    container.addSubview(&icon);
+    tile.setContentView(Some(&container));
+    tile.contentView(mtm)
+}
+
 fn detach_current() {
     BAR.with(|slot| {
         if let Some(previous) = slot.borrow_mut().take() {
@@ -130,7 +167,7 @@ pub fn set(progress: Option<f64>, color: Option<(f64, f64, f64)>) {
         tile.display();
         return;
     };
-    let Some(content) = tile.contentView(mtm) else {
+    let Some(content) = tile_content(mtm, &tile) else {
         return;
     };
     let tile_size = tile.size();

@@ -787,6 +787,85 @@ describe('cloud view flow', () => {
     await waitFor(() => expect(window.electronAPI.setDockProgress).toHaveBeenLastCalledWith(null, null));
   });
 
+  it('re-measures a volume refresh against the tree it already measured', async () => {
+    window.electronAPI.getDrives = vi.fn(async () => ({
+      drives: [{
+        filesystem: 'apfs', name: 'Macintosh HD', mount: '/', scanPath: '/',
+        total: 1000, free: 400, used: 600, usePercent: '60%', isStartup: true, isCustomFolder: false
+      }],
+      userHome: '/Users/x'
+    }));
+    const home = { name: 'Macintosh HD', path: '/', type: 'directory', size: 12_000_000_000, itemCount: 3, children: [] };
+    window.electronAPI.scanDirectory = vi.fn(async () => ({ tree: { ...home } }));
+
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Scan' }));
+    await waitFor(() => expect(window.electronAPI.scanDirectory).toHaveBeenCalledTimes(1));
+    // A volume scan divides by `statfs` and is not a subtree.
+    expect(window.electronAPI.scanDirectory.mock.calls[0].slice(3)).toEqual([false, null, false]);
+
+    await user.click(await screen.findByRole('button', { name: /refresh current folder/i }));
+    await waitFor(() => expect(window.electronAPI.scanDirectory).toHaveBeenCalledTimes(2));
+    // The re-scan re-walks the same tree, so its measured size is the honest
+    // denominator -- not the volume's used bytes, which would not match the work.
+    expect(window.electronAPI.scanDirectory.mock.calls[1].slice(3)).toEqual([false, 12_000_000_000, false]);
+  });
+
+  it('marks a saved-folder scan as a subtree so its bar is never measured against the disk', async () => {
+    const folder = '/Volumes/Data/Projects';
+    window.electronAPI.getDrives = vi.fn(async () => ({
+      drives: [{
+        filesystem: folder, name: 'Projects', mount: folder, scanPath: folder,
+        total: 0, free: 0, used: 0, usePercent: '0%', isStartup: false, isCustomFolder: true
+      }],
+      userHome: '/Users/x'
+    }));
+    window.electronAPI.scanDirectory = vi.fn(async () => ({
+      tree: { name: 'Projects', path: folder, type: 'directory', size: 2_000_000_000, itemCount: 4, children: [] }
+    }));
+
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Scan' }));
+    await waitFor(() => expect(window.electronAPI.scanDirectory).toHaveBeenCalledTimes(1));
+    const call = window.electronAPI.scanDirectory.mock.calls[0];
+    expect(call[0]).toBe(folder);
+    // First scan of a folder: there is no total to divide by yet, so the bar is
+    // indeterminate -- but the walk is still flagged as a subtree.
+    expect(call.slice(3)).toEqual([false, null, true]);
+  });
+
+  it('gives a folder drill-down the size the view already knows as its denominator', async () => {
+    const folder = { name: 'Movies', path: '/Volumes/Data/Movies', type: 'directory', size: 4_000_000_000, itemCount: 7, children: [] };
+    window.electronAPI.getDrives = vi.fn(async () => ({
+      drives: [{
+        filesystem: 'apfs', name: 'Macintosh HD', mount: '/', scanPath: '/',
+        total: 1000, free: 400, used: 600, usePercent: '60%', isStartup: true, isCustomFolder: false
+      }],
+      userHome: '/Users/x'
+    }));
+    window.electronAPI.scanDirectory = vi.fn(async () => ({
+      tree: { name: 'Macintosh HD', path: '/', type: 'directory', size: 10_000_000_000, itemCount: 8, children: [folder] }
+    }));
+    window.electronAPI.scanSubdir = vi.fn(async targetPath => ({
+      tree: { name: 'Movies', path: targetPath, type: 'directory', size: folder.size, itemCount: 0, children: [] }
+    }));
+
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Scan' }));
+    const row = (await screen.findAllByText('Movies'))[0].closest('.legend-row');
+    expect(row).toBeTruthy();
+    await user.click(row);
+
+    await waitFor(() => expect(window.electronAPI.scanSubdir).toHaveBeenCalled());
+    const call = window.electronAPI.scanSubdir.mock.calls.at(-1);
+    expect(call[0]).toBe(folder.path);
+    // The folder's own size (already known from the parent walk) is the total.
+    expect(call[5]).toBe(4_000_000_000);
+  });
+
   it('offers a one-time Full Disk Access fix instead of per-folder prompts', async () => {
     window.electronAPI.getPermissionStatus = vi.fn(async () => ({ fullDiskAccess: 'not-granted' }));
     window.electronAPI.openSystemSettings = vi.fn(async () => ({ ok: true }));
@@ -854,5 +933,116 @@ describe('cloud view flow', () => {
     expect(await screen.findByLabelText(/administrator password/i)).toBeTruthy();
     expect(input.value).toBe('mv -- a b');
     expect(window.electronAPI.terminalRunSafe).not.toHaveBeenCalled();
+  });
+});
+
+// ── Sort & filter, and type-ahead in the content list ───────────────────────
+const LOCAL_DRIVE = {
+  filesystem: 'apfs', name: 'Macintosh HD', mount: '/', scanPath: '/',
+  total: 1000, free: 400, used: 600, usePercent: '60%', isStartup: true, isCustomFolder: false
+};
+
+// Sizes and creation dates deliberately disagree, so a test can tell
+// "sorted by size" from "sorted by date added".
+function makeLocalTree() {
+  return {
+    name: 'Macintosh HD', path: '/', type: 'directory', size: 75, itemCount: 4,
+    children: [
+      { name: 'Alpha', path: '/Volumes/Data/Alpha', type: 'directory', size: 10, itemCount: 0, children: [] },
+      { name: 'Bravo', path: '/Volumes/Data/Bravo', type: 'directory', size: 20, itemCount: 0, children: [] },
+      { name: 'Charlie', path: '/Volumes/Data/Charlie', type: 'directory', size: 30, itemCount: 0, children: [] },
+      { name: 'Blue', path: '/Volumes/Data/Blue', type: 'directory', size: 15, itemCount: 0, children: [] }
+    ]
+  };
+}
+
+async function openLocalScan(user) {
+  window.electronAPI.getDrives = vi.fn(async () => ({ drives: [LOCAL_DRIVE], userHome: '/Users/x' }));
+  window.electronAPI.scanDirectory = vi.fn(async () => ({ tree: makeLocalTree() }));
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: 'Scan' }));
+  await screen.findByText('Charlie');
+}
+
+const listNames = () => [...document.querySelectorAll('.legend-list .legend-row[title]')]
+  .map(row => row.getAttribute('title'));
+
+describe('sort, filter and type-ahead', () => {
+  it('sorts by date added using creation time, not modification time', async () => {
+    const base = Date.UTC(2026, 0, 1);
+    const created = { Alpha: base + 4000, Bravo: base + 1000, Charlie: base + 3000, Blue: base + 2000 };
+    const modified = { Alpha: base + 1000, Bravo: base + 4000, Charlie: base + 3000, Blue: base + 2000 };
+    window.electronAPI.inspectItems = vi.fn(async paths => Object.fromEntries((paths || []).map(filePath => {
+      const name = filePath.split('/').pop();
+      return [filePath, { createdAt: created[name], modifiedAt: modified[name] }];
+    })));
+
+    const user = userEvent.setup();
+    await openLocalScan(user);
+    // Default: size, descending.
+    expect(listNames()).toEqual(['Charlie', 'Bravo', 'Blue', 'Alpha']);
+
+    await user.click(screen.getByRole('button', { name: /sort and filter/i }));
+    expect(screen.queryByText('Date modified')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Sort by' }));
+    await user.click(screen.getByRole('option', { name: 'Date added' }));
+
+    // Newest added first (descending): Alpha, Charlie, Blue, Bravo. Sorting by
+    // *modified* time would put Bravo first, so this pins the right timestamp.
+    await waitFor(() => expect(listNames()).toEqual(['Alpha', 'Charlie', 'Blue', 'Bravo']));
+  });
+
+  it('marks Sort & Filter active when the sort itself is customised', async () => {
+    const user = userEvent.setup();
+    await openLocalScan(user);
+    const trigger = screen.getByRole('button', { name: /sort and filter/i });
+    expect(trigger.className).not.toContain('filters-active');
+
+    await user.click(trigger);
+    await user.click(screen.getByRole('button', { name: /descending/i }));
+    await waitFor(() => expect(trigger.className).toContain('filters-active'));
+
+    // Reset restores the default sort and clears the highlight.
+    await user.click(screen.getByRole('button', { name: /reset filters/i }));
+    await waitFor(() => expect(trigger.className).not.toContain('filters-active'));
+  });
+
+  it('jumps to a row when you type the first letters of its name', async () => {
+    const user = userEvent.setup();
+    await openLocalScan(user);
+    const highlighted = () => document.querySelector('.legend-row.highlighted')?.getAttribute('title') || null;
+    expect(highlighted()).toBeNull();
+
+    await user.keyboard('c');
+    await waitFor(() => expect(highlighted()).toBe('Charlie'));
+
+    // A second letter refines the same buffer.
+    await user.keyboard('h');
+    await waitFor(() => expect(highlighted()).toBe('Charlie'));
+
+    // Escape clears the buffer, so the next letter starts a fresh search.
+    await user.keyboard('{Escape}');
+    await user.keyboard('a');
+    await waitFor(() => expect(highlighted()).toBe('Alpha'));
+
+    // Repeating a letter that starts several names cycles through them.
+    await user.keyboard('{Escape}');
+    await user.keyboard('bb');
+    await waitFor(() => expect(highlighted()).toBe('Blue'));
+    await user.keyboard('b');
+    await waitFor(() => expect(highlighted()).toBe('Bravo'));
+  });
+
+  it('leaves type-ahead alone while a text field has focus', async () => {
+    const user = userEvent.setup();
+    await openLocalScan(user);
+
+    await user.click(screen.getByRole('button', { name: /sort and filter/i }));
+    const search = screen.getByPlaceholderText('Search names');
+    await user.type(search, 'ch');
+    expect(search.value).toBe('ch');
+    // Filtering narrows the list; no row is jump-selected by the typing.
+    await waitFor(() => expect(listNames()).toEqual(['Charlie']));
+    expect(document.querySelector('.legend-row.highlighted')).toBeNull();
   });
 });

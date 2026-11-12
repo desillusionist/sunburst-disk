@@ -4,6 +4,12 @@
   --mac-text: #e1e4e8;
   --mac-text-dim: #7f8694;
   --mac-border: #141619;
+  /* The UI is always dark. Declaring it keeps native widgets -- above all the
+     system overlay scrollbar and form controls -- dark on macOS versions that
+     still paint them themselves, instead of a light scrollbar inside a dark pane. */
+  color-scheme: dark;
+  --scrollbar-thumb: rgba(145, 153, 168, .55);
+  --scrollbar-thumb-hover: rgba(190, 198, 211, .85);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
@@ -12,6 +18,39 @@ html, body, #root {
   height: 100%;
   width: 100%;
   overflow: hidden;
+}
+
+/* ── Scrollbars ──────────────────────────────────────────────────────────── */
+/* One themed scrollbar for every scrolling pane. Before this, each component
+   styled its own (or none did), so panes without a rule fell back to the system
+   scrollbar -- light in a dark app -- and the widths disagreed (4px vs 7px). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--scrollbar-thumb);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:active {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 body {
@@ -233,8 +272,6 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 5px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(145, 153, 168, .72) transparent;
 }
 /* Shown while the native drive list is enumerated. With many mounted volumes
    that call takes a moment, so an obvious spinner beats an empty screen. */
@@ -269,37 +306,6 @@ body {
 }
 @media (prefers-reduced-motion: reduce) {
   .drives-spinner { animation-duration: 2.4s; }
-}
-.drives-list::-webkit-scrollbar {
-  width: 7px;
-}
-.drives-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-.drives-list::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  border-radius: 999px;
-  background: rgba(145, 153, 168, .72);
-  background-clip: padding-box;
-}
-.drives-list::-webkit-scrollbar-thumb:hover {
-  background: rgba(190, 198, 211, .9);
-  background-clip: padding-box;
-}
-.theme-matrix .drives-list {
-  scrollbar-color: rgba(57, 255, 102, .72) transparent;
-}
-.theme-matrix .drives-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-.theme-matrix .drives-list::-webkit-scrollbar-thumb {
-  background: rgba(57, 255, 102, .72);
-  background-clip: padding-box;
-  box-shadow: 0 0 5px rgba(57, 255, 102, .35);
-}
-.theme-matrix .drives-list::-webkit-scrollbar-thumb:hover {
-  background: rgba(122, 255, 144, .95);
-  background-clip: padding-box;
 }
 .drive-row {
   display: flex;
@@ -742,8 +748,6 @@ body {
   flex: 1;
   padding-right: 4px;
 }
-.collector-items-list::-webkit-scrollbar { width: 4px; }
-.collector-items-list::-webkit-scrollbar-thumb { background: #3a3f4a; border-radius: 2px; }
 
 .collector-item-row {
   display: flex;
@@ -824,8 +828,6 @@ body {
   overflow-y: auto;
   -webkit-app-region: no-drag;
 }
-.details-sidebar::-webkit-scrollbar { width: 4px; }
-.details-sidebar::-webkit-scrollbar-thumb { background: #3a3f4a; border-radius: 2px; }
 .details-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
 .details-kicker { color: #656c7a; font-size: 9px; letter-spacing: .12em; margin-bottom: 3px; }
 .details-title { color: #e1e4e8; font-size: 16px; font-weight: 600; }
@@ -932,6 +934,11 @@ body {
 .view-options-panel {
   margin: 0 0 10px; padding: 10px; border: 1px solid rgba(255,255,255,.08); border-radius: 7px;
   background: rgba(24,27,33,.9); -webkit-app-region: no-drag;
+  flex-shrink: 0;
+  /* The Type list no longer scrolls, so the panel can be tall. Only a genuinely
+     short window makes the panel itself scroll, rather than clipping the list. */
+  max-height: calc(100% - 12px);
+  overflow-y: auto;
 }
 .view-options-heading { margin-bottom: 8px; color: #8f97a5; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
 .view-options-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -965,7 +972,10 @@ body {
 .view-options-type-field { grid-column: span 2; min-width: 0; }
 .view-options-field-label { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; color: #777f8d; font-size: 10px; }
 .view-options-field-label span { color: #aeb6c2; font-size: 9px; }
-.view-type-multiselect { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; max-height: 142px; overflow-y: auto; padding: 4px; border: 1px solid #343b46; border-radius: 4px; background: #22272e; }
+/* The Type list must show every option at once -- a scrollbar here hid half the
+   types in cloud views, which add two availability rows. The panel grows and
+   the file list below it gives up the space (it has its own scrollbar). */
+.view-type-multiselect { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; overflow: visible; padding: 4px; border: 1px solid #343b46; border-radius: 4px; background: #22272e; }
 .view-type-option { display: flex !important; flex-direction: row !important; align-items: center; gap: 5px; padding: 3px 4px; color: #cbd1da !important; font-size: 9px !important; cursor: pointer; }
 .view-type-option input { accent-color: #60a5fa; }
 .view-type-option:hover { background: #303742; border-radius: 3px; }
@@ -1092,9 +1102,6 @@ body {
   flex: 1;
   padding-right: 4px;
 }
-.legend-list::-webkit-scrollbar { width: 4px; }
-.legend-list::-webkit-scrollbar-track { background: transparent; }
-.legend-list::-webkit-scrollbar-thumb { background: #3a3f4a; border-radius: 2px; }
 
 .legend-row {
   display: flex;
@@ -1217,6 +1224,8 @@ body {
   --matrix-line-bright: #39ff66;
   --matrix-text: #68ff78;
   --matrix-text-dim: #3ab650;
+  --scrollbar-thumb: rgba(57, 255, 102, .55);
+  --scrollbar-thumb-hover: rgba(122, 255, 144, .9);
   background: var(--matrix-bg);
   color: var(--matrix-text);
   font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -2561,20 +2570,20 @@ body {
 
 /* Keep the active-filter signal last so the open-panel state cannot override it. */
 .view-options-trigger.filters-active {
-  border-color: #806b31;
-  background: #2a2922;
-  color: #f1d98b;
+  border-color: #a8831f;
+  background: #332d14;
+  color: #ffd54a;
 }
 .view-options-trigger.filters-active:hover,
 .view-options-trigger.filters-active.active {
-  border-color: #b9973e;
-  background: #3b3626;
-  color: #fff1bd;
+  border-color: #d8b23c;
+  background: #443a19;
+  color: #ffe680;
 }
 .theme-matrix .view-options-trigger.filters-active {
-  border-color: #b9973e;
-  background: rgba(185,151,62,.12);
-  color: #f1d98b;
+  border-color: #d8b23c;
+  background: rgba(216,178,60,.14);
+  color: #ffd54a;
 }
 .theme-matrix .view-options-trigger.filters-active:hover,
 .theme-matrix .view-options-trigger.filters-active.active {

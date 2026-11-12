@@ -837,14 +837,71 @@ Everything that remains is optional:
     “a password is required”. Unlocking now drops any cached ticket (`sudo -k`),
     authenticates with a plain `sudo -S -v` (which does update the cache) and
     proves the ticket with `sudo -n -v` before reporting success.
+- **r49** — Sort & Filter polish, type-ahead, themed scrollbars.
+  - **“Date added”.** The sort option is now `sortBy: 'added'` and orders by
+    `createdAt` from the shared `inspectItems` metadata read (Finder's own “Date
+    Added” comes from Spotlight; APFS creation time is the closest `lstat` value).
+    `needsDisplayMetadata` and the batch-inspect effect follow the new key, so the
+    timestamps are fetched only when a date sort (or the Modified filter) is on.
+    The Modified *filter* still means modification time.
+  - **Active-sort signal.** `filtersActive` now also covers deviation of
+    `sortBy`/`sortDirection`, not just the filters, so the funnel goes yellow for
+    any non-default view. A test pins the class on a direction change and its
+    removal after Reset.
+  - **Type list without a scrollbar.** `.view-type-multiselect` had
+    `max-height: 142px; overflow-y: auto`, which clipped half the types in cloud
+    views (12 types + 2 availability rows). It now grows, and the panel itself
+    scrolls only when the window is too short (`max-height: calc(100% - 12px)`);
+    the file list below absorbs the height change (its own `overflow-y: auto`
+    implies the automatic minimum size is 0, so it can shrink).
+  - **Themed scrollbars, globally.** The root declares `color-scheme: dark` —
+    without it the WKWebView paints the *system* overlay scrollbar light inside a
+    dark pane, which is the mismatch seen on macOS versions that still draw it
+    themselves. One `*::-webkit-scrollbar` rule (9px, translucent thumb,
+    padding-box border) plus `--scrollbar-thumb`/`--scrollbar-thumb-hover`
+    variables (green under `.theme-matrix`) replaces the ad-hoc 4px/7px rules per
+    component, so every pane — including dialogs and the terminal — matches.
+  - **Type-ahead.** A window `keydown` listener (active only in the scan view and
+    not while loading) buffers printable keys for 700 ms and jumps to the first
+    visible child whose name starts with the buffer, then highlights it and
+    scrolls its row into view. Repeating a letter with no longer prefix match
+    cycles through that letter's names. Inputs, textareas, selects,
+    contenteditable and anything inside an `aria-modal` dialog are ignored, and
+    Escape clears the buffer.
+- **r48** — Honest scan progress for folder scans.
+  - `ScanProgress.percent` for a scan rooted at a folder used to divide the
+    bytes walked by the *volume's* `statfs` used bytes, so a folder on a large
+    disk sat at ~1% for the whole walk. `scan_tree` now resolves the denominator
+    with `progress_total(root, expected_bytes, subtree)`:
+    - a size the caller already knows wins (`expected_bytes`), which is the
+      common case — a re-scan, a refresh or a drill-down all know the folder's
+      size from the tree;
+    - a folder with no known size is **indeterminate** (`percent: -1`), because
+      dividing by the volume is what made the bar look stuck;
+    - only a whole-volume walk still falls back to `statfs` used bytes.
+  - `scan_directory` (volume) and `scan_subdir` (always a subtree) both accept
+    `expectedBytes`; `ScanOptions` gained `expected_bytes` and `subtree`, both
+    serde-defaulted so older callers keep the volume behaviour. The renderer
+    treats `percent < 0` as indeterminate: the in-app bar runs the existing
+    indeterminate sweep with a live item count, and the Dock gets a small
+    activity sliver rather than a bar parked at zero.
+  - The Dock throttle skips only *small* rapid movement (under 6% within 200 ms).
+    A visible jump — notably the first real percentage after an indeterminate
+    start — must land immediately, or the first honest update would be dropped.
 - **r47** — Scan progress on the Dock icon.
-  - `dock_progress::set()` installs a slim `NSProgressIndicator` into the app's
+  - `dock_progress::set()` installs a slim bar into the app's
     `NSDockTile.contentView` — macOS has no public API for Dock-tile progress;
-    this is what Safari does for downloads. **The tile only re-snapshots its view
-    hierarchy, so changing the value of an attached indicator never repaints it**:
-    every update detaches the previous bar and attaches a fresh one whose value is
-    already set, then calls `display()`. Verified by photographing the Dock at
-    several values (20% / 95% / cleared).
+    this is what Safari does for downloads. Two things were not obvious:
+    - **The tile may have no content view at all.** A running app can have
+      `dockTile.contentView == nil` (AppKit draws the icon directly), which is the
+      case here — so the first update installs a container that draws the app
+      icon itself, and every later update finds it.
+    - **The tile only re-snapshots its view hierarchy**, so changing the value of
+      an attached indicator never repaints it: every update detaches the previous
+      bar and attaches a fresh one whose value is already set, then calls
+      `display()`.
+    Verified by photographing the Dock from a packaged build (20% / 95% / cleared,
+    and the themed bar growing during a real scan).
   - The renderer mirrors `scanProgress.percent` while the scan is `loading`,
     throttled to one update per 200 ms and skipped under a 2% change, and sends
     `null` as soon as the scan stops, so the bar clears on completion, cancel or

@@ -154,6 +154,16 @@ pub struct ScanOptions {
     /// Override for the cloud walk's depth limit (`CLOUD_MAX_DEPTH`).
     #[serde(default)]
     pub cloud_max_depth: Option<usize>,
+    /// Size of the tree from a previous scan of the same root, when the caller
+    /// has it. Used as the progress denominator so a re-scan shows real progress.
+    #[serde(default)]
+    pub expected_bytes: Option<u64>,
+    /// The walk is a folder inside a volume rather than the volume itself. A
+    /// subtree has no meaningful "total" until it has been measured, so without
+    /// `expected_bytes` the percentage is indeterminate instead of dividing by
+    /// the whole volume (which pins a small folder at ~0%).
+    #[serde(default)]
+    pub subtree: bool,
 }
 
 impl Default for ScanOptions {
@@ -166,6 +176,8 @@ impl Default for ScanOptions {
             cloud_entry_budget: None,
             cloud_max_depth: None,
             cloud_mode: CloudScanMode::Provider,
+            expected_bytes: None,
+            subtree: false,
         }
     }
 }
@@ -384,7 +396,7 @@ pub fn scan_tree(
     let root_dev = std::fs::symlink_metadata(&root)
         .map(|md| md.dev())
         .unwrap_or(0);
-    let used_bytes = statfs_info(&root).map(|info| info.used_bytes).unwrap_or(0);
+    let progress_total = progress_total(&root, options.expected_bytes, options.subtree);
 
     let mut nodes: Vec<RawNode> = Vec::new();
     // Depth-indexed ancestors: `parent_at[d]` is the index of the last entry
@@ -514,7 +526,9 @@ pub fn scan_tree(
                 progress(ScanProgress {
                     current_dir: root_display.clone(),
                     items_scanned: items_seen,
-                    percent: percent_of(bytes_seen, used_bytes),
+                    percent: progress_total
+                        .map(|total| percent_of(bytes_seen, total))
+                        .unwrap_or(-1),
                 });
             }
         }
@@ -547,6 +561,25 @@ pub fn scan_tree(
         &adjacency,
         options.detail_depth,
     ))
+}
+
+/// The denominator for the progress percentage.
+///
+/// * a size the caller already knows (a re-scan) wins;
+/// * a whole-volume walk divides by the volume's used bytes;
+/// * a subtree with no known size is **indeterminate** (`None`) — dividing by the
+///   whole volume would pin a small folder on a large disk at ~0%, which is what
+///   made the progress bar (and the Dock bar) look stuck.
+pub(crate) fn progress_total(root: &Path, expected: Option<u64>, subtree: bool) -> Option<u64> {
+    if let Some(bytes) = expected.filter(|bytes| *bytes > 0) {
+        return Some(bytes);
+    }
+    if subtree {
+        return None;
+    }
+    statfs_info(root)
+        .map(|info| info.used_bytes)
+        .filter(|bytes| *bytes > 0)
 }
 
 fn percent_of(seen: u64, total: u64) -> i64 {
@@ -1043,6 +1076,45 @@ mod tests {
             Ok(tree) => assert!(tree.size > 0),
             Err(other) => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn progress_total_prefers_a_known_size_and_never_uses_the_volume_for_a_subtree() {
+        let root = crate_src_dir();
+        // A size from an earlier scan is the denominator, on a volume or a folder.
+        assert_eq!(progress_total(&root, Some(4096), false), Some(4096));
+        assert_eq!(progress_total(&root, Some(4096), true), Some(4096));
+        // Zero is not a usable denominator: a fresh folder measures 0 until walked.
+        assert_eq!(progress_total(&root, Some(0), true), None);
+        // A subtree with no known size is indeterminate, never `statfs` -- the
+        // volume's used bytes would pin a small folder at ~0%.
+        assert_eq!(progress_total(&root, None, true), None);
+        // A whole-volume walk still falls back to the volume's used bytes.
+        assert!(
+            progress_total(&root, None, false).is_some_and(|bytes| bytes > 0),
+            "a volume walk must have a denominator"
+        );
+    }
+
+    #[test]
+    fn progress_never_reports_complete_while_the_walk_is_running() {
+        // The scanner caps at 99: the renderer is the only place that says 100,
+        // once the tree has actually arrived.
+        assert_eq!(percent_of(0, 1000), 0);
+        assert_eq!(percent_of(500, 1000), 50);
+        assert_eq!(percent_of(10_000, 1000), 99);
+        assert_eq!(percent_of(1, 0), -1);
+    }
+
+    #[test]
+    fn scan_options_default_to_a_volume_walk_with_no_expected_size() {
+        // The renderer omits these for an ordinary volume scan; serde defaults
+        // must then describe a volume walk, not a subtree one.
+        let options: ScanOptions =
+            serde_json::from_str(r#"{"detail_depth": 10, "include_package_contents": false}"#)
+                .expect("options parse");
+        assert_eq!(options.expected_bytes, None);
+        assert!(!options.subtree);
     }
 
     #[test]

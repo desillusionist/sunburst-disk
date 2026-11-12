@@ -154,6 +154,9 @@ pub async fn get_capacity_snapshot(target_path: Option<String>) -> serde_json::V
 }
 
 #[tauri::command(rename_all = "camelCase")]
+// Positional, additive IPC parameters: a struct would change the wire shape for
+// every existing caller.
+#[allow(clippy::too_many_arguments)]
 pub async fn scan_directory(
     app: AppHandle,
     window: Window,
@@ -162,6 +165,8 @@ pub async fn scan_directory(
     detail_depth: Option<usize>,
     request_id: Option<String>,
     cloud: Option<bool>,
+    expected_bytes: Option<u64>,
+    subtree: Option<bool>,
 ) -> Result<ScanResponse, String> {
     if !target_path.starts_with('/') || target_path.starts_with("__") {
         return Ok(ScanResponse::error("Invalid filesystem path"));
@@ -188,6 +193,10 @@ pub async fn scan_directory(
         cloud_entry_budget: None,
         cloud_max_depth: None,
         cloud_mode: CloudScanMode::Provider,
+        expected_bytes,
+        // The startup disk is a whole-volume walk even though it is rooted at
+        // `/System`; only an explicit folder is a subtree.
+        subtree: subtree.unwrap_or(false) && !startup,
     };
 
     let target = PathBuf::from(&target_path);
@@ -234,6 +243,9 @@ pub async fn scan_directory(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+// The IPC surface is positional and additive; a parameter struct would change the
+// wire shape for every existing caller.
+#[allow(clippy::too_many_arguments)]
 pub async fn scan_subdir(
     app: AppHandle,
     state: State<'_, ScanJobs>,
@@ -242,6 +254,7 @@ pub async fn scan_subdir(
     cloud: Option<bool>,
     request_id: Option<String>,
     exact: Option<bool>,
+    expected_bytes: Option<u64>,
 ) -> Result<ScanResponse, String> {
     if !target_path.starts_with('/') || target_path.starts_with("__") {
         return Ok(ScanResponse::error("Invalid filesystem path"));
@@ -258,6 +271,12 @@ pub async fn scan_subdir(
         detail_depth: 10,
         include_package_contents: allow_package_contents,
         cloud: is_cloud,
+        // A drill-down is always a folder inside a volume: without a size the
+        // caller already knows, the percentage is indeterminate rather than
+        // measured against the whole disk (which pins it at ~0%, so the window
+        // and Dock bars look stuck).
+        subtree: true,
+        expected_bytes,
         // Opening a cloud folder walks it under a generous cap: most folders
         // complete and show real sizes, and one that hits the cap falls back to a
         // `>=` lower bound plus the explicit "Calculate exact size" action
