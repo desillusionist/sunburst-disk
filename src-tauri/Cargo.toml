@@ -1,6 +1,6 @@
 [package]
 name = "sunburst-disk"
-version = "0.4.6"
+version = "0.4.7"
 description = "A macOS disk usage analyzer with a visual sunburst, safe review tools and live updates."
 authors = ["Sunburst Disk"]
 license = "MIT"
@@ -32,7 +32,7 @@ trash = "5"
 notify = { version = "8", features = ["macos_fsevent"] }
 tokio = { version = "1", features = ["sync"] }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSApplication", "NSDockTile", "NSProgressIndicator", "NSResponder", "NSView", "NSCell"] }
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSApplication", "NSDockTile", "NSProgressIndicator", "NSResponder", "NSView", "NSCell", "NSImageView", "NSImage"] }
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSURL", "NSValue", "NSError"] }
 
 [profile.release]
