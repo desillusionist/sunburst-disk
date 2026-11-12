@@ -56,8 +56,8 @@ The **Rust + Tauri v2** macOS disk analyzer with an interactive sunburst.
 
 | File | Size | Notes |
 |---|---|---|
-| `Sunburst Disk_0.4.7_universal.dmg` | ~8.5 MB | macOS 11+, Apple Silicon **and** Intel |
-| `Sunburst Disk_universal.app.tar.gz` | ~8.5 MB | the same app bundle, archived |
+| `Sunburst.Disk_0.4.7_universal.dmg` | ~8.5 MB | macOS 11+, Apple Silicon **and** Intel |
+| `Sunburst.Disk_universal.app.tar.gz` | ~8.5 MB | the same app bundle, archived |
 
 **One universal build.** Both slices are inside the single DMG; macOS picks the
 native one automatically.
