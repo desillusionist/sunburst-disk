@@ -1046,3 +1046,50 @@ describe('sort, filter and type-ahead', () => {
     expect(document.querySelector('.legend-row.highlighted')).toBeNull();
   });
 });
+
+describe('themes', () => {
+  it('offers four skins, applies the retro ones and returns to Classic', async () => {
+    const user = userEvent.setup();
+    await openLocalScan(user);
+    const windowEl = () => document.querySelector('.mac-window');
+    expect(windowEl().className).not.toContain('theme-');
+
+    await user.click(screen.getByRole('button', { name: /choose theme/i }));
+    for (const name of [/classic/i, /^matrix$/i, /amber crt/i, /lcd green/i]) {
+      expect(screen.getByRole('button', { name })).toBeTruthy();
+    }
+
+    await user.click(screen.getByRole('button', { name: /amber crt/i }));
+    await waitFor(() => expect(windowEl().className).toContain('theme-amber'));
+    // The chart and the Dock take the theme's single phosphor accent.
+    expect(globalThis.__sunburstProps.accent).toBe('#ff8a1f');
+    expect(window.localStorage.getItem('sunburst-disk.theme')).toBe('amber');
+
+    await user.click(screen.getByRole('button', { name: /choose theme/i }));
+    await user.click(screen.getByRole('button', { name: /lcd green/i }));
+    await waitFor(() => expect(windowEl().className).toContain('theme-lcd'));
+    expect(globalThis.__sunburstProps.accent).toBe('#a8d84a');
+
+    await user.click(screen.getByRole('button', { name: /choose theme/i }));
+    await user.click(screen.getByRole('button', { name: /classic/i }));
+    await waitFor(() => expect(windowEl().className).not.toContain('theme-'));
+    expect(globalThis.__sunburstProps.accent).toBeNull();
+    expect(window.localStorage.getItem('sunburst-disk.theme')).toBe('classic');
+  });
+
+  it('restores the saved theme on launch', async () => {
+    window.localStorage.setItem('sunburst-disk.theme', 'lcd');
+    const user = userEvent.setup();
+    await openLocalScan(user);
+    expect(document.querySelector('.mac-window').className).toContain('theme-lcd');
+    expect(globalThis.__sunburstProps.accent).toBe('#a8d84a');
+  });
+
+  it('ignores an unknown saved theme and falls back to Classic', async () => {
+    window.localStorage.setItem('sunburst-disk.theme', 'vaporwave');
+    const user = userEvent.setup();
+    await openLocalScan(user);
+    expect(document.querySelector('.mac-window').className).not.toContain('theme-');
+    expect(globalThis.__sunburstProps.accent).toBeNull();
+  });
+});

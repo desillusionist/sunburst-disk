@@ -837,6 +837,28 @@ Everything that remains is optional:
     “a password is required”. Unlocking now drops any cached ticket (`sudo -k`),
     authenticates with a plain `sudo -S -v` (which does update the cache) and
     proves the ticket with `sudo -n -v` before reporting success.
+- **r50** — Two more themes: Amber CRT and LCD Green.
+  - The single `matrixTheme` boolean became a theme id in a `THEMES` registry
+    (`classic`, `matrix`, `amber`, `lcd`). The window class is `theme-<id>`, the
+    id is persisted under `sunburst-disk.theme` (an unknown saved value falls
+    back to Classic), and every non-Classic theme is a **monochrome phosphor**
+    skin: `getNodeColor()` and the chart take one `accent` instead of the
+    per-item palette.
+  - `SunburstChart` now takes an `accent` prop and treats any non-Classic theme
+    as mono (`mono = theme !== 'classic'`) for the accent fill, the hairline
+    slice gaps, the hidden-space outline and the hub tint. Matrix renders exactly
+    as before because its accent is still `#39ff66`.
+  - The two skins live in one token-driven CSS block: `.theme-amber` and
+    `.theme-lcd` define `--skin-*` (surface, line, accent, ink, hover, glow) plus
+    the scrollbar variables, and the shared `:is(.theme-amber, .theme-lcd) …`
+    rules consume them. This keeps the bespoke Matrix rule set (243 blocks)
+    untouched instead of duplicating or rewriting it.
+  - Both skins are dark on purpose, so surfaces the skin does not name still
+    inherit the readable Classic slate rather than going light-on-light. Their
+    signature is an overlay on the window that never takes input: scanlines plus
+    a vignette for Amber CRT, a fine pixel grid for LCD Green.
+  - The Theme menu is generated from the registry (swatch, label, check) and the
+    Dock progress colour follows the active theme's accent.
 - **r49** — Sort & Filter polish, type-ahead, themed scrollbars.
   - **“Date added”.** The sort option is now `sortBy: 'added'` and orders by
     `createdAt` from the shared `inspectItems` metadata read (Finder's own “Date

@@ -33,15 +33,24 @@ function isHiddenSpaceNode(node) {
       || node.isHiddenSpaceRemainder === true);
 }
 
-function getBaseColor(node, index, theme) {
+function hexToRgba(hex, alpha) {
+  const value = String(hex || '').replace('#', '');
+  if (value.length !== 6) return `rgba(57,255,102,${alpha})`;
+  const red = parseInt(value.slice(0, 2), 16);
+  const green = parseInt(value.slice(2, 4), 16);
+  const blue = parseInt(value.slice(4, 6), 16);
+  return `rgba(${red},${green},${blue},${alpha})`;
+}
+
+function getBaseColor(node, index, mono, accent) {
   const name = typeof node === 'string' ? node : node?.name;
   const type = typeof node === 'string' ? null : node?.type;
-  // Hidden space stays visually distinct even where every other slice is green,
-  // but the pale-red is only used once the session is unlocked.
+  // Hidden space stays visually distinct even where every other slice is the
+  // theme accent, but the pale-red is only used once the session is unlocked.
   if (isHiddenSpaceNode(node)) {
     return node?.hiddenSpaceAdminUnlocked === true ? HIDDEN_SPACE_FILL : HIDDEN_SPACE_LOCKED_OUTLINE;
   }
-  if (theme === 'matrix') return '#39ff66';
+  if (mono) return accent;
   if (name === 'smaller objects...') return COLOR_FAMILY['smaller objects...'];
   if (type === 'special') return COLOR_FAMILY['hidden space...'];
   if (type === 'file') return '#64748b';
@@ -72,6 +81,7 @@ export default function SunburstChart({
   keyboardNavigationActive = false,
   colorAssignments = {},
   theme = 'classic',
+  accent = '#39ff66',
   collectedPaths = new Set(),
   centerValue = '',
   centerUnit = '',
@@ -80,6 +90,10 @@ export default function SunburstChart({
   freeUnit = '',
   lockedHiddenHoverPath = null
 }) {
+  // Every non-Classic theme is a monochrome phosphor skin: the accent is the
+  // only slice colour, slices are separated by a hairline gap and the hub tints
+  // with the accent instead of white.
+  const mono = theme !== 'classic';
   const [canvasSize, setCanvasSize] = useState(540);
   const [gapHover, setGapHover] = useState(false);
   const stageRef = useRef(null);
@@ -272,7 +286,7 @@ export default function SunburstChart({
       }
 
       const isCollected = collectedPaths.has(node.path);
-      const angularGap = theme === 'matrix' ? Math.min(0.003, (endAngle - startAngle) * 0.25) : 0;
+      const angularGap = mono ? Math.min(0.003, (endAngle - startAngle) * 0.25) : 0;
       const visualStart = startAngle + angularGap;
       const visualEnd = endAngle - angularGap;
 
@@ -290,16 +304,17 @@ export default function SunburstChart({
         ctx.arc(cx, cy, r2, visualEnd, visualStart, true);
         ctx.closePath();
         if (lockedHidden) {
-          // Neutral outline, no fill; Matrix stays green until unlocked.
-          ctx.strokeStyle = theme === 'matrix' ? '#39ff66' : HIDDEN_SPACE_LOCKED_OUTLINE;
+          // Neutral outline, no fill; a phosphor theme stays on its accent until
+          // the session is unlocked.
+          ctx.strokeStyle = mono ? accent : HIDDEN_SPACE_LOCKED_OUTLINE;
           ctx.lineWidth = 1;
           ctx.globalAlpha = 0.9 * transitionOpacity;
           ctx.stroke();
         } else {
           ctx.fillStyle = isHiddenSpace
             ? HIDDEN_SPACE_FILL
-            : theme === 'matrix'
-              ? '#39ff66'
+            : mono
+              ? accent
               : isCollected
                 ? '#3a3d45'
                 : node.isBulk
@@ -307,7 +322,7 @@ export default function SunburstChart({
                   : color;
           const baseAlpha = isHiddenSpace
             ? 0.9 * (1 - alphaBoost)
-            : theme === 'matrix'
+            : mono
               ? Math.max(0.19, 1 - (depth - 1) * 0.09) * (1 - alphaBoost)
               : isCollected ? 0.6 * (1 - alphaBoost)
                 : Math.max(0.45, 1 - (depth - 1) * 0.06) * (1 - alphaBoost);
@@ -367,7 +382,7 @@ export default function SunburstChart({
     let a = rootStart;
     top.forEach((child, i) => {
       const sweep = topSum > 0 ? ((child.size || 0) / topSum) * usedSpan : 0;
-              drawNode(child, a, a + sweep, 1, colorAssignments[child.path] || getBaseColor(child, i, theme));
+              drawNode(child, a, a + sweep, 1, colorAssignments[child.path] || getBaseColor(child, i, mono, accent));
 
       a += sweep;
     });
@@ -376,7 +391,7 @@ export default function SunburstChart({
     ctx.save();
     ctx.beginPath();
     ctx.arc(cx, cy, innerRadius - 2, 0, Math.PI * 2);
-    ctx.fillStyle = theme === 'matrix' ? 'rgba(57,255,102,0.05)' : 'rgba(255,255,255,0.04)';
+    ctx.fillStyle = mono ? hexToRgba(accent, 0.05) : 'rgba(255,255,255,0.04)';
     ctx.fill();
     ctx.restore();
 
@@ -395,7 +410,7 @@ export default function SunburstChart({
 
     // Lazy children are requested on demand from pointer interaction below.
     // Scanning every visible frontier here caused a burst of IPC work on large disks.
-  }, [data, colorAssignments, collectedPaths, theme, freeFraction, lockedHiddenHoverPath]);
+  }, [data, colorAssignments, collectedPaths, theme, accent, mono, freeFraction, lockedHiddenHoverPath]);
 
   const clearPulseOverlay = useCallback(() => {
     const canvas = pulseCanvasRef.current;
@@ -429,7 +444,7 @@ export default function SunburstChart({
 
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
-    const angularGap = theme === 'matrix' ? Math.min(0.003, (slice.endAngle - slice.startAngle) * 0.25) : 0;
+    const angularGap = mono ? Math.min(0.003, (slice.endAngle - slice.startAngle) * 0.25) : 0;
     const visualStart = slice.startAngle + angularGap;
     const visualEnd = slice.endAngle - angularGap;
     ctx.save();
@@ -440,19 +455,19 @@ export default function SunburstChart({
     if (isHiddenSpaceNode(slice.node) && slice.node?.hiddenSpaceAdminUnlocked !== true) {
       // The base outline is suppressed while this slice is hovered, so the stroke
       // breathes from the normal outline down to fully transparent.
-      ctx.strokeStyle = theme === 'matrix' ? '#39ff66' : HIDDEN_SPACE_LOCKED_OUTLINE;
+      ctx.strokeStyle = mono ? accent : HIDDEN_SPACE_LOCKED_OUTLINE;
       ctx.lineWidth = 1;
       ctx.globalAlpha = 0.9 * (1 - pulseValueRef.current);
       ctx.stroke();
     } else {
-      ctx.fillStyle = theme === 'matrix' ? '#000000' : '#ffffff';
-      ctx.globalAlpha = theme === 'matrix'
+      ctx.fillStyle = mono ? '#000000' : '#ffffff';
+      ctx.globalAlpha = mono
         ? pulseValueRef.current * 0.9
         : 0.1 + pulseValueRef.current * 0.9;
       ctx.fill();
     }
     ctx.restore();
-  }, [highlightedPath, keyboardNavigationActive, theme]);
+  }, [highlightedPath, keyboardNavigationActive, accent, mono]);
 
   const stopPulse = useCallback(() => {
     if (pulseRafRef.current) cancelAnimationFrame(pulseRafRef.current);

@@ -1468,7 +1468,7 @@ body {
   top: calc(100% + 6px);
   right: 0;
   z-index: 220;
-  min-width: 118px;
+  min-width: 170px;
   padding: 4px;
   background: #2b3038;
   border: 1px solid #15181d;
@@ -2696,3 +2696,372 @@ body {
 .theme-matrix .onboarding-guide-downloads { color: #70a878; }
 .theme-matrix .onboarding-guide-downloads a { color: #d8ff47; }
 .theme-matrix .onboarding-guide-downloads a:hover { color: #f0ffae; }
+
+/* ── Phosphor themes: Amber CRT · LCD Green ───────────────────────────────────
+   Adapted from the cassette-futurism reference gallery: an amber phosphor CRT
+   terminal and a greenish handheld LCD. Both are dark skins layered over the
+   Classic layout. The shared block below only consumes `--skin-*` tokens, so the
+   two themes differ by palette and by their signature texture (scanlines vs a
+   pixel grid). The Matrix theme keeps its own, longer rule set untouched. */
+
+.theme-amber {
+  --skin-bg: #0b0703;
+  --skin-panel: #150e06;
+  --skin-panel-soft: #1f1509;
+  --skin-line: #7a3d08;
+  --skin-line-bright: #ff8a1f;
+  --skin-accent: #ff8a1f;
+  --skin-accent-rgb: 255, 138, 31;
+  --skin-accent-dim: #b96a1c;
+  --skin-text: #ffb877;
+  --skin-text-dim: #b5793c;
+  --skin-hover: rgba(255, 138, 31, .12);
+  --skin-glow: rgba(255, 106, 0, .45);
+  --scrollbar-thumb: rgba(255, 138, 31, .55);
+  --scrollbar-thumb-hover: rgba(255, 185, 110, .85);
+  background: var(--skin-bg);
+  color: var(--skin-text);
+  font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.theme-lcd {
+  --skin-bg: #0d120a;
+  --skin-panel: #16200f;
+  --skin-panel-soft: #1e2b14;
+  --skin-line: #4c6b24;
+  --skin-line-bright: #a8d84a;
+  --skin-accent: #a8d84a;
+  --skin-accent-rgb: 168, 216, 74;
+  --skin-accent-dim: #7fa52f;
+  --skin-text: #d6eaa4;
+  --skin-text-dim: #93a86a;
+  --skin-hover: rgba(168, 216, 74, .12);
+  --skin-glow: rgba(168, 216, 74, .32);
+  --scrollbar-thumb: rgba(168, 216, 74, .5);
+  --scrollbar-thumb-hover: rgba(200, 236, 128, .85);
+  background: var(--skin-bg);
+  color: var(--skin-text);
+  font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* The signature texture: a screen overlay that never takes pointer input. */
+.theme-amber::after,
+.theme-lcd::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  pointer-events: none;
+}
+.theme-amber::after {
+  background:
+    repeating-linear-gradient(to bottom, rgba(255, 176, 102, .05) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, .42) 100%);
+}
+.theme-lcd::after {
+  background:
+    repeating-linear-gradient(to bottom, rgba(214, 234, 164, .035) 0 1px, transparent 1px 2px),
+    repeating-linear-gradient(to right, rgba(214, 234, 164, .03) 0 1px, transparent 1px 2px),
+    radial-gradient(ellipse at center, transparent 62%, rgba(0, 0, 0, .32) 100%);
+}
+
+/* Surfaces. */
+:is(.theme-amber, .theme-lcd) .mac-header,
+:is(.theme-amber, .theme-lcd) .chart-area,
+:is(.theme-amber, .theme-lcd) .legend-area,
+:is(.theme-amber, .theme-lcd) .details-sidebar,
+:is(.theme-amber, .theme-lcd) .scan-screen,
+:is(.theme-amber, .theme-lcd) .assistant-drawer,
+:is(.theme-amber, .theme-lcd) .collector-drawer,
+:is(.theme-amber, .theme-lcd) .cloud-drawer,
+:is(.theme-amber, .theme-lcd) .cloud-basket-drawer,
+:is(.theme-amber, .theme-lcd) .smart-clean-drawer,
+:is(.theme-amber, .theme-lcd) .onboarding-modal {
+  background: var(--skin-bg);
+  border-color: var(--skin-line);
+  color: var(--skin-text);
+}
+:is(.theme-amber, .theme-lcd) .terminal-drawer,
+:is(.theme-amber, .theme-lcd) .ctx-menu,
+:is(.theme-amber, .theme-lcd) .themes-menu,
+:is(.theme-amber, .theme-lcd) .view-options-panel,
+:is(.theme-amber, .theme-lcd) .filter-select-menu,
+:is(.theme-amber, .theme-lcd) .drive-menu,
+:is(.theme-amber, .theme-lcd) .smart-clean-menu,
+:is(.theme-amber, .theme-lcd) .breadcrumb-overflow-menu,
+:is(.theme-amber, .theme-lcd) .hidden-space-panel,
+:is(.theme-amber, .theme-lcd) .hidden-space-admin-dialog,
+:is(.theme-amber, .theme-lcd) .cloud-trash-confirm,
+:is(.theme-amber, .theme-lcd) .scan-loading-status,
+:is(.theme-amber, .theme-lcd) .permission-hint,
+:is(.theme-amber, .theme-lcd) .update-toast,
+:is(.theme-amber, .theme-lcd) .scan-complete-toast,
+:is(.theme-amber, .theme-lcd) .move-symlink-toast,
+:is(.theme-amber, .theme-lcd) .debug-downbar,
+:is(.theme-amber, .theme-lcd) .terminal-output,
+:is(.theme-amber, .theme-lcd) .terminal-suggestions {
+  background: var(--skin-panel);
+  border-color: var(--skin-line);
+  color: var(--skin-text);
+}
+:is(.theme-amber, .theme-lcd) .assistant-output,
+:is(.theme-amber, .theme-lcd) .assistant-diagnostics code,
+:is(.theme-amber, .theme-lcd) .smart-clean-list,
+:is(.theme-amber, .theme-lcd) .collector-item-group,
+:is(.theme-amber, .theme-lcd) .view-type-multiselect,
+:is(.theme-amber, .theme-lcd) .drive-menu-item,
+:is(.theme-amber, .theme-lcd) .ctx-submenu {
+  background: var(--skin-panel-soft);
+  border-color: var(--skin-line);
+}
+
+/* Text. */
+:is(.theme-amber, .theme-lcd) .legend-title,
+:is(.theme-amber, .theme-lcd) .details-title,
+:is(.theme-amber, .theme-lcd) .details-section-title,
+:is(.theme-amber, .theme-lcd) .view-options-heading,
+:is(.theme-amber, .theme-lcd) .cloud-title,
+:is(.theme-amber, .theme-lcd) .smart-clean-title,
+:is(.theme-amber, .theme-lcd) .assistant-header h2,
+:is(.theme-amber, .theme-lcd) .terminal-help-title,
+:is(.theme-amber, .theme-lcd) .onboarding-modal h1,
+:is(.theme-amber, .theme-lcd) .onboarding-section-title,
+:is(.theme-amber, .theme-lcd) .mac-title {
+  color: var(--skin-accent);
+  text-shadow: 0 0 7px var(--skin-glow);
+}
+:is(.theme-amber, .theme-lcd) .legend-label,
+:is(.theme-amber, .theme-lcd) .legend-val,
+:is(.theme-amber, .theme-lcd) .legend-total,
+:is(.theme-amber, .theme-lcd) .details-row,
+:is(.theme-amber, .theme-lcd) .details-subject-name,
+:is(.theme-amber, .theme-lcd) .drive-name,
+:is(.theme-amber, .theme-lcd) .drive-free-text,
+:is(.theme-amber, .theme-lcd) .scan-current-file,
+:is(.theme-amber, .theme-lcd) .scan-percent-text,
+:is(.theme-amber, .theme-lcd) .scan-loading-text,
+:is(.theme-amber, .theme-lcd) .ctx-item,
+:is(.theme-amber, .theme-lcd) .theme-menu-item,
+:is(.theme-amber, .theme-lcd) .terminal-command-input,
+:is(.theme-amber, .theme-lcd) .filter-select-option,
+:is(.theme-amber, .theme-lcd) .view-type-option,
+:is(.theme-amber, .theme-lcd) .smart-clean-candidate-name,
+:is(.theme-amber, .theme-lcd) .onboarding-list,
+:is(.theme-amber, .theme-lcd) .onboarding-intro {
+  color: var(--skin-text);
+}
+:is(.theme-amber, .theme-lcd) .legend-label.dim,
+:is(.theme-amber, .theme-lcd) .details-row-label,
+:is(.theme-amber, .theme-lcd) .details-kicker,
+:is(.theme-amber, .theme-lcd) .details-description,
+:is(.theme-amber, .theme-lcd) .details-subject-path,
+:is(.theme-amber, .theme-lcd) .drive-desc,
+:is(.theme-amber, .theme-lcd) .view-options-grid label,
+:is(.theme-amber, .theme-lcd) .view-options-field-label,
+:is(.theme-amber, .theme-lcd) .legend-tilde,
+:is(.theme-amber, .theme-lcd) .terminal-drawer-note,
+:is(.theme-amber, .theme-lcd) .terminal-ghost-suffix,
+:is(.theme-amber, .theme-lcd) .scan-progress-status,
+:is(.theme-amber, .theme-lcd) .onboarding-permission span,
+:is(.theme-amber, .theme-lcd) .smart-clean-candidate-meta {
+  color: var(--skin-text-dim);
+}
+
+/* Controls and fields. */
+:is(.theme-amber, .theme-lcd) .mac-action-btn,
+:is(.theme-amber, .theme-lcd) .nav-icon-btn,
+:is(.theme-amber, .theme-lcd) .mac-pill,
+:is(.theme-amber, .theme-lcd) .themes-toggle,
+:is(.theme-amber, .theme-lcd) .details-toggle,
+:is(.theme-amber, .theme-lcd) .view-options-trigger,
+:is(.theme-amber, .theme-lcd) .sort-direction-btn,
+:is(.theme-amber, .theme-lcd) .terminal-toggle,
+:is(.theme-amber, .theme-lcd) .terminal-run-btn,
+:is(.theme-amber, .theme-lcd) .terminal-expand,
+:is(.theme-amber, .theme-lcd) .scan-cancel-btn,
+:is(.theme-amber, .theme-lcd) .legend-add-btn,
+:is(.theme-amber, .theme-lcd) .filter-select-trigger,
+:is(.theme-amber, .theme-lcd) .home-info-btn {
+  background: var(--skin-panel);
+  border-color: var(--skin-line);
+  color: var(--skin-text);
+}
+:is(.theme-amber, .theme-lcd) .mac-action-btn:hover,
+:is(.theme-amber, .theme-lcd) .nav-icon-btn:hover:not(:disabled),
+:is(.theme-amber, .theme-lcd) .mac-pill:hover,
+:is(.theme-amber, .theme-lcd) .themes-toggle:hover,
+:is(.theme-amber, .theme-lcd) .themes-toggle.active,
+:is(.theme-amber, .theme-lcd) .details-toggle:hover,
+:is(.theme-amber, .theme-lcd) .details-toggle.active,
+:is(.theme-amber, .theme-lcd) .view-options-trigger:hover,
+:is(.theme-amber, .theme-lcd) .view-options-trigger.active,
+:is(.theme-amber, .theme-lcd) .sort-direction-btn:hover,
+:is(.theme-amber, .theme-lcd) .terminal-toggle:hover,
+:is(.theme-amber, .theme-lcd) .terminal-toggle.active,
+:is(.theme-amber, .theme-lcd) .legend-add-btn:hover,
+:is(.theme-amber, .theme-lcd) .filter-select-trigger:hover,
+:is(.theme-amber, .theme-lcd) .filter-select-trigger.open,
+:is(.theme-amber, .theme-lcd) .theme-menu-item:hover,
+:is(.theme-amber, .theme-lcd) .theme-menu-item.selected,
+:is(.theme-amber, .theme-lcd) .ctx-item:hover,
+:is(.theme-amber, .theme-lcd) .drive-row:hover,
+:is(.theme-amber, .theme-lcd) .filter-select-option:hover,
+:is(.theme-amber, .theme-lcd) .filter-select-option.highlighted,
+:is(.theme-amber, .theme-lcd) .filter-select-option.selected,
+:is(.theme-amber, .theme-lcd) .view-type-option:hover,
+:is(.theme-amber, .theme-lcd) .terminal-command-preset:hover {
+  background: var(--skin-hover);
+  border-color: var(--skin-line-bright);
+  color: var(--skin-accent);
+}
+:is(.theme-amber, .theme-lcd) .view-options-grid select,
+:is(.theme-amber, .theme-lcd) .view-options-grid input:not([type="checkbox"]),
+:is(.theme-amber, .theme-lcd) .terminal-command-input,
+:is(.theme-amber, .theme-lcd) .hidden-space-admin-dialog input,
+:is(.theme-amber, .theme-lcd) .theme-toggle {
+  background: var(--skin-panel);
+  border-color: var(--skin-line);
+  color: var(--skin-text);
+}
+:is(.theme-amber, .theme-lcd) .view-options-grid select:focus,
+:is(.theme-amber, .theme-lcd) .view-options-grid input:focus,
+:is(.theme-amber, .theme-lcd) .terminal-command-input:focus,
+:is(.theme-amber, .theme-lcd) .hidden-space-admin-dialog input:focus,
+:is(.theme-amber, .theme-lcd) .filter-select-trigger:focus-visible {
+  outline-color: var(--skin-line-bright);
+  border-color: var(--skin-line-bright);
+}
+:is(.theme-amber, .theme-lcd) .view-type-option input,
+:is(.theme-amber, .theme-lcd) .view-options-grid input[type="checkbox"] {
+  accent-color: var(--skin-accent);
+}
+
+/* Rows, dividers, progress and badges. */
+:is(.theme-amber, .theme-lcd) .legend-row:hover,
+:is(.theme-amber, .theme-lcd) .legend-row.highlighted,
+:is(.theme-amber, .theme-lcd) .terminal-suggestion.active {
+  background: var(--skin-hover);
+}
+:is(.theme-amber, .theme-lcd) .legend-divider,
+:is(.theme-amber, .theme-lcd) .view-type-separator,
+:is(.theme-amber, .theme-lcd) .details-sidebar,
+:is(.theme-amber, .theme-lcd) .pane-divider::after {
+  background: var(--skin-line);
+}
+:is(.theme-amber, .theme-lcd) .pane-divider:hover::after,
+:is(.theme-amber, .theme-lcd) .pane-divider:focus-visible::after {
+  background: var(--skin-line-bright);
+}
+:is(.theme-amber, .theme-lcd) .scan-progress-bar-fill,
+:is(.theme-amber, .theme-lcd) .update-toast-fill {
+  background: var(--skin-accent);
+  box-shadow: 0 0 10px var(--skin-glow);
+}
+:is(.theme-amber, .theme-lcd) .scan-progress-bar-bg,
+:is(.theme-amber, .theme-lcd) .drive-progress-bg,
+:is(.theme-amber, .theme-lcd) .update-toast-bar {
+  background: var(--skin-panel-soft);
+  border-color: var(--skin-line);
+}
+:is(.theme-amber, .theme-lcd) .legend-local-badge,
+:is(.theme-amber, .theme-lcd) .folder-watch-badge,
+:is(.theme-amber, .theme-lcd) .terminal-readwrite-badge,
+:is(.theme-amber, .theme-lcd) .center-size-badge {
+  border-color: var(--skin-line);
+  background: var(--skin-hover);
+  color: var(--skin-text);
+}
+:is(.theme-amber, .theme-lcd) .legend-local-badge,
+:is(.theme-amber, .theme-lcd) .scan-percent-text,
+:is(.theme-amber, .theme-lcd) .legend-val,
+:is(.theme-amber, .theme-lcd) .details-subject-path {
+  font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+/* An active sort/filter stays yellow even while the trigger is hovered: the
+   shared hover rule above is otherwise more specific by source order. */
+:is(.theme-amber, .theme-lcd) .view-options-trigger.filters-active,
+:is(.theme-amber, .theme-lcd) .view-options-trigger.filters-active:hover,
+:is(.theme-amber, .theme-lcd) .view-options-trigger.filters-active.active {
+  border-color: #d8b23c;
+  background: rgba(216, 178, 60, .16);
+  color: #ffd54a;
+}
+
+/* Theme picker: a small swatch in front of each skin's name. */
+.theme-menu-name { display: inline-flex; align-items: center; gap: 7px; }
+.theme-swatch {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .22);
+}
+
+/* Collector drop target, risk card and debug bar. Without these the two new
+   skins left the collector strip and the debug bar in Classic slate. */
+:is(.theme-amber, .theme-lcd) .collector-target {
+  background: var(--skin-panel);
+  border-color: var(--skin-line);
+  color: var(--skin-text-dim);
+}
+:is(.theme-amber, .theme-lcd) .collector-has-items { color: var(--skin-text); }
+:is(.theme-amber, .theme-lcd) .collector-target:hover {
+  background: var(--skin-panel-soft);
+  border-color: var(--skin-line-bright);
+}
+:is(.theme-amber, .theme-lcd) .collector-target.drag-over {
+  border-color: var(--skin-line-bright);
+  background: var(--skin-hover);
+  color: var(--skin-accent);
+}
+:is(.theme-amber, .theme-lcd) .collector-ring-icon,
+:is(.theme-amber, .theme-lcd) .collector-ring-inner {
+  border-color: var(--skin-accent-dim);
+}
+:is(.theme-amber, .theme-lcd) .drag-over .collector-ring-icon {
+  border-color: var(--skin-accent);
+}
+:is(.theme-amber, .theme-lcd) .details-risk-card,
+:is(.theme-amber, .theme-lcd) .details-risk-heading {
+  background: var(--skin-panel);
+  border-color: var(--skin-line);
+  color: var(--skin-text);
+}
+:is(.theme-amber, .theme-lcd) .details-risk-card p { color: var(--skin-text-dim); }
+:is(.theme-amber, .theme-lcd) .details-collector-btn,
+:is(.theme-amber, .theme-lcd) .details-package-btn {
+  background: var(--skin-panel);
+  border-color: var(--skin-line);
+  color: var(--skin-text);
+}
+:is(.theme-amber, .theme-lcd) .details-collector-btn:hover,
+:is(.theme-amber, .theme-lcd) .details-package-btn:hover {
+  background: var(--skin-hover);
+  border-color: var(--skin-line-bright);
+  color: var(--skin-accent);
+}
+:is(.theme-amber, .theme-lcd) .debug-downbar-title { color: var(--skin-text); }
+:is(.theme-amber, .theme-lcd) .debug-downbar-stats { color: var(--skin-text-dim); }
+:is(.theme-amber, .theme-lcd) .debug-status-dot { background: var(--skin-accent-dim); }
+:is(.theme-amber, .theme-lcd) .debug-status-dot.active {
+  background: var(--skin-accent);
+  box-shadow: 0 0 6px var(--skin-glow);
+}
+:is(.theme-amber, .theme-lcd) .legend-row.static .legend-val { color: var(--skin-text-dim); }
+:is(.theme-amber, .theme-lcd) .sunburst-canvas,
+:is(.theme-amber, .theme-lcd) .sunburst-pulse-canvas {
+  filter: drop-shadow(0 0 2px var(--skin-glow));
+}
+:is(.theme-amber, .theme-lcd) .debug-action-btn,
+:is(.theme-amber, .theme-lcd) .debug-icon-btn {
+  background: var(--skin-panel);
+  border-color: var(--skin-line);
+  color: var(--skin-text);
+}
+:is(.theme-amber, .theme-lcd) .debug-action-btn:hover,
+:is(.theme-amber, .theme-lcd) .debug-icon-btn:hover,
+:is(.theme-amber, .theme-lcd) .debug-action-btn.active {
+  background: var(--skin-hover);
+  border-color: var(--skin-line-bright);
+  color: var(--skin-accent);
+}

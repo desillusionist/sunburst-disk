@@ -67,10 +67,24 @@ const COLOR_MAP = {
   'hidden space...': '#7e22ce' // Dark Purple
 };
 const RING_COLORS = ['#eab308','#22c55e','#06b6d4','#3b82f6','#8b5cf6','#ec4899','#f97316','#14b8a6','#6366f1'];
-// The Matrix theme's accent: the sunburst and the Dock progress bar share it.
-const MATRIX_ACCENT = '#39ff66';
 
-function getNodeColor(node, idx, matrixTheme = false) {
+// Theme registry. `classic` is the base skin and keeps the full colour palette;
+// every other theme is a monochrome phosphor skin (its class is `theme-<id>` and
+// its accent drives the sunburst, the legend dots and the Dock progress bar).
+// Amber and LCD adapt the cassette-futurism reference: an amber CRT and a
+// handheld LCD, both dark so every existing surface stays legible.
+const THEMES = [
+  { id: 'classic', label: 'Classic', accent: null, swatch: 'linear-gradient(135deg, #60a5fa, #8b5cf6)', hint: 'Slate UI, full colour' },
+  { id: 'matrix', label: 'Matrix', accent: '#39ff66', swatch: 'linear-gradient(135deg, #39ff66, #0d5420)', hint: 'Green phosphor terminal' },
+  { id: 'amber', label: 'Amber CRT', accent: '#ff8a1f', swatch: 'linear-gradient(135deg, #ff8a1f, #7a3d08)', hint: 'Amber phosphor CRT with scanlines' },
+  { id: 'lcd', label: 'LCD Green', accent: '#a8d84a', swatch: 'linear-gradient(135deg, #a8d84a, #4c6b24)', hint: 'Handheld LCD panel' }
+];
+const THEME_IDS = new Set(THEMES.map(theme => theme.id));
+const themeById = id => THEMES.find(theme => theme.id === id) || THEMES[0];
+
+// `accent` is null for the Classic theme (per-item colours) and a single colour
+// for the phosphor skins (one accent for every slice and row dot).
+function getNodeColor(node, idx, accent = null) {
   // Hidden space is pale-red only once the session is unlocked with the admin
   // password; while locked it uses a neutral grey. Match on the hidden-space
   // flags (the remainder row was renamed from 'Other protected space' to
@@ -81,7 +95,7 @@ function getNodeColor(node, idx, matrixTheme = false) {
   if (isHiddenSpace) {
     return node?.hiddenSpaceAdminUnlocked === true ? 'rgba(255, 123, 138, 0.9)' : 'rgba(154, 160, 172, 0.9)';
   }
-  if (matrixTheme) return MATRIX_ACCENT;
+  if (accent) return accent;
   if (node?.name === 'smaller objects...') return COLOR_MAP['smaller objects...'];
   if (node?.type === 'special') return COLOR_MAP['hidden space...'];
   if (node?.type === 'file') return '#64748b';
@@ -954,6 +968,10 @@ const ONBOARDING_STORAGE_KEY = 'sunburst-disk.onboarding-version';
 // newest first. Add a new entry for each version — the running version's entry
 // is shown on the "What's new" page after an update.
 const RELEASE_HIGHLIGHTS = {
+  '0.4.8': [
+    'Two new themes, adapted from the cassette-futurism look of 1970s–80s hardware. Amber CRT is an amber phosphor terminal — warm black screen, glowing amber text, faint scanlines and a soft vignette. LCD Green is a handheld LCD panel — a yellow-green readout on dark olive with a fine pixel grid.',
+    'Both are monochrome skins: the sunburst, the file-list dots and the Dock progress bar take the theme’s single accent colour, and the Theme menu now lists all four skins with a colour swatch. Your choice is remembered between launches; Classic and Matrix are unchanged.'
+  ],
   '0.4.7': [
     'The Dock progress bar now actually appears in the installed app. It worked while running from source but stayed invisible in a normal launch, because macOS gives a running app’s Dock tile no content view to attach a bar to — the app now installs one, so the bar is there for every scan.',
     'Folder scans show honest progress. Progress inside a folder used to be measured against the whole disk, so a scan that was almost finished still read about 1% and the bar barely moved. A folder now tracks its own measured size — and when no size is known yet the bar is indeterminate, with a live item count, instead of pretending to be nearly done.',
@@ -1055,9 +1073,17 @@ export default function App() {
   const [historyBack, setHistoryBack]       = useState([]);
   const [historyForward, setHistoryForward] = useState([]);
   const [detailsOpen, setDetailsOpen]       = useState(true);
-  const [matrixTheme, setMatrixTheme]       = useState(() => {
-    try { return window.localStorage.getItem('sunburst-disk.theme') === 'matrix'; } catch { return false; }
+  const [theme, setTheme]                   = useState(() => {
+    try {
+      const saved = window.localStorage.getItem('sunburst-disk.theme');
+      return THEME_IDS.has(saved) ? saved : 'classic';
+    } catch { return 'classic'; }
   });
+  // Every non-Classic theme is a monochrome phosphor skin: one accent for the
+  // sunburst, row dots, the Dock bar and the theme's chrome.
+  const monoTheme = theme !== 'classic';
+  const themeAccent = themeById(theme).accent;
+  const matrixTheme = theme === 'matrix';
   const [focusedNode, setFocusedNode]       = useState(null);
   const [pointerNode, setPointerNode]       = useState(null);
   const [itemDetails, setItemDetails]       = useState(null);
@@ -1225,8 +1251,8 @@ export default function App() {
   const [archiveContentsByPath, setArchiveContentsByPath] = useState({});
 
   useEffect(() => {
-    try { window.localStorage.setItem('sunburst-disk.theme', matrixTheme ? 'matrix' : 'classic'); } catch {}
-  }, [matrixTheme]);
+    try { window.localStorage.setItem('sunburst-disk.theme', theme); } catch {}
+  }, [theme]);
 
   useEffect(() => {
     const api = window.electronAPI;
@@ -1429,8 +1455,8 @@ export default function App() {
   }, [currentViewDisplayNode, viewOptions, displayMetadata, packageContentsShown, displayOptionsKey, needsDisplayMetadata]);
   const colorAssignments = useMemo(() => Object.fromEntries((previewNode?.children || []).map((item, index) => [
     item.path,
-    getNodeColor(item, index, matrixTheme)
-  ])), [previewNode, matrixTheme]);
+    getNodeColor(item, index, themeAccent)
+  ])), [previewNode, themeAccent]);
   const chartColorAssignments = useMemo(() => ({}), []);
   const focusedLiveNode = useMemo(() => {
     if (focusedNode && scannedTree) return resolveByPath(scannedTree, focusedNode.path) || focusedNode;
@@ -3397,7 +3423,7 @@ export default function App() {
     // window's indeterminate bar — instead of a bar parked at 0 or no bar at all.
     const indeterminate = !Number.isFinite(percent) || percent < 0;
     const next = indeterminate ? 0.04 : Math.min(1, Math.max(0, percent / 100));
-    const color = matrixTheme ? MATRIX_ACCENT : null;
+    const color = themeAccent;
     const previous = dockProgressRef.current;
     const now = Date.now();
     const sameLook = previous.color === color;
@@ -3410,7 +3436,7 @@ export default function App() {
     }
     dockProgressRef.current = { value: next, at: now, color };
     void api.setDockProgress(next, color);
-  }, [loading, scanProgress.percent, matrixTheme]);
+  }, [loading, scanProgress.percent, themeAccent]);
 
   const applyOptimisticTrashRemoval = useCallback(paths => {
     const sourceTree = folderWatchTreeRef.current || scannedTree;
@@ -4294,7 +4320,7 @@ export default function App() {
   const chartFreeUnit = chartFreeLabel ? chartFreeLabel.split(' ')[1] : '';
 
   return (
-    <div className={`mac-window ${matrixTheme ? 'theme-matrix' : ''}`} onClick={() => { setContextMenu(null); }}>
+    <div className={`mac-window ${monoTheme ? `theme-${theme}` : ''}`} onClick={() => { setContextMenu(null); }}>
       {assistantOpen && (
         <div className="assistant-backdrop">
           <section
@@ -4514,20 +4540,20 @@ export default function App() {
               </button>
               {themesOpen && (
                 <div className="themes-menu" onClick={event => event.stopPropagation()}>
-                  <button
-                    className={`theme-menu-item ${!matrixTheme ? 'selected' : ''}`}
-                    onClick={() => { setMatrixTheme(false); setThemesOpen(false); }}
-                  >
-                    <span>Classic</span>
-                    {!matrixTheme && <span className="theme-check">✓</span>}
-                  </button>
-                  <button
-                    className={`theme-menu-item ${matrixTheme ? 'selected' : ''}`}
-                    onClick={() => { setMatrixTheme(true); setThemesOpen(false); }}
-                  >
-                    <span>Matrix</span>
-                    {matrixTheme && <span className="theme-check">✓</span>}
-                  </button>
+                  {THEMES.map(option => (
+                    <button
+                      key={option.id}
+                      className={`theme-menu-item ${theme === option.id ? 'selected' : ''}`}
+                      title={option.hint}
+                      onClick={() => { setTheme(option.id); setThemesOpen(false); }}
+                    >
+                      <span className="theme-menu-name">
+                        <span className="theme-swatch" style={{ background: option.swatch }} aria-hidden="true" />
+                        {option.label}
+                      </span>
+                      {theme === option.id && <span className="theme-check">✓</span>}
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
@@ -5111,7 +5137,8 @@ export default function App() {
                   highlightedPath={highlightedPath}
                   keyboardNavigationActive={keyboardNavigationActive}
                   colorAssignments={chartColorAssignments}
-                  theme={matrixTheme ? 'matrix' : 'classic'}
+                  theme={theme}
+                  accent={themeAccent}
                   collectedPaths={collectedPaths}
                   centerValue={formatBytes(centerBytes).split(' ')[0]}
                   centerUnit={formatBytes(centerBytes).split(' ')[1]}
@@ -5678,7 +5705,7 @@ export default function App() {
 
             <div className="legend-list" ref={contentListRef}>
               {visibleChildren.map((item, idx) => {
-                const color = colorAssignments[item.path] || getNodeColor(item, idx, matrixTheme);
+                const color = colorAssignments[item.path] || getNodeColor(item, idx, themeAccent);
                 const isHigh = highlightedPath === item.path;
                 const sizeLabel = nodeSizeLabel(item, formatBytes);
                 return (
@@ -5720,7 +5747,7 @@ export default function App() {
                       <div className="dot" style={{ backgroundColor: color }} />
                       {item.type === 'directory'
                         ? <Folder size={13} color={color} style={{ opacity: 0.8 }} />
-                        : <FileText size={13} color={matrixTheme ? color : '#71717a'} style={{ opacity: 0.7 }} />}
+                        : <FileText size={13} color={monoTheme ? color : '#71717a'} style={{ opacity: 0.7 }} />}
                       <CrawlLabel
                         name={item.name}
                         active={isHigh}
